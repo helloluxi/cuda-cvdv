@@ -100,6 +100,10 @@ def load_library():
     lib.cvdvBeamSplitter.argtypes = [c_int, c_int, c_double]
     lib.cvdvBeamSplitter.restype = None
 
+    # void cvdvQ1Q2Gate(int reg1, int reg2, double coeff)
+    lib.cvdvQ1Q2Gate.argtypes = [c_int, c_int, c_double]
+    lib.cvdvQ1Q2Gate.restype = None
+
     # void cvdvFtQ2P(int regIdx)
     lib.cvdvFtQ2P.argtypes = [c_int]
     lib.cvdvFtQ2P.restype = None
@@ -323,7 +327,7 @@ class CVDV:
         """Apply Hadamard gate to qubit in register."""
         lib.cvdvHadamard(regIdx, targetQubit)
 
-    def phaseSquare(self, regIdx, t):
+    def sheer(self, regIdx, t):
         """Apply phase square gate: exp(i*t*q^2) in position space.
 
         Args:
@@ -344,7 +348,7 @@ class CVDV:
         """
         lib.cvdvRotation(regIdx, theta)
 
-    def squeezing(self, regIdx, r):
+    def squeeze(self, regIdx, r):
         """Apply squeezing gate S(r).
 
         Implements the squeezing operator decomposed into q^2 and p^2 phases.
@@ -368,6 +372,18 @@ class CVDV:
             theta: Beam splitter angle in radians
         """
         lib.cvdvBeamSplitter(reg1, reg2, theta)
+
+    def q1q2(self, reg1, reg2, coeff):
+        """Apply Q1Q2 interaction gate between two registers.
+
+        Implements: exp(i*coeff*q1*q2) where q1 and q2 are position operators.
+
+        Args:
+            reg1: First register index
+            reg2: Second register index
+            coeff: Interaction coefficient
+        """
+        lib.cvdvQ1Q2Gate(reg1, reg2, coeff)
 
     def ftQ2P(self, regIdx):
         """Apply Fourier transform: position to momentum representation."""

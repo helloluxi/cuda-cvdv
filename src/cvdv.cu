@@ -1609,6 +1609,27 @@ void cvdvBeamSplitter(int reg1, int reg2, double theta) {
     checkCudaErrors(cudaDeviceSynchronize());
 }
 
+void cvdvQ1Q2Gate(int reg1, int reg2, double coeff) {
+    if (reg1 < 0 || reg1 >= gNumReg || reg2 < 0 || reg2 >= gNumReg) {
+        fprintf(stderr, "Invalid register indices: reg1=%d, reg2=%d\n", reg1, reg2);
+        return;
+    }
+    
+    if (reg1 == reg2) {
+        fprintf(stderr, "Cannot apply Q1Q2 gate to the same register\n");
+        return;
+    }
+    
+    int block = 256;
+    int grid = (gTotalSize + block - 1) / block;
+    
+    kernelApplyTwoModeQQ<<<grid, block>>>(dState, gTotalSize,
+                                        reg1, reg2,
+                                        gQubitCounts, gGridSteps, gFollowQubitCounts,
+                                        coeff);
+    checkCudaErrors(cudaDeviceSynchronize());
+}
+
 #pragma endregion
 
 #pragma region C API - State Access
