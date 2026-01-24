@@ -131,15 +131,29 @@ __device__ __host__ inline cuDoubleComplex conjMul(cuDoubleComplex a, cuDoubleCo
 
 #pragma region Register-Based Indexing Helpers
 
+/**
+ * Memory Layout: LAST REGISTER VARIES FASTEST (contiguous)
+ * 
+ * For registers [R0, R1, R2, ..., R_{n-1}] with dimensions [D0, D1, D2, ..., D_{n-1}]:
+ * globalIdx = localIdx_R0 * (D1*D2*...*D_{n-1}) + localIdx_R1 * (D2*...*D_{n-1}) + ... + localIdx_R_{n-1}
+ * 
+ * Register strides:
+ * - R_{n-1} (last):  stride = 1 (contiguous, optimal for FFT)
+ * - R_{n-2}:         stride = D_{n-1}
+ * - R_i:             stride = D_{i+1} * D_{i+2} * ... * D_{n-1}
+ * - R_0 (first):     stride = D1 * D2 * ... * D_{n-1} (slowest varying)
+ */
+
 // Get dimension of a register
 __device__ __host__ inline size_t getRegisterDim(int regIdx, const int* qubitCounts) {
     return 1 << qubitCounts[regIdx];
 }
 
-// Compute stride for a register (product of dimensions of all registers before it)
+// Compute stride for a register (product of dimensions of all registers AFTER it)
+// Last register has stride 1 (varies fastest, contiguous in memory)
 __device__ __host__ inline size_t getRegisterStride(int regIdx, int numReg, const int* qubitCounts) {
     size_t stride = 1;
-    for (int i = 0; i < regIdx; i++) {
+    for (int i = regIdx + 1; i < numReg; i++) {
         stride *= (1 << qubitCounts[i]);
     }
     return stride;
@@ -443,6 +457,22 @@ __global__ void kernelHadamardRegister(cuDoubleComplex* state, size_t totalSize,
     state[idx1] = newB;
 }
 
+// Apply phase based on position squared: exp(i*t*x^2)
+__global__ void kernelApplyPhaseSquareRegister(cuDoubleComplex* state, size_t totalSize,
+                                                    int regIdx, int numReg,
+                                                    const int* qubitCounts, const double* gridSteps,
+                                                    double t) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= totalSize) return;
+
+    size_t regDim = getRegisterDim(regIdx, qubitCounts);
+    double dx = gridSteps[regIdx];
+    size_t localIdx = getLocalIndex(idx, regIdx, numReg, qubitCounts);
+
+    double x = gridX(localIdx, regDim, dx);
+    state[idx] = cmulPhase(state[idx], t * x * x);
+}
+
 #pragma endregion
 
 #pragma region FFT Helper Kernels
@@ -602,12 +632,14 @@ void cvdvInitStateVector() {
     cuDoubleComplex* h_state = new cuDoubleComplex[gTotalSize];
 
     // Compute tensor product
-    // For each index in the full state, decompose it into register indices
+    // New layout: last register varies fastest
+    // globalIdx = localIdx_R0 * (D1*...*D_{n-1}) + localIdx_R1 * (D2*...*D_{n-1}) + ... + localIdx_R_{n-1}
     for (size_t globalIdx = 0; globalIdx < gTotalSize; globalIdx++) {
         cuDoubleComplex product = make_cuDoubleComplex(1.0, 0.0);
 
         size_t idx = globalIdx;
-        for (int reg = 0; reg < gNumReg; reg++) {
+        // Iterate from last register to first (last varies fastest)
+        for (int reg = gNumReg - 1; reg >= 0; reg--) {
             size_t localIdx = idx % register_dims[reg];
             idx /= register_dims[reg];
 
@@ -901,33 +933,63 @@ void cvdvFtQ2P(int regIdx) {
                                                         gQubitCounts, phasePerIndex);
     checkCudaErrors(cudaDeviceSynchronize());
 
-    // Step 2: Forward FFT using cuFFTPlanMany for strided access
-    // Calculate strides
-    size_t innerStride = 1;
-    for (int i = 0; i < regIdx; i++) {
-        innerStride *= (1 << h_qubit_counts_local[i]);
+    // Step 2: Forward FFT using cuFFTPlanMany
+    // New layout: last register is contiguous (stride 1), first register has largest stride
+    // Stride for regIdx = product of dimensions after regIdx
+    size_t regStride = 1;
+    for (int i = regIdx + 1; i < gNumReg; i++) {
+        regStride *= (1 << h_qubit_counts_local[i]);
     }
-    size_t batch = gTotalSize / (innerStride * regDim);
-
+    
+    // Number of complete FFTs to perform
+    size_t numFFTs = gTotalSize / regDim;
+    
     cufftHandle plan;
     int n = regDim;
-    int iStride = innerStride, oStride = innerStride;
-    int iDist = regDim * innerStride, oDist = regDim * innerStride;
-
-    cufftResult result = cufftPlanMany(&plan, 1, &n, NULL, iStride, iDist,
-                                        NULL, oStride, oDist, CUFFT_Z2Z, batch);
-    if (result != CUFFT_SUCCESS) {
-        fprintf(stderr, "cuFFT plan creation failed: %d\n", result);
-        delete[] h_qubit_counts_local;
-        exit(EXIT_FAILURE);
+    
+    if (regStride == 1) {
+        // Contiguous case: FFT dimension is contiguous, batch FFTs together
+        int batch = numFFTs;
+        cufftResult result = cufftPlan1d(&plan, n, CUFFT_Z2Z, batch);
+        if (result != CUFFT_SUCCESS) {
+            fprintf(stderr, "cuFFT plan creation failed: %d\n", result);
+            delete[] h_qubit_counts_local;
+            exit(EXIT_FAILURE);
+        }
+        
+        result = cufftExecZ2Z(plan, dState, dState, CUFFT_FORWARD);
+        if (result != CUFFT_SUCCESS) {
+            fprintf(stderr, "cuFFT forward execution failed: %d\n", result);
+            delete[] h_qubit_counts_local;
+            exit(EXIT_FAILURE);
+        }
+    } else {
+        // Strided case: FFT dimension is strided
+        int iStride = regStride, oStride = regStride;
+        int iDist = 1, oDist = 1;
+        int batch = regStride;
+        
+        cufftResult result = cufftPlanMany(&plan, 1, &n, NULL, iStride, iDist,
+                                            NULL, oStride, oDist, CUFFT_Z2Z, batch);
+        if (result != CUFFT_SUCCESS) {
+            fprintf(stderr, "cuFFT plan creation failed: %d\n", result);
+            delete[] h_qubit_counts_local;
+            exit(EXIT_FAILURE);
+        }
+        
+        // Number of outer blocks
+        size_t outerDim = gTotalSize / (regStride * regDim);
+        for (size_t o = 0; o < outerDim; o++) {
+            cuDoubleComplex* blockStart = dState + o * regDim * regStride;
+            result = cufftExecZ2Z(plan, blockStart, blockStart, CUFFT_FORWARD);
+            if (result != CUFFT_SUCCESS) {
+                fprintf(stderr, "cuFFT forward execution failed: %d\n", result);
+                delete[] h_qubit_counts_local;
+                exit(EXIT_FAILURE);
+            }
+        }
     }
-
-    result = cufftExecZ2Z(plan, dState, dState, CUFFT_FORWARD);
-    if (result != CUFFT_SUCCESS) {
-        fprintf(stderr, "cuFFT forward execution failed: %d\n", result);
-        delete[] h_qubit_counts_local;
-        exit(EXIT_FAILURE);
-    }
+    
     checkCudaErrors(cudaDeviceSynchronize());
     cufftDestroy(plan);
 
@@ -977,33 +1039,63 @@ void cvdvFtP2Q(int regIdx) {
                                                         gQubitCounts, phasePerIndex);
     checkCudaErrors(cudaDeviceSynchronize());
 
-    // Step 2: Inverse FFT using cuFFTPlanMany for strided access
-    // Calculate strides
-    size_t innerStride = 1;
-    for (int i = 0; i < regIdx; i++) {
-        innerStride *= (1 << h_qubit_counts_local[i]);
+    // Step 2: Inverse FFT using cuFFTPlanMany
+    // New layout: last register is contiguous (stride 1), first register has largest stride
+    // Stride for regIdx = product of dimensions after regIdx
+    size_t regStride = 1;
+    for (int i = regIdx + 1; i < gNumReg; i++) {
+        regStride *= (1 << h_qubit_counts_local[i]);
     }
-    size_t batch = gTotalSize / (innerStride * regDim);
-
+    
+    // Number of complete FFTs to perform
+    size_t numFFTs = gTotalSize / regDim;
+    
     cufftHandle plan;
     int n = regDim;
-    int iStride = innerStride, oStride = innerStride;
-    int iDist = regDim * innerStride, oDist = regDim * innerStride;
-
-    cufftResult result = cufftPlanMany(&plan, 1, &n, NULL, iStride, iDist,
-                                        NULL, oStride, oDist, CUFFT_Z2Z, batch);
-    if (result != CUFFT_SUCCESS) {
-        fprintf(stderr, "cuFFT plan creation failed: %d\n", result);
-        delete[] h_qubit_counts_local;
-        exit(EXIT_FAILURE);
+    
+    if (regStride == 1) {
+        // Contiguous case: FFT dimension is contiguous, batch FFTs together
+        int batch = numFFTs;
+        cufftResult result = cufftPlan1d(&plan, n, CUFFT_Z2Z, batch);
+        if (result != CUFFT_SUCCESS) {
+            fprintf(stderr, "cuFFT plan creation failed: %d\n", result);
+            delete[] h_qubit_counts_local;
+            exit(EXIT_FAILURE);
+        }
+        
+        result = cufftExecZ2Z(plan, dState, dState, CUFFT_INVERSE);
+        if (result != CUFFT_SUCCESS) {
+            fprintf(stderr, "cuFFT inverse execution failed: %d\n", result);
+            delete[] h_qubit_counts_local;
+            exit(EXIT_FAILURE);
+        }
+    } else {
+        // Strided case: FFT dimension is strided
+        int iStride = regStride, oStride = regStride;
+        int iDist = 1, oDist = 1;
+        int batch = regStride;
+        
+        cufftResult result = cufftPlanMany(&plan, 1, &n, NULL, iStride, iDist,
+                                            NULL, oStride, oDist, CUFFT_Z2Z, batch);
+        if (result != CUFFT_SUCCESS) {
+            fprintf(stderr, "cuFFT plan creation failed: %d\n", result);
+            delete[] h_qubit_counts_local;
+            exit(EXIT_FAILURE);
+        }
+        
+        // Number of outer blocks
+        size_t outerDim = gTotalSize / (regStride * regDim);
+        for (size_t o = 0; o < outerDim; o++) {
+            cuDoubleComplex* blockStart = dState + o * regDim * regStride;
+            result = cufftExecZ2Z(plan, blockStart, blockStart, CUFFT_INVERSE);
+            if (result != CUFFT_SUCCESS) {
+                fprintf(stderr, "cuFFT inverse execution failed: %d\n", result);
+                delete[] h_qubit_counts_local;
+                exit(EXIT_FAILURE);
+            }
+        }
     }
-
-    result = cufftExecZ2Z(plan, dState, dState, CUFFT_INVERSE);
-    if (result != CUFFT_SUCCESS) {
-        fprintf(stderr, "cuFFT inverse execution failed: %d\n", result);
-        delete[] h_qubit_counts_local;
-        exit(EXIT_FAILURE);
-    }
+    
     checkCudaErrors(cudaDeviceSynchronize());
     cufftDestroy(plan);
 
@@ -1149,6 +1241,71 @@ void cvdvHadamard(int regIdx, int qubitIdx) {
                                                gNumReg, gQubitCounts);
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
+}
+
+void cvdvPhaseSquare(int regIdx, double t) {
+    if (regIdx < 0 || regIdx >= gNumReg) {
+        fprintf(stderr, "Invalid register index: %d\n", regIdx);
+        return;
+    }
+
+    int block = 256;
+    int grid = (gTotalSize + block - 1) / block;
+
+    kernelApplyPhaseSquareRegister<<<grid, block>>>(dState, gTotalSize,
+                                                         regIdx, gNumReg,
+                                                         gQubitCounts, gGridSteps, t);
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
+}
+
+void cvdvRotation(int regIdx, double theta) {
+    if (regIdx < 0 || regIdx >= gNumReg) {
+        fprintf(stderr, "Invalid register index: %d\n", regIdx);
+        return;
+    }
+
+    // R(θ) = exp(-i/2 tan(θ/2) q^2) exp(-i/2 sin(θ) p^2) exp(-i/2 tan(θ/2) q^2)
+    double tanHalfTheta = tan(theta / 2.0);
+    double sinTheta = sin(theta);
+
+    // First: exp(-i/2 tan(θ/2) q^2) in position space
+    cvdvPhaseSquare(regIdx, -0.5 * tanHalfTheta);
+
+    // Second: exp(-i/2 sin(θ) p^2) in momentum space
+    cvdvFtQ2P(regIdx);
+    cvdvPhaseSquare(regIdx, -0.5 * sinTheta);
+    cvdvFtP2Q(regIdx);
+
+    // Third: exp(-i/2 tan(θ/2) q^2) in position space
+    cvdvPhaseSquare(regIdx, -0.5 * tanHalfTheta);
+}
+
+void cvdvSqueezing(int regIdx, double r) {
+    if (regIdx < 0 || regIdx >= gNumReg) {
+        fprintf(stderr, "Invalid register index: %d\n", regIdx);
+        return;
+    }
+
+    // S(r) = exp(i(e^{-r}-1)/(2e^r) p^2) exp(-i e^r/2 q^2) exp(i(1-e^{-r})/2 p^2) exp(i/2 q^2)
+    double expR = exp(r);
+    double expMinusR = exp(-r);
+
+    // First: exp(i(e^{-r}-1)/(2e^r) p^2) in momentum space
+    cvdvFtQ2P(regIdx);
+    cvdvPhaseSquare(regIdx, (expMinusR - 1.0) / (2.0 * expR));
+    cvdvFtP2Q(regIdx);
+
+    // Second: exp(-i e^r/2 q^2) in position space
+    cvdvPhaseSquare(regIdx, -0.5 * expR);
+
+    // Third: exp(i(1-e^{-r})/2 p^2) in momentum space
+    cvdvFtQ2P(regIdx);
+    cvdvPhaseSquare(regIdx, (1.0 - expMinusR) / 2.0);
+    cvdvFtP2Q(regIdx);
+
+    // Fourth: exp(i/2 q^2) in position space
+    cvdvPhaseSquare(regIdx, 0.5);
 }
 
 #pragma endregion

@@ -79,7 +79,19 @@ def load_library():
     # void cvdvHadamard(int regIdx, int targetQubit)
     lib.cvdvHadamard.argtypes = [c_int, c_int]
     lib.cvdvHadamard.restype = None
-    
+
+    # void cvdvPhaseSquare(int regIdx, double t)
+    lib.cvdvPhaseSquare.argtypes = [c_int, c_double]
+    lib.cvdvPhaseSquare.restype = None
+
+    # void cvdvRotation(int regIdx, double theta)
+    lib.cvdvRotation.argtypes = [c_int, c_double]
+    lib.cvdvRotation.restype = None
+
+    # void cvdvSqueezing(int regIdx, double r)
+    lib.cvdvSqueezing.argtypes = [c_int, c_double]
+    lib.cvdvSqueezing.restype = None
+
     # void cvdvFtQ2P(int regIdx)
     lib.cvdvFtQ2P.argtypes = [c_int]
     lib.cvdvFtQ2P.restype = None
@@ -270,7 +282,40 @@ class CVDV:
     def hadamard(self, regIdx, targetQubit):
         """Apply Hadamard gate to qubit in register."""
         lib.cvdvHadamard(regIdx, targetQubit)
-    
+
+    def phaseSquare(self, regIdx, t):
+        """Apply phase square gate: exp(i*t*q^2) in position space.
+
+        Args:
+            regIdx: Register index
+            t: Phase coefficient
+        """
+        lib.cvdvPhaseSquare(regIdx, t)
+
+    def rotation(self, regIdx, theta):
+        """Apply rotation gate R(θ) in phase space.
+
+        Implements: R(θ) = exp(-i/2 tan(θ/2) q^2) exp(-i/2 sin(θ) p^2) exp(-i/2 tan(θ/2) q^2)
+        This is a symplectic rotation in phase space by angle θ.
+
+        Args:
+            regIdx: Register index
+            theta: Rotation angle in radians
+        """
+        lib.cvdvRotation(regIdx, theta)
+
+    def squeezing(self, regIdx, r):
+        """Apply squeezing gate S(r).
+
+        Implements the squeezing operator decomposed into q^2 and p^2 phases.
+        Positive r squeezes position and expands momentum.
+
+        Args:
+            regIdx: Register index
+            r: Squeezing parameter
+        """
+        lib.cvdvSqueezing(regIdx, r)
+
     def ftQ2P(self, regIdx):
         """Apply Fourier transform: position to momentum representation."""
         lib.cvdvFtQ2P(regIdx)
