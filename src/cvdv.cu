@@ -473,7 +473,7 @@ __global__ void kernelApplyIndexPhaseRegister(cuDoubleComplex* data, size_t tota
 #pragma endregion
 
 #pragma region Utility Kernels
-// Compute Wigner function for a specific qubit basis state slice
+// Compute Wigner function W(x,p) = (1/π) ∫ ψ*(x+y)ψ(x-y)e^(2ipy) dy for a register slice
 __global__ void kernelComputeWignerSingleSlice(double* wigner, const cuDoubleComplex* state,
                                                     int regIdx, const int* sliceIndices,
                                                     int cvDim, double dx,
@@ -491,70 +491,40 @@ __global__ void kernelComputeWignerSingleSlice(double* wigner, const cuDoubleCom
     double wx = -wXMax + wxIdx * wDx;
     double wp = -wPMax + wpIdx * wDp;
 
-    // W(x,p) = (1/pi) * integral psi*(x+y) psi(x-y) exp(2ipy) dy
-    double realSum = 0.0;
-
-    // Compute stride and total size for proper indexing
-    size_t regStride = getRegisterStride(regIdx, numReg, qubitCounts);
-    size_t totalSize = 1;
-    for (int i = 0; i < numReg; i++) {
-        totalSize *= (1 << qubitCounts[i]);
+    // Compute base index for slice: sum over all registers except target
+    size_t baseIdx = 0;
+    for (int r = 0; r < numReg; r++) {
+        if (r != regIdx) {
+            size_t stride = getRegisterStride(r, numReg, qubitCounts);
+            baseIdx += sliceIndices[r] * stride;
+        }
     }
+    size_t regStride = getRegisterStride(regIdx, numReg, qubitCounts);
 
+    // Integrate over y: W(x,p) = (1/π) ∫ ψ*(x+y)ψ(x-y)e^(2ipy) dy
+    double realSum = 0.0;
     for (int yIdx = 0; yIdx < cvDim; yIdx++) {
         double y = gridX(yIdx, cvDim, dx);
 
-        // x+y and x-y positions
+        // Grid indices for x±y
         int xpyIdx = (int)round((wx + y) / dx) + cvDim / 2;
         int xmyIdx = (int)round((wx - y) / dx) + cvDim / 2;
 
         if (xpyIdx >= 0 && xpyIdx < cvDim && xmyIdx >= 0 && xmyIdx < cvDim) {
-            // Iterate over all global indices that match the specified slice
-            for (size_t globalIdx = 0; globalIdx < totalSize; globalIdx++) {
-                // Check if this globalIdx matches the slice specification for ALL registers
-                bool matches = true;
-                size_t tempIdx = globalIdx;
-                for (int r = 0; r < numReg; r++) {
-                    size_t dim = 1 << qubitCounts[r];
-                    size_t localIdx = tempIdx % dim;
-                    tempIdx /= dim;
-                    
-                    // For the target register (regIdx), check if it's xpyIdx
-                    if (r == regIdx) {
-                        if (localIdx != xpyIdx) {
-                            matches = false;
-                            break;
-                        }
-                    } else {
-                        // For other registers, check against sliceIndices
-                        if (localIdx != sliceIndices[r]) {
-                            matches = false;
-                            break;
-                        }
-                    }
-                }
-                
-                if (!matches) continue;
-                
-                // Find corresponding xmyIdx state
-                size_t globalIdxMy = globalIdx - (xpyIdx - xmyIdx) * regStride;
-                
-                if (globalIdxMy < totalSize) {
-                    cuDoubleComplex psiXpy = state[globalIdx];
-                    cuDoubleComplex psiXmy = state[globalIdxMy];
-                    
-                    cuDoubleComplex prod = conjMul(psiXpy, psiXmy);
-                    
-                    double phase = 2.0 * wp * y;
-                    cuDoubleComplex phaseFactor = phaseToZ(phase);
-                    
-                    realSum += cuCreal(prod) * cuCreal(phaseFactor) - cuCimag(prod) * cuCimag(phaseFactor);
-                }
-            }
+            // Direct index computation: globalIdx = baseIdx + localIdx * regStride
+            size_t idxPy = baseIdx + xpyIdx * regStride;
+            size_t idxMy = baseIdx + xmyIdx * regStride;
+
+            cuDoubleComplex psiXpy = state[idxPy];
+            cuDoubleComplex psiXmy = state[idxMy];
+            cuDoubleComplex prod = conjMul(psiXpy, psiXmy);
+
+            double phase = 2.0 * wp * y;
+            realSum += cuCreal(prod) * cos(phase) - cuCimag(prod) * sin(phase);
         }
     }
 
-    wigner[wIdx] = (realSum) / PI;
+    wigner[wIdx] = realSum * dx / PI;
 }
 
 #pragma endregion
