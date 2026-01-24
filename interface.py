@@ -92,6 +92,10 @@ def load_library():
     lib.cvdvSqueezing.argtypes = [c_int, c_double]
     lib.cvdvSqueezing.restype = None
 
+    # void cvdvBeamSplitter(int reg1, int reg2, double theta)
+    lib.cvdvBeamSplitter.argtypes = [c_int, c_int, c_double]
+    lib.cvdvBeamSplitter.restype = None
+
     # void cvdvFtQ2P(int regIdx)
     lib.cvdvFtQ2P.argtypes = [c_int]
     lib.cvdvFtQ2P.restype = None
@@ -103,6 +107,10 @@ def load_library():
     # void cvdvGetWignerSingleSlice(int regIdx, int* sliceIndices, double* wignerOut, int wignerN, double wXMax, double wPMax)
     lib.cvdvGetWignerSingleSlice.argtypes = [c_int, POINTER(c_int), POINTER(c_double), c_int, c_double, c_double]
     lib.cvdvGetWignerSingleSlice.restype = None
+    
+    # void cvdvGetWignerFullMode(int regIdx, double* wignerOut, int wignerN, double wXMax, double wPMax)
+    lib.cvdvGetWignerFullMode.argtypes = [c_int, POINTER(c_double), c_int, c_double, c_double]
+    lib.cvdvGetWignerFullMode.restype = None
     
     # void cvdvGetState(double* realOut, double* imagOut)
     lib.cvdvGetState.argtypes = [POINTER(c_double), POINTER(c_double)]
@@ -131,6 +139,10 @@ def load_library():
     # void cvdvMeasure(int regIdx, double* probabilitiesOut)
     lib.cvdvMeasure.argtypes = [c_int, POINTER(c_double)]
     lib.cvdvMeasure.restype = None
+    
+    # void cvdvInnerProduct(double* realOut, double* imagOut)
+    lib.cvdvInnerProduct.argtypes = [POINTER(c_double), POINTER(c_double)]
+    lib.cvdvInnerProduct.restype = None
     
     print(f"Library loaded successfully!")
     print(f"Debug logs are written to: {os.path.join(project_dir, 'cuda.log')}")
@@ -316,6 +328,19 @@ class CVDV:
         """
         lib.cvdvSqueezing(regIdx, r)
 
+    def beamSplitter(self, reg1, reg2, theta):
+        """Apply beam splitter gate BS(θ) between two registers.
+
+        Implements: BS(θ) = exp(-i*tan(θ/4)*q1*q2/2) * exp(-i*sin(θ/2)*p1*p2/2) * exp(-i*tan(θ/4)*q1*q2/2)
+        where q and p are position and momentum operators.
+
+        Args:
+            reg1: First register index
+            reg2: Second register index
+            theta: Beam splitter angle in radians
+        """
+        lib.cvdvBeamSplitter(reg1, reg2, theta)
+
     def ftQ2P(self, regIdx):
         """Apply Fourier transform: position to momentum representation."""
         lib.cvdvFtQ2P(regIdx)
@@ -345,6 +370,28 @@ class CVDV:
         wigner = np.zeros(wignerN * wignerN, dtype=np.float64)
         lib.cvdvGetWignerSingleSlice(regIdx,
             slice_indices_arr.ctypes.data_as(POINTER(c_int)),
+            wigner.ctypes.data_as(POINTER(c_double)),
+            wignerN, wXMax, wPMax
+        )
+        return wigner.reshape((wignerN, wignerN))
+    
+    def getWignerFullMode(self, regIdx, wignerN=101, wXMax=5.0, wPMax=5.0):
+        """Compute reduced Wigner function for register by tracing out all other registers.
+        
+        This efficiently sums over all possible states of other registers to compute
+        the reduced density matrix's Wigner function.
+        
+        Args:
+            regIdx: Register index to compute Wigner function for
+            wignerN: Grid size for Wigner function (default: 101)
+            wXMax: Maximum position value (default: 5.0)
+            wPMax: Maximum momentum value (default: 5.0)
+        
+        Returns:
+            2D numpy array of shape (wignerN, wignerN) containing Wigner function W(q,p)
+        """
+        wigner = np.zeros(wignerN * wignerN, dtype=np.float64)
+        lib.cvdvGetWignerFullMode(regIdx,
             wigner.ctypes.data_as(POINTER(c_double)),
             wignerN, wXMax, wPMax
         )
@@ -380,10 +427,32 @@ class CVDV:
         lib.cvdvMeasure(regIdx, probs.ctypes.data_as(POINTER(c_double)))
         return probs
     
+    def innerProduct(self):
+        """Compute inner product between current state and register tensor product.
+        
+        Computes <current_state | register_tensor_product> where register_tensor_product
+        is the tensor product of all register arrays (the state that would be created by
+        calling initStateVector with the current register contents).
+        
+        Useful for:
+        - Verifying state initialization (should return 1.0 right after initStateVector)
+        - Computing overlap between evolved state and initial state
+        - Debugging and validation
+        
+        Returns:
+            complex: Inner product value
+        """
+        real_out = c_double(0.0)
+        imag_out = c_double(0.0)
+        lib.cvdvInnerProduct(ctypes.byref(real_out), ctypes.byref(imag_out))
+        return complex(real_out.value, imag_out.value)
+    
     def info(self):
         """Print system information."""
+        # Calculate VRAM usage (complex double = 16 bytes per element)
+        vram_gb = (self.total_size * 16) / (1024 * 1024 * 1024)
         print(f"Number of registers: {self.num_registers}")
-        print(f"Total state size: {self.total_size}")
+        print(f"Total state size: {self.total_size} elements ({vram_gb:.3f} GB in VRAM)")
         for i in range(self.num_registers):
             dim = self.register_dims[i]
             dx = self.grid_steps[i]
