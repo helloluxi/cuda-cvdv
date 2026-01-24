@@ -95,6 +95,7 @@ static cuDoubleComplex* dState = nullptr;
 // New register-based model
 static int* gQubitCounts = nullptr;         // Device array: number of qubits in each register
 static double* gGridSteps = nullptr;        // Device array: grid step (dx) for each register (0 for DV)
+static size_t* gRegisterDims = nullptr;     // Device array: dimension (2^numQubits) for each register
 static int gNumReg = 0;                     // Total number of registers
 static size_t gTotalSize = 0;               // Total state vector size
 
@@ -102,6 +103,7 @@ static size_t gTotalSize = 0;               // Total state vector size
 static cuDoubleComplex** dRegisterArrays = nullptr;  // Device arrays for each register's coefficients
 static int* hQubitCounts = nullptr;                  // Host copy: number of qubits per register
 static double* hGridSteps = nullptr;                 // Host copy: grid step for each register
+static size_t* hRegisterDims = nullptr;              // Host copy: dimension for each register
 
 #pragma endregion
 
@@ -715,6 +717,7 @@ void cvdvAllocateRegisters(int numReg, int* numQubits) {
     }
     if (hQubitCounts != nullptr) delete[] hQubitCounts;
     if (hGridSteps != nullptr) delete[] hGridSteps;
+    if (hRegisterDims != nullptr) delete[] hRegisterDims;
 
     // Store register information
     gNumReg = numReg;
@@ -723,20 +726,22 @@ void cvdvAllocateRegisters(int numReg, int* numQubits) {
     dRegisterArrays = new cuDoubleComplex*[numReg];
     hQubitCounts = new int[numReg];
     hGridSteps = new double[numReg];
+    hRegisterDims = new size_t[numReg];
 
     // Copy metadata and allocate space for each register
     for (int i = 0; i < numReg; i++) {
         hQubitCounts[i] = numQubits[i];
         
         // Calculate grid step using formula: dx = sqrt(2 * pi / regDim)
-        int registerDim = 1 << numQubits[i];
+        size_t registerDim = 1ULL << numQubits[i];
+        hRegisterDims[i] = registerDim;
         hGridSteps[i] = sqrt(2.0 * PI / registerDim);
         
         // Allocate device array for this register
         checkCudaErrors(cudaMalloc(&dRegisterArrays[i], registerDim * sizeof(cuDoubleComplex)));
         checkCudaErrors(cudaMemset(dRegisterArrays[i], 0, registerDim * sizeof(cuDoubleComplex)));
 
-        logDebug("Register %d: qubits=%d, dx=%.6f, dim=%d, x_bound=%.6f", 
+        logDebug("Register %d: qubits=%d, dx=%.6f, dim=%zu, x_bound=%.6f", 
                   i, numQubits[i], hGridSteps[i], registerDim, 
                   sqrt(2.0 * PI * registerDim));
     }
@@ -807,6 +812,9 @@ void cvdvInitStateVector() {
     if (gGridSteps != nullptr) {
         cudaFree(gGridSteps);
     }
+    if (gRegisterDims != nullptr) {
+        cudaFree(gRegisterDims);
+    }
 
     // Allocate and copy device state
     logDebug("Allocating device memory: %zu bytes", gTotalSize * sizeof(cuDoubleComplex));
@@ -821,6 +829,10 @@ void cvdvInitStateVector() {
 
     checkCudaErrors(cudaMalloc(&gGridSteps, gNumReg * sizeof(double)));
     checkCudaErrors(cudaMemcpy(gGridSteps, hGridSteps, gNumReg * sizeof(double),
+                               cudaMemcpyHostToDevice));
+
+    checkCudaErrors(cudaMalloc(&gRegisterDims, gNumReg * sizeof(size_t)));
+    checkCudaErrors(cudaMemcpy(gRegisterDims, hRegisterDims, gNumReg * sizeof(size_t),
                                cudaMemcpyHostToDevice));
 
     // Cleanup
@@ -845,6 +857,10 @@ void cvdvFree() {
         cudaFree(gGridSteps);
         gGridSteps = nullptr;
     }
+    if (gRegisterDims != nullptr) {
+        cudaFree(gRegisterDims);
+        gRegisterDims = nullptr;
+    }
 
     // Free device register arrays
     if (dRegisterArrays != nullptr) {
@@ -863,6 +879,10 @@ void cvdvFree() {
     if (hGridSteps != nullptr) {
         delete[] hGridSteps;
         hGridSteps = nullptr;
+    }
+    if (hRegisterDims != nullptr) {
+        delete[] hRegisterDims;
+        hRegisterDims = nullptr;
     }
 
     // Close log file
@@ -1620,6 +1640,61 @@ void cvdvGetState(double* realOut, double* imagOut) {
     delete[] h_state;
 }
 
+// CUDA kernel to compute marginal probabilities for a register
+// Sums |amplitude|^2 over all other registers
+__global__ void kernelComputeRegisterProbabilities(double* probabilities, const cuDoubleComplex* state,
+                                                    int regIdx, int numReg,
+                                                    const size_t* registerDims) {
+    // Each thread computes probability for one basis state of the target register
+    size_t regLocalIdx = blockIdx.x * blockDim.x + threadIdx.x;
+    size_t regDim = registerDims[regIdx];
+    
+    if (regLocalIdx >= regDim) return;
+    
+    // Compute stride for this register
+    size_t regStride = 1;
+    for (int i = regIdx + 1; i < numReg; i++) {
+        regStride *= registerDims[i];
+    }
+    
+    // Compute total elements in all other registers
+    size_t otherSize = 1;
+    for (int i = 0; i < numReg; i++) {
+        if (i != regIdx) otherSize *= registerDims[i];
+    }
+    
+    // Sum |amplitude|^2 over all indices where target register = regLocalIdx
+    double prob = 0.0;
+    
+    // Iterate over all possible values of other registers
+    for (size_t otherIdx = 0; otherIdx < otherSize; otherIdx++) {
+        // Reconstruct global index from regLocalIdx and otherIdx
+        // We need to insert regLocalIdx at the correct position
+        
+        size_t globalIdx = 0;
+        size_t tempOtherIdx = otherIdx;
+        size_t currentStride = 1;
+        
+        // Build global index from right to left (last register varies fastest)
+        for (int r = numReg - 1; r >= 0; r--) {
+            size_t localIdx;
+            if (r == regIdx) {
+                localIdx = regLocalIdx;
+            } else {
+                localIdx = tempOtherIdx % registerDims[r];
+                tempOtherIdx /= registerDims[r];
+            }
+            globalIdx += localIdx * currentStride;
+            currentStride *= registerDims[r];
+        }
+        
+        cuDoubleComplex amp = state[globalIdx];
+        prob += cuCreal(amp) * cuCreal(amp) + cuCimag(amp) * cuCimag(amp);
+    }
+    
+    probabilities[regLocalIdx] = prob;
+}
+
 #pragma endregion
 
 #pragma region C API - Getters
@@ -1657,57 +1732,31 @@ double cvdvGetRegisterDx(int regIdx) {
 
 void cvdvMeasure(int regIdx, double* probabilitiesOut) {
     if (regIdx < 0 || regIdx >= gNumReg) {
-        fprintf(stderr, "Invalid register index: %d (gNumReg=%d)\n", regIdx, gNumReg);
+        logError("Invalid register index: %d", regIdx);
+        return;
+    }
+    if (dState == nullptr || gRegisterDims == nullptr) {
+        logError("State not initialized");
         return;
     }
 
-    int* h_qubit_counts_local = new int[gNumReg];
-    checkCudaErrors(cudaMemcpy(h_qubit_counts_local, gQubitCounts,
-                               gNumReg * sizeof(int), cudaMemcpyDeviceToHost));
+    logDebug("Computing marginal probabilities for register %d", regIdx);
 
-    // Compute register dimensions
-    size_t* register_dims = new size_t[gNumReg];
-    size_t totalSize = 1;
-    for (int i = 0; i < gNumReg; i++) {
-        register_dims[i] = 1 << h_qubit_counts_local[i];
-        totalSize *= register_dims[i];
-    }
-
-    int regDim = register_dims[regIdx];
-
-    // Initialize probability array to zero
-    for (int i = 0; i < regDim; i++) {
-        probabilitiesOut[i] = 0.0;
-    }
-
-    // Download state from device
-    cuDoubleComplex* h_state = new cuDoubleComplex[totalSize];
-    checkCudaErrors(cudaMemcpy(h_state, dState, totalSize * sizeof(cuDoubleComplex),
-                               cudaMemcpyDeviceToHost));
-
-    // Compute probabilities for all basis states
-    for (size_t globalIdx = 0; globalIdx < totalSize; globalIdx++) {
-        // Properly extract local index for regIdx
-        // State indexing: |reg0⟩ ⊗ |reg1⟩ ⊗ ... where reg0 is innermost
-        size_t tempIdx = globalIdx;
-        size_t localIdx = 0;
-        
-        for (int r = 0; r < gNumReg; r++) {
-            size_t local_r = tempIdx % register_dims[r];
-            if (r == regIdx) {
-                localIdx = local_r;
-            }
-            tempIdx /= register_dims[r];
-        }
-        
-        cuDoubleComplex amp = h_state[globalIdx];
-        double prob = cuCreal(amp) * cuCreal(amp) + cuCimag(amp) * cuCimag(amp);
-        probabilitiesOut[localIdx] += prob;
-    }
-
-    delete[] h_state;
-    delete[] h_qubit_counts_local;
-    delete[] register_dims;
+    size_t regDim = hRegisterDims[regIdx];
+    
+    // Allocate device memory for probabilities
+    double* d_probs;
+    checkCudaErrors(cudaMalloc(&d_probs, regDim * sizeof(double)));
+    
+    // Launch kernel to compute probabilities
+    int block = 256;
+    int grid = (regDim + block - 1) / block;
+    kernelComputeRegisterProbabilities<<<grid, block>>>(d_probs, dState, regIdx, gNumReg, gRegisterDims);
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
+    
+    // Copy results back to host
+    checkCudaErrors(cudaMemcpy(probabilitiesOut, d_probs, regDim * sizeof(double), cudaMemcpyDeviceToHost));
 }
 
 void cvdvInnerProduct(double* realOut, double* imagOut) {
