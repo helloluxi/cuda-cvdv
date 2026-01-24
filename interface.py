@@ -64,6 +64,10 @@ def load_library():
     lib.cvdvSetFocks.argtypes = [c_int, POINTER(c_double), POINTER(c_double), c_int]
     lib.cvdvSetFocks.restype = None
     
+    # void cvdvSetCoeffs(int regIdx, double* coeffsRe, double* coeffsIm, int length)
+    lib.cvdvSetCoeffs.argtypes = [c_int, POINTER(c_double), POINTER(c_double), c_int]
+    lib.cvdvSetCoeffs.restype = None
+    
     # void cvdvDisplacement(int regIdx, double betaRe, double betaIm)
     lib.cvdvDisplacement.argtypes = [c_int, c_double, c_double]
     lib.cvdvDisplacement.restype = None
@@ -111,6 +115,14 @@ def load_library():
     # void cvdvGetWignerFullMode(int regIdx, double* wignerOut, int wignerN, double wXMax, double wPMax)
     lib.cvdvGetWignerFullMode.argtypes = [c_int, POINTER(c_double), c_int, c_double, c_double]
     lib.cvdvGetWignerFullMode.restype = None
+    
+    # void cvdvGetHusimiQFullMode(int regIdx, double* husimiQOut, int qN, double qMax, double pMax)
+    lib.cvdvGetHusimiQFullMode.argtypes = [c_int, POINTER(c_double), c_int, c_double, c_double]
+    lib.cvdvGetHusimiQFullMode.restype = None
+    
+    # void cvdvJointMeasure(int reg1Idx, int reg2Idx, double* jointProbsOut)
+    lib.cvdvJointMeasure.argtypes = [c_int, c_int, POINTER(c_double)]
+    lib.cvdvJointMeasure.restype = None
     
     # void cvdvGetState(double* realOut, double* imagOut)
     lib.cvdvGetState.argtypes = [POINTER(c_double), POINTER(c_double)]
@@ -260,6 +272,22 @@ class CVDV:
                           coeffs_im.ctypes.data_as(POINTER(c_double)),
                           len(coeffs))
     
+    def setCoeffs(self, regIdx, coeffs):
+        """Set register to arbitrary coefficient array directly.
+        
+        Args:
+            regIdx: Register index
+            coeffs: Array of complex coefficients (must match register dimension)
+                   Coefficients should be pre-normalized.
+        """
+        coeffs = np.array(coeffs, dtype=complex)
+        coeffs_re = coeffs.real.astype(np.float64)
+        coeffs_im = coeffs.imag.astype(np.float64)
+        lib.cvdvSetCoeffs(regIdx,
+                          coeffs_re.ctypes.data_as(POINTER(c_double)),
+                          coeffs_im.ctypes.data_as(POINTER(c_double)),
+                          len(coeffs))
+    
     def displacement(self, regIdx, beta):
         """Apply displacement operator D(β) to register."""
         if isinstance(beta, (int, float)):
@@ -396,6 +424,50 @@ class CVDV:
             wignerN, wXMax, wPMax
         )
         return wigner.reshape((wignerN, wignerN))
+    
+    def getHusimiQFullMode(self, regIdx, qN=101, qMax=5.0, pMax=5.0):
+        """Compute Husimi Q function for register by tracing out all other registers.
+        
+        The Husimi Q function is defined as Q(q,p) = (1/π) ⟨α|ρ|α⟩ where α = (q + ip)/√2.
+        It represents the probability density for the state to be in coherent state |α⟩.
+        
+        Args:
+            regIdx: Register index to compute Q function for
+            qN: Grid size for Q function (default: 101)
+            qMax: Maximum position value (default: 5.0)
+            pMax: Maximum momentum value (default: 5.0)
+        
+        Returns:
+            2D numpy array of shape (qN, qN) containing Husimi Q function Q(q,p)
+        """
+        husimiQ = np.zeros(qN * qN, dtype=np.float64)
+        lib.cvdvGetHusimiQFullMode(regIdx,
+            husimiQ.ctypes.data_as(POINTER(c_double)),
+            qN, qMax, pMax
+        )
+        return husimiQ.reshape((qN, qN))
+    
+    def jointMeasure(self, reg1Idx, reg2Idx):
+        """Compute joint measurement probabilities for two DV registers.
+        
+        This computes the joint probability distribution P(i,j) for measuring
+        state |i⟩ in reg1 and state |j⟩ in reg2, tracing out all other registers.
+        
+        Args:
+            reg1Idx: First register index
+            reg2Idx: Second register index
+        
+        Returns:
+            2D numpy array of shape (dim1, dim2) where dim1 and dim2 are the
+            dimensions of reg1 and reg2 respectively. Element [i,j] is P(i,j).
+        """
+        dim1 = self.register_dims[reg1Idx]
+        dim2 = self.register_dims[reg2Idx]
+        jointProbs = np.zeros(dim1 * dim2, dtype=np.float64)
+        lib.cvdvJointMeasure(reg1Idx, reg2Idx,
+            jointProbs.ctypes.data_as(POINTER(c_double))
+        )
+        return jointProbs.reshape((dim1, dim2))
     
     def getState(self):
         """Get full state vector as complex array."""
