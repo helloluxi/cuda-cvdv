@@ -32,132 +32,136 @@ def load_library():
     
     # Define C function signatures
     
-    # void cvdvAllocateRegisters(int numReg, int* numQubits)
-    lib.cvdvAllocateRegisters.argtypes = [c_int, POINTER(c_int)]
-    lib.cvdvAllocateRegisters.restype = None
+    # CVDVContext* cvdvCreate(int numReg, int* numQubits)
+    lib.cvdvCreate.argtypes = [c_int, POINTER(c_int)]
+    lib.cvdvCreate.restype = ctypes.c_void_p
     
-    # void cvdvInitStateVector()
-    lib.cvdvInitStateVector.argtypes = []
+    # void cvdvDestroy(CVDVContext* ctx)
+    lib.cvdvDestroy.argtypes = [ctypes.c_void_p]
+    lib.cvdvDestroy.restype = None
+    
+    # void cvdvInitStateVector(CVDVContext* ctx)
+    lib.cvdvInitStateVector.argtypes = [ctypes.c_void_p]
     lib.cvdvInitStateVector.restype = None
     
-    # void cvdvSetUniform(int regIdx)
-    lib.cvdvSetUniform.argtypes = [c_int]
+    # void cvdvSetUniform(CVDVContext* ctx, int regIdx)
+    lib.cvdvSetUniform.argtypes = [ctypes.c_void_p, c_int]
     lib.cvdvSetUniform.restype = None
     
-    # void cvdvFree()
-    lib.cvdvFree.argtypes = []
+    # void cvdvFree(CVDVContext* ctx)
+    lib.cvdvFree.argtypes = [ctypes.c_void_p]
     lib.cvdvFree.restype = None
     
-    # void cvdvSetZero(int regIdx)
-    lib.cvdvSetZero.argtypes = [c_int]
+    # void cvdvSetZero(CVDVContext* ctx, int regIdx)
+    lib.cvdvSetZero.argtypes = [ctypes.c_void_p, c_int]
     lib.cvdvSetZero.restype = None
     
-    # void cvdvSetCoherent(int regIdx, double alphaRe, double alphaIm)
-    lib.cvdvSetCoherent.argtypes = [c_int, c_double, c_double]
+    # void cvdvSetCoherent(CVDVContext* ctx, int regIdx, double alphaRe, double alphaIm)
+    lib.cvdvSetCoherent.argtypes = [ctypes.c_void_p, c_int, c_double, c_double]
     lib.cvdvSetCoherent.restype = None
     
-    # void cvdvSetFock(int regIdx, int n)
-    lib.cvdvSetFock.argtypes = [c_int, c_int]
+    # void cvdvSetFock(CVDVContext* ctx, int regIdx, int n)
+    lib.cvdvSetFock.argtypes = [ctypes.c_void_p, c_int, c_int]
     lib.cvdvSetFock.restype = None
     
-    # void cvdvSetFocks(int regIdx, double* coeffsRe, double* coeffsIm, int length)
-    lib.cvdvSetFocks.argtypes = [c_int, POINTER(c_double), POINTER(c_double), c_int]
+    # void cvdvSetFocks(CVDVContext* ctx, int regIdx, double* coeffs, int length)
+    lib.cvdvSetFocks.argtypes = [ctypes.c_void_p, c_int, POINTER(c_double), c_int]
     lib.cvdvSetFocks.restype = None
     
-    # void cvdvSetCoeffs(int regIdx, double* coeffsRe, double* coeffsIm, int length)
-    lib.cvdvSetCoeffs.argtypes = [c_int, POINTER(c_double), POINTER(c_double), c_int]
+    # void cvdvSetCoeffs(CVDVContext* ctx, int regIdx, double* coeffs, int length)
+    lib.cvdvSetCoeffs.argtypes = [ctypes.c_void_p, c_int, POINTER(c_double), c_int]
     lib.cvdvSetCoeffs.restype = None
     
-    # void cvdvDisplacement(int regIdx, double betaRe, double betaIm)
-    lib.cvdvDisplacement.argtypes = [c_int, c_double, c_double]
+    # void cvdvDisplacement(CVDVContext* ctx, int regIdx, double betaRe, double betaIm)
+    lib.cvdvDisplacement.argtypes = [ctypes.c_void_p, c_int, c_double, c_double]
     lib.cvdvDisplacement.restype = None
     
-    # void cvdvConditionalDisplacement(int targetReg, int ctrlReg, int ctrlQubit, double alphaRe, double alphaIm)
-    lib.cvdvConditionalDisplacement.argtypes = [c_int, c_int, c_int, c_double, c_double]
+    # void cvdvConditionalDisplacement(CVDVContext* ctx, int targetReg, int ctrlReg, int ctrlQubit, double alphaRe, double alphaIm)
+    lib.cvdvConditionalDisplacement.argtypes = [ctypes.c_void_p, c_int, c_int, c_int, c_double, c_double]
     lib.cvdvConditionalDisplacement.restype = None
     
-    # void cvdvPauliRotation(int regIdx, int targetQubit, int axis, double theta)
-    lib.cvdvPauliRotation.argtypes = [c_int, c_int, c_int, c_double]
+    # void cvdvPauliRotation(CVDVContext* ctx, int regIdx, int targetQubit, int axis, double theta)
+    lib.cvdvPauliRotation.argtypes = [ctypes.c_void_p, c_int, c_int, c_int, c_double]
     lib.cvdvPauliRotation.restype = None
     
-    # void cvdvHadamard(int regIdx, int targetQubit)
-    lib.cvdvHadamard.argtypes = [c_int, c_int]
+    # void cvdvHadamard(CVDVContext* ctx, int regIdx, int targetQubit)
+    lib.cvdvHadamard.argtypes = [ctypes.c_void_p, c_int, c_int]
     lib.cvdvHadamard.restype = None
 
-    # void cvdvPhaseSquare(int regIdx, double t)
-    lib.cvdvPhaseSquare.argtypes = [c_int, c_double]
+    # void cvdvPhaseSquare(CVDVContext* ctx, int regIdx, double t)
+    lib.cvdvPhaseSquare.argtypes = [ctypes.c_void_p, c_int, c_double]
     lib.cvdvPhaseSquare.restype = None
 
-    # void cvdvRotation(int regIdx, double theta)
-    lib.cvdvRotation.argtypes = [c_int, c_double]
+    # void cvdvRotation(CVDVContext* ctx, int regIdx, double theta)
+    lib.cvdvRotation.argtypes = [ctypes.c_void_p, c_int, c_double]
     lib.cvdvRotation.restype = None
 
-    # void cvdvSqueezing(int regIdx, double r)
-    lib.cvdvSqueezing.argtypes = [c_int, c_double]
+    # void cvdvSqueezing(CVDVContext* ctx, int regIdx, double r)
+    lib.cvdvSqueezing.argtypes = [ctypes.c_void_p, c_int, c_double]
     lib.cvdvSqueezing.restype = None
 
-    # void cvdvBeamSplitter(int reg1, int reg2, double theta)
-    lib.cvdvBeamSplitter.argtypes = [c_int, c_int, c_double]
+    # void cvdvBeamSplitter(CVDVContext* ctx, int reg1, int reg2, double theta)
+    lib.cvdvBeamSplitter.argtypes = [ctypes.c_void_p, c_int, c_int, c_double]
     lib.cvdvBeamSplitter.restype = None
 
-    # void cvdvQ1Q2Gate(int reg1, int reg2, double coeff)
-    lib.cvdvQ1Q2Gate.argtypes = [c_int, c_int, c_double]
+    # void cvdvQ1Q2Gate(CVDVContext* ctx, int reg1, int reg2, double coeff)
+    lib.cvdvQ1Q2Gate.argtypes = [ctypes.c_void_p, c_int, c_int, c_double]
     lib.cvdvQ1Q2Gate.restype = None
 
-    # void cvdvFtQ2P(int regIdx)
-    lib.cvdvFtQ2P.argtypes = [c_int]
+    # void cvdvFtQ2P(CVDVContext* ctx, int regIdx)
+    lib.cvdvFtQ2P.argtypes = [ctypes.c_void_p, c_int]
     lib.cvdvFtQ2P.restype = None
     
-    # void cvdvFtP2Q(int regIdx)
-    lib.cvdvFtP2Q.argtypes = [c_int]
+    # void cvdvFtP2Q(CVDVContext* ctx, int regIdx)
+    lib.cvdvFtP2Q.argtypes = [ctypes.c_void_p, c_int]
     lib.cvdvFtP2Q.restype = None
     
-    # void cvdvGetWignerSingleSlice(int regIdx, int* sliceIndices, double* wignerOut, int wignerN, double wXMax, double wPMax)
-    lib.cvdvGetWignerSingleSlice.argtypes = [c_int, POINTER(c_int), POINTER(c_double), c_int, c_double, c_double]
+    # void cvdvGetWignerSingleSlice(CVDVContext* ctx, int regIdx, int* sliceIndices, double* wignerOut, int wignerN, double wXMax, double wPMax)
+    lib.cvdvGetWignerSingleSlice.argtypes = [ctypes.c_void_p, c_int, POINTER(c_int), POINTER(c_double), c_int, c_double, c_double]
     lib.cvdvGetWignerSingleSlice.restype = None
     
-    # void cvdvGetWignerFullMode(int regIdx, double* wignerOut, int wignerN, double wXMax, double wPMax)
-    lib.cvdvGetWignerFullMode.argtypes = [c_int, POINTER(c_double), c_int, c_double, c_double]
+    # void cvdvGetWignerFullMode(CVDVContext* ctx, int regIdx, double* wignerOut, int wignerN, double wXMax, double wPMax)
+    lib.cvdvGetWignerFullMode.argtypes = [ctypes.c_void_p, c_int, POINTER(c_double), c_int, c_double, c_double]
     lib.cvdvGetWignerFullMode.restype = None
     
-    # void cvdvGetHusimiQFullMode(int regIdx, double* husimiQOut, int qN, double qMax, double pMax)
-    lib.cvdvGetHusimiQFullMode.argtypes = [c_int, POINTER(c_double), c_int, c_double, c_double]
+    # void cvdvGetHusimiQFullMode(CVDVContext* ctx, int regIdx, double* husimiQOut, int qN, double qMax, double pMax)
+    lib.cvdvGetHusimiQFullMode.argtypes = [ctypes.c_void_p, c_int, POINTER(c_double), c_int, c_double, c_double]
     lib.cvdvGetHusimiQFullMode.restype = None
     
-    # void cvdvJointMeasure(int reg1Idx, int reg2Idx, double* jointProbsOut)
-    lib.cvdvJointMeasure.argtypes = [c_int, c_int, POINTER(c_double)]
+    # void cvdvJointMeasure(CVDVContext* ctx, int reg1Idx, int reg2Idx, double* jointProbsOut)
+    lib.cvdvJointMeasure.argtypes = [ctypes.c_void_p, c_int, c_int, POINTER(c_double)]
     lib.cvdvJointMeasure.restype = None
     
-    # void cvdvGetState(double* realOut, double* imagOut)
-    lib.cvdvGetState.argtypes = [POINTER(c_double), POINTER(c_double)]
+    # void cvdvGetState(CVDVContext* ctx, double* realOut, double* imagOut)
+    lib.cvdvGetState.argtypes = [ctypes.c_void_p, POINTER(c_double), POINTER(c_double)]
     lib.cvdvGetState.restype = None
     
-    # int cvdvGetNumRegisters()
-    lib.cvdvGetNumRegisters.argtypes = []
+    # int cvdvGetNumRegisters(CVDVContext* ctx)
+    lib.cvdvGetNumRegisters.argtypes = [ctypes.c_void_p]
     lib.cvdvGetNumRegisters.restype = c_int
     
-    # size_t cvdvGetTotalSize()
-    lib.cvdvGetTotalSize.argtypes = []
+    # size_t cvdvGetTotalSize(CVDVContext* ctx)
+    lib.cvdvGetTotalSize.argtypes = [ctypes.c_void_p]
     lib.cvdvGetTotalSize.restype = c_size_t
     
-    # void cvdvGetRegisterInfo(int* qubitCountsOut, double* gridStepsOut)
-    lib.cvdvGetRegisterInfo.argtypes = [POINTER(c_int), POINTER(c_double)]
+    # void cvdvGetRegisterInfo(CVDVContext* ctx, int* qubitCountsOut, double* gridStepsOut)
+    lib.cvdvGetRegisterInfo.argtypes = [ctypes.c_void_p, POINTER(c_int), POINTER(c_double)]
     lib.cvdvGetRegisterInfo.restype = None
     
-    # int cvdvGetRegisterDim(int regIdx)
-    lib.cvdvGetRegisterDim.argtypes = [c_int]
+    # int cvdvGetRegisterDim(CVDVContext* ctx, int regIdx)
+    lib.cvdvGetRegisterDim.argtypes = [ctypes.c_void_p, c_int]
     lib.cvdvGetRegisterDim.restype = c_int
     
-    # double cvdvGetRegisterDx(int regIdx)
-    lib.cvdvGetRegisterDx.argtypes = [c_int]
+    # double cvdvGetRegisterDx(CVDVContext* ctx, int regIdx)
+    lib.cvdvGetRegisterDx.argtypes = [ctypes.c_void_p, c_int]
     lib.cvdvGetRegisterDx.restype = c_double
     
-    # void cvdvMeasure(int regIdx, double* probabilitiesOut)
-    lib.cvdvMeasure.argtypes = [c_int, POINTER(c_double)]
+    # void cvdvMeasure(CVDVContext* ctx, int regIdx, double* probabilitiesOut)
+    lib.cvdvMeasure.argtypes = [ctypes.c_void_p, c_int, POINTER(c_double)]
     lib.cvdvMeasure.restype = None
     
-    # void cvdvInnerProduct(double* realOut, double* imagOut)
-    lib.cvdvInnerProduct.argtypes = [POINTER(c_double), POINTER(c_double)]
+    # void cvdvInnerProduct(CVDVContext* ctx, double* realOut, double* imagOut)
+    lib.cvdvInnerProduct.argtypes = [ctypes.c_void_p, POINTER(c_double), POINTER(c_double)]
     lib.cvdvInnerProduct.restype = None
     
     print(f"Library loaded successfully!")
@@ -201,13 +205,13 @@ class CVDV:
         Example (Two registers: small + large):
             CVDV([1, 10])  # Register 0: 2 qubits, Register 1: 1024 points
         """
-        self.num_registers = len(numQubits_list)
-        
         # Convert to C arrays
-        numQubits_c = (c_int * self.num_registers)(*numQubits_list)
+        numQubits_c = (c_int * len(numQubits_list))(*numQubits_list)
         
-        # Allocate registers (this clears cuda.log and creates new session)
-        lib.cvdvAllocateRegisters(self.num_registers, numQubits_c)
+        # Create context with registers (merged create+allocate)
+        self.ctx = lib.cvdvCreate(len(numQubits_list), numQubits_c)
+        
+        self.num_registers = len(numQubits_list)
         
         # Note: User must call setXXX functions followed by initStateVector()
         # before performing any operations
@@ -231,7 +235,9 @@ class CVDV:
     def __del__(self):
         """Free CUDA resources."""
         try:
-            lib.cvdvFree()
+            if hasattr(self, 'ctx') and self.ctx:
+                lib.cvdvDestroy(self.ctx)
+                self.ctx = None
         except:
             pass
     
@@ -240,25 +246,25 @@ class CVDV:
         
         Must be called after all setXXX functions and before any operations.
         """
-        lib.cvdvInitStateVector()
+        lib.cvdvInitStateVector(self.ctx)
     
     def setZero(self, regIdx):
         """Set register to |0⟩ state and upload to device."""
-        lib.cvdvSetZero(regIdx)
+        lib.cvdvSetZero(self.ctx, regIdx)
     
     def setCoherent(self, regIdx, alpha):
         """Set register to coherent state |α⟩ and upload to device."""
         if isinstance(alpha, (int, float)):
             alpha = complex(alpha, 0.0)
-        lib.cvdvSetCoherent(regIdx, c_double(alpha.real), c_double(alpha.imag))
+        lib.cvdvSetCoherent(self.ctx, regIdx, c_double(alpha.real), c_double(alpha.imag))
     
     def setFock(self, regIdx, n):
         """Set register to Fock state |n⟩ and upload to device."""
-        lib.cvdvSetFock(regIdx, n)
+        lib.cvdvSetFock(self.ctx, regIdx, n)
     
     def setUniform(self, regIdx):
         """Set register to uniform superposition: all basis states with amplitude 1/sqrt(N)."""
-        lib.cvdvSetUniform(regIdx)
+        lib.cvdvSetUniform(self.ctx, regIdx)
     
     def setFocks(self, regIdx, coeffs):
         """Set register to superposition of Fock states and upload to device.
@@ -269,11 +275,12 @@ class CVDV:
                    State will be: c0|0⟩ + c1|1⟩ + c2|2⟩ + ...
         """
         coeffs = np.array(coeffs, dtype=complex)
-        coeffs_re = coeffs.real.astype(np.float64)
-        coeffs_im = coeffs.imag.astype(np.float64)
-        lib.cvdvSetFocks(regIdx,
-                          coeffs_re.ctypes.data_as(POINTER(c_double)),
-                          coeffs_im.ctypes.data_as(POINTER(c_double)),
+        # Interleave real and imaginary parts: [re0, im0, re1, im1, ...]
+        coeffs_interleaved = np.empty(2 * len(coeffs), dtype=np.float64)
+        coeffs_interleaved[0::2] = coeffs.real
+        coeffs_interleaved[1::2] = coeffs.imag
+        lib.cvdvSetFocks(self.ctx, regIdx,
+                          coeffs_interleaved.ctypes.data_as(POINTER(c_double)),
                           len(coeffs))
     
     def setCoeffs(self, regIdx, coeffs):
@@ -285,18 +292,19 @@ class CVDV:
                    Coefficients should be pre-normalized.
         """
         coeffs = np.array(coeffs, dtype=complex)
-        coeffs_re = coeffs.real.astype(np.float64)
-        coeffs_im = coeffs.imag.astype(np.float64)
-        lib.cvdvSetCoeffs(regIdx,
-                          coeffs_re.ctypes.data_as(POINTER(c_double)),
-                          coeffs_im.ctypes.data_as(POINTER(c_double)),
+        # Interleave real and imaginary parts: [re0, im0, re1, im1, ...]
+        coeffs_interleaved = np.empty(2 * len(coeffs), dtype=np.float64)
+        coeffs_interleaved[0::2] = coeffs.real
+        coeffs_interleaved[1::2] = coeffs.imag
+        lib.cvdvSetCoeffs(self.ctx, regIdx,
+                          coeffs_interleaved.ctypes.data_as(POINTER(c_double)),
                           len(coeffs))
     
     def displacement(self, regIdx, beta):
         """Apply displacement operator D(β) to register."""
         if isinstance(beta, (int, float)):
             beta = complex(beta, 0.0)
-        lib.cvdvDisplacement(regIdx, c_double(beta.real), c_double(beta.imag))
+        lib.cvdvDisplacement(self.ctx, regIdx, c_double(beta.real), c_double(beta.imag))
     
     def cd(self, targetReg, ctrlReg, ctrlQubit, alpha):
         """Apply conditional displacement CD(α) controlled by qubit.
@@ -309,7 +317,7 @@ class CVDV:
         """
         if isinstance(alpha, (int, float)):
             alpha = complex(alpha, 0.0)
-        lib.cvdvConditionalDisplacement(targetReg, ctrlReg, ctrlQubit, 
+        lib.cvdvConditionalDisplacement(self.ctx, targetReg, ctrlReg, ctrlQubit, 
                    c_double(alpha.real), c_double(alpha.imag))
     
     def pauliRotation(self, regIdx, targetQubit, axis, theta):
@@ -321,11 +329,11 @@ class CVDV:
             axis: 0=X, 1=Y, 2=Z
             theta: Rotation angle
         """
-        lib.cvdvPauliRotation(regIdx, targetQubit, axis, theta)
+        lib.cvdvPauliRotation(self.ctx, regIdx, targetQubit, axis, theta)
     
     def hadamard(self, regIdx, targetQubit):
         """Apply Hadamard gate to qubit in register."""
-        lib.cvdvHadamard(regIdx, targetQubit)
+        lib.cvdvHadamard(self.ctx, regIdx, targetQubit)
 
     def sheer(self, regIdx, t):
         """Apply phase square gate: exp(i*t*q^2) in position space.
@@ -334,7 +342,7 @@ class CVDV:
             regIdx: Register index
             t: Phase coefficient
         """
-        lib.cvdvPhaseSquare(regIdx, t)
+        lib.cvdvPhaseSquare(self.ctx, regIdx, t)
 
     def rotation(self, regIdx, theta):
         """Apply rotation gate R(θ) in phase space.
@@ -346,7 +354,7 @@ class CVDV:
             regIdx: Register index
             theta: Rotation angle in radians
         """
-        lib.cvdvRotation(regIdx, theta)
+        lib.cvdvRotation(self.ctx, regIdx, theta)
 
     def squeeze(self, regIdx, r):
         """Apply squeezing gate S(r).
@@ -358,7 +366,7 @@ class CVDV:
             regIdx: Register index
             r: Squeezing parameter
         """
-        lib.cvdvSqueezing(regIdx, r)
+        lib.cvdvSqueezing(self.ctx, regIdx, r)
 
     def beamSplitter(self, reg1, reg2, theta):
         """Apply beam splitter gate BS(θ) between two registers.
@@ -371,7 +379,7 @@ class CVDV:
             reg2: Second register index
             theta: Beam splitter angle in radians
         """
-        lib.cvdvBeamSplitter(reg1, reg2, theta)
+        lib.cvdvBeamSplitter(self.ctx, reg1, reg2, theta)
 
     def q1q2(self, reg1, reg2, coeff):
         """Apply Q1Q2 interaction gate between two registers.
@@ -383,15 +391,15 @@ class CVDV:
             reg2: Second register index
             coeff: Interaction coefficient
         """
-        lib.cvdvQ1Q2Gate(reg1, reg2, coeff)
+        lib.cvdvQ1Q2Gate(self.ctx, reg1, reg2, coeff)
 
     def ftQ2P(self, regIdx):
         """Apply Fourier transform: position to momentum representation."""
-        lib.cvdvFtQ2P(regIdx)
+        lib.cvdvFtQ2P(self.ctx, regIdx)
     
     def ftP2Q(self, regIdx):
         """Apply inverse Fourier transform: momentum to position representation."""
-        lib.cvdvFtP2Q(regIdx)
+        lib.cvdvFtP2Q(self.ctx, regIdx)
     
     def getWignerSingleSlice(self, regIdx, slice_indices, wignerN=101, 
                              wXMax=5.0, wPMax=5.0):
@@ -412,7 +420,7 @@ class CVDV:
         
         slice_indices_arr = np.array(slice_indices, dtype=np.int32)
         wigner = np.zeros(wignerN * wignerN, dtype=np.float64)
-        lib.cvdvGetWignerSingleSlice(regIdx,
+        lib.cvdvGetWignerSingleSlice(self.ctx, regIdx,
             slice_indices_arr.ctypes.data_as(POINTER(c_int)),
             wigner.ctypes.data_as(POINTER(c_double)),
             wignerN, wXMax, wPMax
@@ -435,7 +443,7 @@ class CVDV:
             2D numpy array of shape (wignerN, wignerN) containing Wigner function W(q,p)
         """
         wigner = np.zeros(wignerN * wignerN, dtype=np.float64)
-        lib.cvdvGetWignerFullMode(regIdx,
+        lib.cvdvGetWignerFullMode(self.ctx, regIdx,
             wigner.ctypes.data_as(POINTER(c_double)),
             wignerN, wXMax, wPMax
         )
@@ -457,7 +465,7 @@ class CVDV:
             2D numpy array of shape (qN, qN) containing Husimi Q function Q(q,p)
         """
         husimiQ = np.zeros(qN * qN, dtype=np.float64)
-        lib.cvdvGetHusimiQFullMode(regIdx,
+        lib.cvdvGetHusimiQFullMode(self.ctx, regIdx,
             husimiQ.ctypes.data_as(POINTER(c_double)),
             qN, qMax, pMax
         )
@@ -480,7 +488,7 @@ class CVDV:
         dim1 = self.register_dims[reg1Idx]
         dim2 = self.register_dims[reg2Idx]
         jointProbs = np.zeros(dim1 * dim2, dtype=np.float64)
-        lib.cvdvJointMeasure(reg1Idx, reg2Idx,
+        lib.cvdvJointMeasure(self.ctx, reg1Idx, reg2Idx,
             jointProbs.ctypes.data_as(POINTER(c_double))
         )
         return jointProbs.reshape((dim1, dim2))
@@ -489,7 +497,7 @@ class CVDV:
         """Get full state vector as complex array."""
         real_arr = np.zeros(self.total_size, dtype=np.float64)
         imag_arr = np.zeros(self.total_size, dtype=np.float64)
-        lib.cvdvGetState(
+        lib.cvdvGetState(self.ctx,
             real_arr.ctypes.data_as(POINTER(c_double)),
             imag_arr.ctypes.data_as(POINTER(c_double))
         )
@@ -512,7 +520,7 @@ class CVDV:
         """
         dim = self.register_dims[regIdx]
         probs = np.zeros(dim, dtype=np.float64)
-        lib.cvdvMeasure(regIdx, probs.ctypes.data_as(POINTER(c_double)))
+        lib.cvdvMeasure(self.ctx, regIdx, probs.ctypes.data_as(POINTER(c_double)))
         return probs
     
     def innerProduct(self):
@@ -532,7 +540,7 @@ class CVDV:
         """
         real_out = c_double(0.0)
         imag_out = c_double(0.0)
-        lib.cvdvInnerProduct(ctypes.byref(real_out), ctypes.byref(imag_out))
+        lib.cvdvInnerProduct(self.ctx, ctypes.byref(real_out), ctypes.byref(imag_out))
         return complex(real_out.value, imag_out.value)
     
     def info(self):
