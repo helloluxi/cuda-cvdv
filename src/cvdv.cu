@@ -150,30 +150,19 @@ __global__ void kernelSetFock(cuDoubleComplex* state, int cvDim, double dx, int 
 
     double x = gridX(idx, cvDim, dx);
 
-    // Fock state |n>: psi_n(x) = pi^(-1/4) / sqrt(2^n n!) * H_n(x) * exp(-x^2/2)
-    // Hermite polynomial via recurrence: H_0 = 1, H_1 = 2x, H_{n+1} = 2x H_n - 2n H_{n-1}
-    double hCurr = 1.0;
-    double factorial = 1.0;
+    // Fock state |n> using normalized Hermite function recurrence for numerical stability:
+    // psi_0(x) = exp(-x^2/2) / pi^(1/4) * sqrt(dx)
+    // psi_n(x) = sqrt(2/n) * x * psi_{n-1}(x) - sqrt((n-1)/n) * psi_{n-2}(x)
+    double psiPrev = 0.0;
+    double psiCurr = exp(-x * x / 2.0) * PI_POW_NEG_QUARTER * sqrt(dx);
 
-    if (n >= 1) {
-        hCurr = 2.0 * x;
-        factorial = 1.0;
-        
-        double hPrev = 1.0;
-        for (int k = 1; k < n; k++) {
-            double hNext = 2.0 * x * hCurr - 2.0 * k * hPrev;
-            hPrev = hCurr;
-            hCurr = hNext;
-            factorial *= (k + 1);
-        }
+    for (int k = 1; k <= n; k++) {
+        double psiNext = sqrt(2.0 / k) * x * psiCurr - sqrt((k - 1.0) / k) * psiPrev;
+        psiPrev = psiCurr;
+        psiCurr = psiNext;
     }
 
-    // Normalization: pi^(-1/4) / sqrt(2^n * n!)
-    // Use bit shift for 2^n: (1 << n) = 2^n
-    double norm = PI_POW_NEG_QUARTER / sqrt((1 << n) * factorial);
-
-    double val = norm * hCurr * exp(-x * x / 2.0) * sqrt(dx); // Normalize as qubit register
-    state[idx] = make_cuDoubleComplex(val, 0.0);
+    state[idx] = make_cuDoubleComplex(psiCurr, 0.0);
 }
 
 __global__ void kernelSetFocks(cuDoubleComplex* state, int cvDim, double dx,
@@ -182,40 +171,23 @@ __global__ void kernelSetFocks(cuDoubleComplex* state, int cvDim, double dx,
     if (idx >= cvDim) return;
     double x = gridX(idx, cvDim, dx);
     
-    // Pre-compute exponential term
-    double expTerm = exp(-x * x / 2.0) * sqrt(dx);
-    
+    // Fock state superposition using normalized Hermite function recurrence:
+    // psi_0(x) = exp(-x^2/2) / pi^(1/4) * sqrt(dx)
+    // psi_n(x) = sqrt(2/n) * x * psi_{n-1}(x) - sqrt((n-1)/n) * psi_{n-2}(x)
     cuDoubleComplex result = make_cuDoubleComplex(0.0, 0.0);
     
-    // Cache for Hermite recurrence
-    double hLast2 = 1.0;  // H_0
-    double hLast = 2.0 * x;  // H_1
+    double psiPrev = 0.0;
+    double psiCurr = exp(-x * x / 2.0) * PI_POW_NEG_QUARTER * sqrt(dx);
     
-    double factorial = 1.0;
     for (int n = 0; n < length; n++) {
-        if (n > 0) factorial *= n;
-        
-        // Get current Hermite polynomial
-        double hCurrent;
-        if (n == 0) {
-            hCurrent = hLast2;
-        } else if (n == 1) {
-            hCurrent = hLast;
-        } else {
-            // H_n = 2x * H_{n-1} - 2(n-1) * H_{n-2}
-            hCurrent = 2.0 * x * hLast - 2.0 * (n-1) * hLast2;
-            hLast2 = hLast;
-            hLast = hCurrent;
+        if (n > 0) {
+            double psiNext = sqrt(2.0 / n) * x * psiCurr - sqrt((n - 1.0) / n) * psiPrev;
+            psiPrev = psiCurr;
+            psiCurr = psiNext;
         }
         
-        // Normalization: pi^(-1/4) / sqrt(2^n * n!)
-        double norm = PI_POW_NEG_QUARTER / sqrt((1 << n) * factorial);
-        
-        // Fock state wavefunction
-        double psiN = norm * hCurrent * expTerm;
-        
         // Add coefficient * |n>
-        cuDoubleComplex term = cuCmul(coeffs[n], make_cuDoubleComplex(psiN, 0.0));
+        cuDoubleComplex term = cuCmul(coeffs[n], make_cuDoubleComplex(psiCurr, 0.0));
         result = cuCadd(result, term);
     }
     state[idx] = result;

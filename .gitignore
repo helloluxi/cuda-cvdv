@@ -4,4 +4,4 @@ __pycache__/
 build/
 *.log
 *.md
-!readme.md
+!README.md
