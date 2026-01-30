@@ -372,6 +372,55 @@ __global__ void kernelHadamard(cuDoubleComplex* state, size_t totalSize,
     state[idx1] = newB;
 }
 
+// Parity gate: flip all qubits of a register (X on each qubit = reverse index)
+// This maps |j⟩ → |N-1-j⟩ for the target register
+__global__ void kernelParity(cuDoubleComplex* state, size_t totalSize,
+                             int regIdx, const int* qbts, const int* flwQbts) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= totalSize) return;
+
+    size_t regDim = 1 << qbts[regIdx];
+    size_t localIdx = getLocalIndex(idx, flwQbts[regIdx], qbts[regIdx]);
+
+    // Only process pairs where localIdx < flipped to avoid double-swap
+    size_t flipped = (regDim - 1) - localIdx;
+    if (localIdx >= flipped) return;
+
+    // Compute partner global index by replacing local index
+    size_t regStride = 1 << flwQbts[regIdx];
+    size_t partnerIdx = idx + (flipped - localIdx) * regStride;
+
+    cuDoubleComplex tmp = state[idx];
+    state[idx] = state[partnerIdx];
+    state[partnerIdx] = tmp;
+}
+
+// SWAP gate: swap the qubit contents of two registers (must have same numQubits)
+// Maps |i⟩₁|j⟩₂ → |j⟩₁|i⟩₂
+__global__ void kernelSwapRegisters(cuDoubleComplex* state, size_t totalSize,
+                                    int reg1, int reg2,
+                                    const int* qbts, const int* flwQbts) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= totalSize) return;
+
+    size_t local1 = getLocalIndex(idx, flwQbts[reg1], qbts[reg1]);
+    size_t local2 = getLocalIndex(idx, flwQbts[reg2], qbts[reg2]);
+
+    // Only process when local1 < local2 to avoid double-swap
+    if (local1 >= local2) return;
+
+    // Compute partner index: swap local1 and local2
+    size_t stride1 = 1 << flwQbts[reg1];
+    size_t stride2 = 1 << flwQbts[reg2];
+    size_t partnerIdx = idx
+        + (local2 - local1) * stride1   // reg1 gets local2
+        - (local2 - local1) * stride2;  // reg2 gets local1
+
+    cuDoubleComplex tmp = state[idx];
+    state[idx] = state[partnerIdx];
+    state[partnerIdx] = tmp;
+}
+
 // Apply phase based on position squared: exp(i*t*x^2)
 __global__ void kernelApplyOneModeQ2(cuDoubleComplex* state, size_t totalSize,
                                                     int regIdx,
@@ -1450,6 +1499,40 @@ void cvdvHadamard(CVDVContext* ctx, int regIdx, int qubitIdx) {
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 }
 
+void cvdvParity(CVDVContext* ctx, int regIdx) {
+    if (!ctx) return;
+    if (regIdx < 0 || regIdx >= ctx->gNumReg) {
+        fprintf(stderr, "Invalid register index: %d\n", regIdx);
+        return;
+    }
+
+    int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
+    kernelParity<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+                                            regIdx, ctx->gQbts, ctx->gFlwQbts);
+    checkCudaErrors(ctx, cudaGetLastError());
+    checkCudaErrors(ctx, cudaDeviceSynchronize());
+}
+
+void cvdvSwapRegisters(CVDVContext* ctx, int reg1, int reg2) {
+    if (!ctx) return;
+    if (reg1 < 0 || reg1 >= ctx->gNumReg || reg2 < 0 || reg2 >= ctx->gNumReg) {
+        fprintf(stderr, "Invalid register indices: %d, %d\n", reg1, reg2);
+        return;
+    }
+    if (ctx->gQbts[reg1] != ctx->gQbts[reg2]) {
+        fprintf(stderr, "SWAP requires registers with same number of qubits\n");
+        return;
+    }
+    if (reg1 == reg2) return;
+
+    int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
+    kernelSwapRegisters<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+                                                    reg1, reg2,
+                                                    ctx->gQbts, ctx->gFlwQbts);
+    checkCudaErrors(ctx, cudaGetLastError());
+    checkCudaErrors(ctx, cudaDeviceSynchronize());
+}
+
 void cvdvPhaseSquare(CVDVContext* ctx, int regIdx, double t) {
     if (!ctx) return;
     if (regIdx < 0 || regIdx >= ctx->gNumReg) {
@@ -1464,6 +1547,21 @@ void cvdvPhaseSquare(CVDVContext* ctx, int regIdx, double t) {
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 }
 
+// Internal: small-angle rotation |θ| ≤ π/4
+static void cvdvRotationSmall(CVDVContext* ctx, int regIdx, double theta) {
+    if (fabs(theta) < 1e-15) return;
+
+    // R(θ) = exp(-i/2 tan(θ/2) q^2) exp(-i/2 sin(θ) p^2) exp(-i/2 tan(θ/2) q^2)
+    double tanHalfTheta = tan(theta / 2.0);
+    double sinTheta = sin(theta);
+
+    cvdvPhaseSquare(ctx, regIdx, -0.5 * tanHalfTheta);
+    cvdvFtQ2P(ctx, regIdx);
+    cvdvPhaseSquare(ctx, regIdx, -0.5 * sinTheta);
+    cvdvFtP2Q(ctx, regIdx);
+    cvdvPhaseSquare(ctx, regIdx, -0.5 * tanHalfTheta);
+}
+
 void cvdvRotation(CVDVContext* ctx, int regIdx, double theta) {
     if (!ctx) return;
     if (regIdx < 0 || regIdx >= ctx->gNumReg) {
@@ -1471,20 +1569,29 @@ void cvdvRotation(CVDVContext* ctx, int regIdx, double theta) {
         return;
     }
 
-    // R(θ) = exp(-i/2 tan(θ/2) q^2) exp(-i/2 sin(θ) p^2) exp(-i/2 tan(θ/2) q^2)
-    double tanHalfTheta = tan(theta / 2.0);
-    double sinTheta = sin(theta);
+    // For |θ| > π/4, decompose R(θ) = R(θ₀) R(θ-θ₀)
+    // where θ₀ ∈ (π/2)Z is chosen so |θ-θ₀| ≤ π/4
+    // R(π/2) = FT, R(π) = Parity, R(-π/2) = FT†
 
-    // First: exp(-i/2 tan(θ/2) q^2) in position space
-    cvdvPhaseSquare(ctx, regIdx, -0.5 * tanHalfTheta);
+    // Find nearest multiple of π/2
+    double theta0 = round(theta / (PI / 2.0)) * (PI / 2.0);
+    double remainder = theta - theta0;
 
-    // Second: exp(-i/2 sin(θ) p^2) in momentum space
-    cvdvFtQ2P(ctx, regIdx);
-    cvdvPhaseSquare(ctx, regIdx, -0.5 * sinTheta);
-    cvdvFtP2Q(ctx, regIdx);
+    // Apply R(θ₀) for the integer-multiple part
+    // theta0 / (π/2) gives the number of quarter-turns
+    int quarterTurns = (int)round(theta0 / (PI / 2.0));
+    // Normalize to [0,4) since R(2π) = identity
+    quarterTurns = ((quarterTurns % 4) + 4) % 4;
 
-    // Third: exp(-i/2 tan(θ/2) q^2) in position space
-    cvdvPhaseSquare(ctx, regIdx, -0.5 * tanHalfTheta);
+    switch (quarterTurns) {
+        case 0: break;  // identity
+        case 1: cvdvFtQ2P(ctx, regIdx); break;          // R(π/2) = FT
+        case 2: cvdvParity(ctx, regIdx); break;          // R(π) = Parity
+        case 3: cvdvFtP2Q(ctx, regIdx); break;           // R(-π/2) = R(3π/2) = FT†
+    }
+
+    // Apply small-angle remainder
+    cvdvRotationSmall(ctx, regIdx, remainder);
 }
 
 void cvdvSqueezing(CVDVContext* ctx, int regIdx, double r) {
@@ -1517,6 +1624,40 @@ void cvdvSqueezing(CVDVContext* ctx, int regIdx, double r) {
     cvdvPhaseSquare(ctx, regIdx, 0.5 * t);
 }
 
+// Internal: small-angle beam splitter |θ| ≤ π/2
+static void cvdvBeamSplitterSmall(CVDVContext* ctx, int reg1, int reg2, double theta) {
+    if (fabs(theta) < 1e-15) return;
+
+    double coeff_q = -tan(0.25 * theta);
+    double coeff_p = -sin(0.5  * theta);
+
+    int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
+
+    kernelApplyTwoModeQQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+                                        reg1, reg2,
+                                        ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
+                                        coeff_q);
+    checkCudaErrors(ctx, cudaDeviceSynchronize());
+
+    cvdvFtQ2P(ctx, reg1);
+    cvdvFtQ2P(ctx, reg2);
+
+    kernelApplyTwoModeQQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+                                        reg1, reg2,
+                                        ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
+                                        coeff_p);
+    checkCudaErrors(ctx, cudaDeviceSynchronize());
+
+    cvdvFtP2Q(ctx, reg1);
+    cvdvFtP2Q(ctx, reg2);
+
+    kernelApplyTwoModeQQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+                                        reg1, reg2,
+                                        ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
+                                        coeff_q);
+    checkCudaErrors(ctx, cudaDeviceSynchronize());
+}
+
 void cvdvBeamSplitter(CVDVContext* ctx, int reg1, int reg2, double theta) {
     if (!ctx) return;
     if (reg1 < 0 || reg1 >= ctx->gNumReg || reg2 < 0 || reg2 >= ctx->gNumReg) {
@@ -1528,42 +1669,38 @@ void cvdvBeamSplitter(CVDVContext* ctx, int reg1, int reg2, double theta) {
         return;
     }
 
-    // BS(theta) = exp(-i*tan(theta/4)*q1*q2/2) * exp(-i*sin(theta/2)*p1*p2/2) * exp(-i*tan(theta/4)*q1*q2/2)
-    // where q and p are position and momentum operators
-    
-    double coeff_q = -tan(0.25 * theta);  // -tan(theta/4)/2
-    double coeff_p = -sin(0.5  * theta);     // -sin(theta/2)/2
-    
-    int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
-    
-    // First: exp(-i*tan(theta/4)*q1*q2/2)
-    kernelApplyTwoModeQQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
-                                        reg1, reg2,
-                                        ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
-                                        coeff_q);
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
-    
-    // Transform both registers to momentum basis
-    cvdvFtQ2P(ctx, reg1);
-    cvdvFtQ2P(ctx, reg2);
-    
-    // Second: exp(-i*sin(theta/2)*p1*p2/2) (applied in momentum basis, same kernel)
-    kernelApplyTwoModeQQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
-                                        reg1, reg2,
-                                        ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
-                                        coeff_p);
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
-    
-    // Transform back to position basis
-    cvdvFtP2Q(ctx, reg1);
-    cvdvFtP2Q(ctx, reg2);
-    
-    // Third: exp(-i*tan(theta/4)*q1*q2/2)
-    kernelApplyTwoModeQQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
-                                        reg1, reg2,
-                                        ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
-                                        coeff_q);
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    // For |θ| > π/2, decompose BS(θ) = BS(θ₀) BS(θ-θ₀)
+    // where θ₀ ∈ πZ is chosen so |θ-θ₀| ≤ π/2
+    // BS(π) = FT₁ FT₂ SWAP,  BS(2π) = Parity₁ Parity₂,  BS(-π) = FT₁† FT₂† SWAP
+
+    double theta0 = round(theta / PI) * PI;
+    double remainder = theta - theta0;
+
+    // Apply BS(θ₀) for the integer-multiple-of-π part
+    int halfTurns = (int)round(theta0 / PI);
+    // Normalize to [0,4) since BS(4π) = identity (BS(2π) = Par₁Par₂, applied twice = id)
+    halfTurns = ((halfTurns % 4) + 4) % 4;
+
+    switch (halfTurns) {
+        case 0: break;  // identity
+        case 1:  // BS(π) = FT₁ FT₂ SWAP
+            cvdvFtQ2P(ctx, reg1);
+            cvdvFtQ2P(ctx, reg2);
+            cvdvSwapRegisters(ctx, reg1, reg2);
+            break;
+        case 2:  // BS(2π) = Parity₁ Parity₂
+            cvdvParity(ctx, reg1);
+            cvdvParity(ctx, reg2);
+            break;
+        case 3:  // BS(-π) = BS(3π) = FT₁† FT₂† SWAP
+            cvdvFtP2Q(ctx, reg1);
+            cvdvFtP2Q(ctx, reg2);
+            cvdvSwapRegisters(ctx, reg1, reg2);
+            break;
+    }
+
+    // Apply small-angle remainder
+    cvdvBeamSplitterSmall(ctx, reg1, reg2, remainder);
 }
 
 void cvdvQ1Q2Gate(CVDVContext* ctx, int reg1, int reg2, double coeff) {

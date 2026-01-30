@@ -5,3 +5,4 @@ build/
 *.log
 *.md
 !README.md
+.ipynb_checkpoints/

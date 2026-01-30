@@ -5,7 +5,7 @@ set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
 # Set CUDA architectures - auto-detect or use common architectures
-set(CMAKE_CUDA_ARCHITECTURES 89)  # For compute capability 8.9
+set(CMAKE_CUDA_ARCHITECTURES native)
 
 find_package(CUDAToolkit REQUIRED)
 

@@ -2,7 +2,13 @@
 
 A high-performance CUDA library for simulating hybrid continuous-variable (CV) and discrete-variable (DV) quantum systems using position wave function encoding.
 
-> **Reference**: This project demonstrates classical simulation techniques from arXiv:xxxx.xxxxx (TODO), which establishes qubit circuits for simulating hybrid CV-DV processors. While the paper focuses on quantum simulation, this CUDA implementation shows the potential for efficient classical dense state vector simulation of hybrid systems.
+> **Reference**: This project demonstrates classical simulation techniques from **"Efficient Qubit Simulation of Hybrid Oscillator-Qubit Quantum Processors"** ([arXiv:xxxx.xxxxx](https://arxiv.org/abs/xxxx.xxxxx)), which establishes qubit circuits for simulating hybrid CV-DV processors. While the paper focuses on quantum simulation, this CUDA implementation shows the potential for efficient classical dense state vector simulation of hybrid systems.
+
+## Todo List
+
++ [ ] Test large rotation and beam splitter angles using FT, SWAP, Parity
++ [ ] Test bosonic QSP
++ [ ] More efficient Wigner function and Husimi Q function calculations by convolution
 
 ## Why Position Wave Function Encoding?
 
@@ -49,13 +55,23 @@ For CV operations, the position-space grid is automatically configured:
 
 ## Installation
 
-This codebase is only tested on linux with
+### Requirements
 
-- CUDA Toolkit 13.1
-- CMake 3.28.3
-- Python 3.12.3
+- CUDA Toolkit (tested with 13.1)
+- CMake >= 3.18
+- Python 3
 
-This compiles the CUDA library to `build/libcvdv.so`. The Python wrapper automatically rebuilds on import.
+GPU architecture defaults to `89` (Ada Lovelace). Override with `-DCMAKE_CUDA_ARCHITECTURES=XX` if using a different GPU. The Python wrapper automatically rebuilds on import.
+
+## Project Structure
+
+```
+src/cvdv.cu      # CUDA implementation (kernels + C API)
+interface.py     # Python ctypes wrapper (CVDV class)
+test.ipynb       # Core functionality tests
+CMakeLists.txt   # Build configuration
+run.sh           # Build script (creates build/libcvdv.so)
+```
 
 ## Usage
 
@@ -98,7 +114,7 @@ wigner = sim.getWignerSingleSlice(1, [-1], wignerN=201, wXMax=5, wPMax=5)
 | **CV Gates** | `displacement(α)` ($e^{\alpha\hat{a}^\dagger - \alpha^*\hat{a}}$), `squeeze(r)` ($e^{r(\hat{a}^2 - \hat{a}^{\dagger 2})/2}$), `rotation(θ)` ($e^{i\theta \hat{a}^\dagger \hat{a}}$), `sheer(t)` ($e^{it\hat{q}^2/2}$) |
 | **DV Gates** | `hadamard()` ($H$), `pauliRotation(axis, θ)` (axis=0,1,2: $R_x(\theta), R_y(\theta), R_z(\theta)$) |
 | **Hybrid** | `cd(α)` ($e^{Z(\alpha\hat{a}^\dagger - \alpha^*\hat{a})}$) |
-| **Two-Mode** | `beamSplitter(θ)`, `q1q2(coeff)` ($e^{i t \hat{q}_1 \hat{q}_2}$) |
+| **Two-Mode** | `beamSplitter(θ)`, `q1q2(coeff)` ($e^{i t \hat{q}_1 \hat{q}_2}$), `swapRegisters()` |
 | **Transforms** | `ftQ2P()`, `ftP2Q()` (Fourier transforms) |
 | **Measurement** | `measure()`, `jointMeasure()`, `getState()` |
 | **Visualization** | `getWignerSingleSlice()`, `getWignerFullMode()`, `getHusimiQFullMode()` |
@@ -108,8 +124,8 @@ wigner = sim.getWignerSingleSlice(1, [-1], wignerN=201, wXMax=5, wPMax=5)
 | Notebook | Description |
 |----------|-------------|
 | [test.ipynb](test.ipynb) | Core functionality: vacuum/coherent/Fock states, displacement, Fourier transforms, conditional displacement, Wigner function visualization |
-| [test_cvdv_transfer.ipynb](test_cvdv_transfer.ipynb) | CV-to-DV state transfer protocol (arXiv:2106.12272) |
-| [test_qcst.ipynb](test_qcst.ipynb) | Quantum coherent state transform (arXiv: 2412.12871) |
+| [test_cvdv_transfer.ipynb](test_cvdv_transfer.ipynb) | CV-to-DV state transfer protocol [arXiv:2106.12272](https://arxiv.org/abs/2106.12272) |
+| [test_qcst.ipynb](test_qcst.ipynb) | Quantum coherent state transform [arXiv: 2412.12871](https://arxiv.org/abs/2412.12871) |
 
 ## Debugging
 

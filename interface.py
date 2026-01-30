@@ -88,6 +88,14 @@ def load_library():
     lib.cvdvHadamard.argtypes = [ctypes.c_void_p, c_int, c_int]
     lib.cvdvHadamard.restype = None
 
+    # void cvdvParity(CVDVContext* ctx, int regIdx)
+    lib.cvdvParity.argtypes = [ctypes.c_void_p, c_int]
+    lib.cvdvParity.restype = None
+
+    # void cvdvSwapRegisters(CVDVContext* ctx, int reg1, int reg2)
+    lib.cvdvSwapRegisters.argtypes = [ctypes.c_void_p, c_int, c_int]
+    lib.cvdvSwapRegisters.restype = None
+
     # void cvdvPhaseSquare(CVDVContext* ctx, int regIdx, double t)
     lib.cvdvPhaseSquare.argtypes = [ctypes.c_void_p, c_int, c_double]
     lib.cvdvPhaseSquare.restype = None
@@ -334,6 +342,14 @@ class CVDV:
     def hadamard(self, regIdx, targetQubit):
         """Apply Hadamard gate to qubit in register."""
         lib.cvdvHadamard(self.ctx, regIdx, targetQubit)
+
+    def parity(self, regIdx):
+        """Apply parity gate: flips all qubits of a register (|j⟩ → |N-1-j⟩)."""
+        lib.cvdvParity(self.ctx, regIdx)
+
+    def swapRegisters(self, reg1, reg2):
+        """Swap the contents of two registers (must have same number of qubits)."""
+        lib.cvdvSwapRegisters(self.ctx, reg1, reg2)
 
     def sheer(self, regIdx, t):
         """Apply phase square gate: exp(i*t*q^2) in position space.
