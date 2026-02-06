@@ -171,7 +171,11 @@ def load_library():
     # void cvdvInnerProduct(CVDVContext* ctx, double* realOut, double* imagOut)
     lib.cvdvInnerProduct.argtypes = [ctypes.c_void_p, POINTER(c_double), POINTER(c_double)]
     lib.cvdvInnerProduct.restype = None
-    
+
+    # double cvdvGetNorm(CVDVContext* ctx)
+    lib.cvdvGetNorm.argtypes = [ctypes.c_void_p]
+    lib.cvdvGetNorm.restype = c_double
+
     print(f"Library loaded successfully!")
     print(f"Debug logs are written to: {os.path.join(project_dir, 'cuda.log')}")
     print("NOTE: Log file is cleared each time CVDV() is instantiated")
@@ -541,16 +545,16 @@ class CVDV:
     
     def innerProduct(self):
         """Compute inner product between current state and register tensor product.
-        
+
         Computes <current_state | register_tensor_product> where register_tensor_product
         is the tensor product of all register arrays (the state that would be created by
         calling initStateVector with the current register contents).
-        
+
         Useful for:
         - Verifying state initialization (should return 1.0 right after initStateVector)
         - Computing overlap between evolved state and initial state
         - Debugging and validation
-        
+
         Returns:
             complex: Inner product value
         """
@@ -558,7 +562,15 @@ class CVDV:
         imag_out = c_double(0.0)
         lib.cvdvInnerProduct(self.ctx, ctypes.byref(real_out), ctypes.byref(imag_out))
         return complex(real_out.value, imag_out.value)
-    
+
+    def getNorm(self):
+        """Compute norm of the state vector (sum of |state[i]|^2).
+
+        Returns:
+            float: Norm value (should be 1.0 for normalized states)
+        """
+        return lib.cvdvGetNorm(self.ctx)
+
     def info(self):
         """Print system information."""
         # Calculate VRAM usage (complex double = 16 bytes per element)

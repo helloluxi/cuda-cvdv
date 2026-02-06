@@ -1,4 +1,4 @@
-# CVDV: CUDA-Accelerated Hybrid CV-DV Quantum Simulator
+# CUDA-CVDV: CUDA-Accelerated Hybrid CV-DV Quantum Simulator
 
 A high-performance CUDA library for simulating hybrid continuous-variable (CV) and discrete-variable (DV) quantum systems using position wave function encoding.
 
@@ -7,8 +7,14 @@ A high-performance CUDA library for simulating hybrid continuous-variable (CV) a
 ## Todo List
 
 + [ ] Test large rotation and beam splitter angles using FT, SWAP, Parity
-+ [ ] Test bosonic QSP
++ [ ] Test Product Formula and QSP
++ [ ] Avoid for-loop FFT in CUDA kernel
 + [ ] More efficient Wigner function and Husimi Q function calculations by convolution
++ [ ] Add visual examples to README (Wigner function plots, architecture diagram)
++ [ ] Create unit test suite with pytest for core operations
++ [ ] Set up GitHub Actions CI/CD pipeline (auto-build + test on push)
++ [ ] Add performance benchmarks (timing, memory usage, GPU vs CPU comparison)
++ [ ] Add comparison table vs existing bosonic simulators
 
 ## Why Position Wave Function Encoding?
 
@@ -66,11 +72,19 @@ GPU architecture defaults to `89` (Ada Lovelace). Override with `-DCMAKE_CUDA_AR
 ## Project Structure
 
 ```
-src/cvdv.cu      # CUDA implementation (kernels + C API)
-interface.py     # Python ctypes wrapper (CVDV class)
-test.ipynb       # Core functionality tests
-CMakeLists.txt   # Build configuration
-run.sh           # Build script (creates build/libcvdv.so)
+src/
+  cvdv.cu              # CUDA implementation (kernels + C API)
+interface.py           # Python ctypes wrapper (CVDV class)
+tests/
+  test_core.py         # Automated test suite (pytest)
+examples/
+  cvdv_transfer.ipynb  # CV-DV state transfer demo
+  qcst.ipynb           # Quantum coherent state transform demo
+test.ipynb             # Interactive testing notebook
+CMakeLists.txt         # Build configuration
+Makefile               # Build & test commands
+run.sh                 # Build script (creates build/libcvdv.so)
+.pre-commit-config.yaml # Pre-commit hook configuration
 ```
 
 ## Usage
@@ -123,9 +137,44 @@ wigner = sim.getWignerSingleSlice(1, [-1], wignerN=201, wXMax=5, wPMax=5)
 
 | Notebook | Description |
 |----------|-------------|
-| [test.ipynb](test.ipynb) | Core functionality: vacuum/coherent/Fock states, displacement, Fourier transforms, conditional displacement, Wigner function visualization |
-| [test_cvdv_transfer.ipynb](test_cvdv_transfer.ipynb) | CV-to-DV state transfer protocol [arXiv:2106.12272](https://arxiv.org/abs/2106.12272) |
-| [test_qcst.ipynb](test_qcst.ipynb) | Quantum coherent state transform [arXiv: 2412.12871](https://arxiv.org/abs/2412.12871) |
+| [examples/cvdv_transfer.ipynb](examples/cvdv_transfer.ipynb) | CV-to-DV state transfer protocol [arXiv:2106.12272](https://arxiv.org/abs/2106.12272) |
+| [examples/qcst.ipynb](examples/qcst.ipynb) | Quantum coherent state transform [arXiv: 2412.12871](https://arxiv.org/abs/2412.12871) |
+
+## Testing
+
+This project uses **pytest** for automated testing. Tests require a CUDA-capable GPU.
+
+### Run Tests
+
+```bash
+make test          # Build CUDA library and run all tests
+make build         # Build CUDA library only
+make clean         # Remove build artifacts
+```
+
+### Pre-commit Hooks
+
+Install pre-commit hooks to automatically run tests before each commit:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+Now tests run automatically on every `git commit`!
+
+### Test Suite
+
+The test suite (`tests/test_core.py`) validates correctness using **inner product checks** between computed and theoretical states:
+
+- State initialization (vacuum, coherent, Fock)
+- CV operations (displacement, rotation, squeezing)
+- DV operations (Hadamard, Pauli rotations)
+- Hybrid operations (conditional displacement)
+- Multi-register systems (beam splitter)
+- Fourier transform reversibility
+- State normalization preservation
+
 
 ## Debugging
 

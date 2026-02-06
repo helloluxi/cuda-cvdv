@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cuda-cvdv"
+version = "0.1.0"
+description = "CUDA-accelerated Continuous Variable Discrete Variable quantum simulator"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "numpy",
+    "pytest",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v"
+
+[tool.pyright]
+include = ["src", "tests"]
+exclude = ["**/node_modules", "**/__pycache__", ".git", "build"]
+extraPaths = ["."]
+pythonVersion = "3.12"
+pythonPlatform = "Linux"
+typeCheckingMode = "basic"
+reportMissingImports = true
+reportMissingTypeStubs = false

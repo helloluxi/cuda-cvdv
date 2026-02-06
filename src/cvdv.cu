@@ -80,9 +80,9 @@ typedef struct {
 
 #pragma region Device Helper Functions
 
-// Position value at grid index: x_i = (i - cvDim/2) * dx
+// Position value at grid index: x_i = (i - (cvDim - 1)/2) * dx
 __device__ __host__ inline double gridX(int idx, int cvDim, double dx) {
-    return (idx - cvDim / 2) * dx;
+    return (idx - (cvDim - 1) * 0.5) * dx;
 }
 
 // Convert phase to complex exponential: e^{i*phase}
@@ -154,7 +154,7 @@ __global__ void kernelSetFock(cuDoubleComplex* state, int cvDim, double dx, int 
     // psi_0(x) = exp(-x^2/2) / pi^(1/4) * sqrt(dx)
     // psi_n(x) = sqrt(2/n) * x * psi_{n-1}(x) - sqrt((n-1)/n) * psi_{n-2}(x)
     double psiPrev = 0.0;
-    double psiCurr = exp(-x * x / 2.0) * PI_POW_NEG_QUARTER * sqrt(dx);
+    double psiCurr = exp(-0.5 * x * x) * PI_POW_NEG_QUARTER * sqrt(dx);
 
     for (int k = 1; k <= n; k++) {
         double psiNext = sqrt(2.0 / k) * x * psiCurr - sqrt((k - 1.0) / k) * psiPrev;
@@ -177,7 +177,7 @@ __global__ void kernelSetFocks(cuDoubleComplex* state, int cvDim, double dx,
     cuDoubleComplex result = make_cuDoubleComplex(0.0, 0.0);
     
     double psiPrev = 0.0;
-    double psiCurr = exp(-x * x / 2.0) * PI_POW_NEG_QUARTER * sqrt(dx);
+    double psiCurr = exp(-0.5 * x * x) * PI_POW_NEG_QUARTER * sqrt(dx);
     
     for (int n = 0; n < length; n++) {
         if (n > 0) {
@@ -700,6 +700,37 @@ __global__ void kernelComputeJointMeasure(double* outJointProb, const cuDoubleCo
     outJointProb[pairIdx] = prob;
 }
 
+// Kernel to compute norm (sum of |state[i]|^2)
+__global__ void kernelComputeNorm(double* partialSums, const cuDoubleComplex* state, size_t totalSize) {
+    // Shared memory for reduction within block
+    extern __shared__ double sdataNorm[];
+
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    double localSum = 0.0;
+
+    // Grid-stride loop
+    for (size_t globalIdx = idx; globalIdx < totalSize; globalIdx += blockDim.x * gridDim.x) {
+        localSum += absSquare(state[globalIdx]);
+    }
+
+    // Store in shared memory
+    sdataNorm[threadIdx.x] = localSum;
+    __syncthreads();
+
+    // Reduce within block
+    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            sdataNorm[threadIdx.x] += sdataNorm[threadIdx.x + s];
+        }
+        __syncthreads();
+    }
+
+    // Write block result
+    if (threadIdx.x == 0) {
+        partialSums[blockIdx.x] = sdataNorm[0];
+    }
+}
+
 // Kernel to compute tensor product element and its contribution to inner product
 // Each thread computes one element of the tensor product and accumulates <current_state | tensor_product>
 __global__ void kernelComputeInnerProduct(cuDoubleComplex* partialSums, const cuDoubleComplex* state,
@@ -1174,8 +1205,6 @@ void cvdvFtQ2P(CVDVContext* ctx, int regIdx) {
 
     size_t totalSize = 1 << ctx->gTotalQbt;
     int grid = (totalSize + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
-
-    // Get register dimension and dx from managed memory (direct CPU access)
     size_t regDim = 1 << ctx->gQbts[regIdx];
     double dx = ctx->gGridSteps[regIdx];
 
@@ -1291,8 +1320,6 @@ void cvdvFtP2Q(CVDVContext* ctx, int regIdx) {
     // 4. Normalization: 1/√N
 
     int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
-
-    // Get register dimension and dx from managed memory (direct CPU access)
     size_t regDim = 1 << ctx->gQbts[regIdx];
     double dx = ctx->gGridSteps[regIdx];
 
@@ -2045,6 +2072,48 @@ void cvdvInnerProduct(CVDVContext* ctx, double* realOut, double* imagOut) {
     checkCudaErrors(ctx, cudaFree(dRegArrayPtrs));
 
     logInfo(ctx, "Inner product: (%.10f, %.10f)", *realOut, *imagOut);
+}
+
+double cvdvGetNorm(CVDVContext* ctx) {
+    if (!ctx) return 0.0;
+    if (ctx->dState == nullptr) {
+        logError(ctx, "State not initialized");
+        return 0.0;
+    }
+
+    logInfo(ctx, "Computing state norm");
+
+    // Allocate partial sums for reduction
+    size_t totalSize = 1 << ctx->gTotalQbt;
+    int numBlocks = (totalSize + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
+    numBlocks = min(numBlocks, 1024);  // Cap at 1024 blocks
+
+    double* dPartialSums;
+    checkCudaErrors(ctx, cudaMalloc(&dPartialSums, numBlocks * sizeof(double)));
+
+    // Launch kernel with shared memory for reduction
+    size_t sharedMemSize = CUDA_BLOCK_SIZE * sizeof(double);
+    kernelComputeNorm<<<numBlocks, CUDA_BLOCK_SIZE, sharedMemSize>>>(
+        dPartialSums, ctx->dState, totalSize);
+    checkCudaErrors(ctx, cudaGetLastError());
+    checkCudaErrors(ctx, cudaDeviceSynchronize());
+
+    // Download partial sums and reduce on host
+    double* hPartialSums = new double[numBlocks];
+    checkCudaErrors(ctx, cudaMemcpy(hPartialSums, dPartialSums,
+                               numBlocks * sizeof(double), cudaMemcpyDeviceToHost));
+
+    double result = 0.0;
+    for (int i = 0; i < numBlocks; i++) {
+        result += hPartialSums[i];
+    }
+
+    // Cleanup
+    delete[] hPartialSums;
+    checkCudaErrors(ctx, cudaFree(dPartialSums));
+
+    logInfo(ctx, "Norm: %.10f", result);
+    return result;
 }
 
 #pragma endregion

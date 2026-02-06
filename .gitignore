@@ -1,8 +1,65 @@
-.vscode/
-.claude/
+# Python
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
 build/
-*.log
-*.md
-!README.md
+.pytest_cache/
+.coverage
+htmlcov/
+*.pyo
+
+# Jupyter Notebook
 .ipynb_checkpoints/
+
+# CUDA/C++ Build Artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile.generated
+*.ptx
+*.cubin
+
+# IDE and Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# AI Assistant Files
+.claude/
+.ai
+.memory/
+.agent/
+.github/copilot-instructions.md
+
+# Logs and Temporary Files
+*.log
+*.tmp
+*.temp
+*.bak
+
+# Personal Notes (keep project docs)
+todo.md
+CLAUDE.md
+notes.md
+scratch.md
+
+# Environment
+.env
+.venv/
+venv/
+ENV/

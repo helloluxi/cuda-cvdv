@@ -1,0 +1,20 @@
+{
+    "include": [
+        "src",
+        "tests"
+    ],
+    "exclude": [
+        "**/node_modules",
+        "**/__pycache__",
+        ".git",
+        "build"
+    ],
+    "extraPaths": [
+        "."
+    ],
+    "pythonVersion": "3.12",
+    "pythonPlatform": "Linux",
+    "typeCheckingMode": "basic",
+    "reportMissingImports": true,
+    "reportMissingTypeStubs": false
+}

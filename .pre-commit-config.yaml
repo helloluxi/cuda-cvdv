@@ -1,0 +1,18 @@
+repos:
+  - repo: local
+    hooks:
+      - id: cuda-build
+        name: Build CUDA Library
+        entry: bash run.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+        verbose: true
+      
+      - id: pytest-tests
+        name: Run Unit Tests
+        entry: pytest tests/ -v
+        language: system
+        pass_filenames: false
+        always_run: true
+        verbose: true
