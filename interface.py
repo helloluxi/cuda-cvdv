@@ -9,6 +9,11 @@ import subprocess
 import os
 from numpy import pi, sqrt
 
+import matplotlib.pyplot as plt
+import scienceplots
+plt.style.use(['science', 'grid'])
+plt.rcParams.update({'font.size': 18, 'text.usetex': True})
+
 # Get project paths
 project_dir = os.path.dirname(os.path.abspath(__file__))
 build_dir = os.path.join(project_dir, 'build')
@@ -583,3 +588,29 @@ class CVDV:
             x_bound = sqrt(2 * pi * dim)
             print(f"  Register {i}: dim={dim}, "
                   f"qubits={self.qubit_counts[i]}, dx={dx:.6f}, x_bound={x_bound:.6f}")
+    
+    def plot_wigner(self, regIdx, slice_indices=None, wignerN=201, wignerMax=5.0, 
+                    cmap='RdBu', figsize=(7, 6), show=True):
+        """Plot Wigner function for a register."""
+        # Get Wigner function
+        if slice_indices is not None:
+            wigner = self.getWignerSingleSlice(regIdx, slice_indices, 
+                                              wignerN=wignerN, wXMax=wignerMax, wPMax=wignerMax)
+        else:
+            wigner = self.getWignerFullMode(regIdx, wignerN=wignerN, 
+                                           wXMax=wignerMax, wPMax=wignerMax)
+        
+        # Create plot
+        fig, ax = plt.subplots(figsize=figsize)
+        vmax = np.max(np.abs(wigner))
+        im = ax.imshow(wigner, extent=[-wignerMax, wignerMax, -wignerMax, wignerMax],
+                      origin='lower', cmap=cmap, vmin=-vmax, vmax=vmax, aspect='equal')
+        ax.set_xlabel(r'$q$')
+        ax.set_ylabel(r'$p$')
+        plt.colorbar(im, ax=ax)
+        plt.tight_layout()
+        
+        if show:
+            plt.show()
+        
+        return fig, ax

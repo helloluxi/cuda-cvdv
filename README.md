@@ -6,15 +6,11 @@ A high-performance CUDA library for simulating hybrid continuous-variable (CV) a
 
 ## Todo List
 
-+ [ ] Test large rotation and beam splitter angles using FT, SWAP, Parity
-+ [ ] Test Product Formula and QSP
-+ [ ] Avoid for-loop FFT in CUDA kernel
-+ [ ] More efficient Wigner function and Husimi Q function calculations by convolution
++ [ ] Add example for Product Formula and QSP
++ [ ] More efficient FFT, Wigner function and Husimi Q function calculations by convolution
 + [ ] Add visual examples to README (Wigner function plots, architecture diagram)
-+ [ ] Create unit test suite with pytest for core operations
-+ [ ] Set up GitHub Actions CI/CD pipeline (auto-build + test on push)
-+ [ ] Add performance benchmarks (timing, memory usage, GPU vs CPU comparison)
-+ [ ] Add comparison table vs existing bosonic simulators
++ [x] Create unit test suite with pytest for core operations
++ [ ] Add performance benchmarks (timing, memory usage, GPU vs CPU comparison) + comparison table vs existing bosonic simulators
 
 ## Why Position Wave Function Encoding?
 
