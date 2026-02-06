@@ -1,0 +1,6 @@
+# CUDA-CVDV - Production Requirements
+# Minimal dependencies for running the simulator
+
+numpy
+matplotlib
+scienceplots

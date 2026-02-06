@@ -134,7 +134,7 @@ __global__ void kernelSetCoherent(cuDoubleComplex* state, int cvDim, double dx,
     double p = SQRT2 * alphaIm;
 
     double norm = PI_POW_NEG_QUARTER;
-    double gauss = exp(-(x - q) * (x - q) / 2.0);
+    double gauss = exp(-0.5 * (x - q) * (x - q));
     double phase = p * x - p * q / 2.0;
 
     cuDoubleComplex phaseFactor = phaseToZ(phase);

@@ -58,6 +58,11 @@ CLAUDE.md
 notes.md
 scratch.md
 
+# Benchmark results (keep reference plots/data, exclude temporary runs)
+benchmarks/results/*_temp.*
+benchmarks/results/*_debug.*
+benchmarks/results/test_*
+
 # Environment
 .env
 .venv/

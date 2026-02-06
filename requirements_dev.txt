@@ -1,0 +1,22 @@
+# CUDA-CVDV - Development Requirements
+# Includes testing, benchmarking, and development tools
+
+# Base requirements
+-r requirements.txt
+
+# Testing
+pytest
+pytest-cov
+
+# Code quality
+black
+ruff
+mypy
+
+# Jupyter notebooks
+jupyter
+ipykernel
+notebook
+
+# Benchmarking
+bosonic-qiskit

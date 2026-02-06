@@ -12,6 +12,40 @@ A high-performance CUDA library for simulating hybrid continuous-variable (CV) a
 + [x] Create unit test suite with pytest for core operations
 + [ ] Add performance benchmarks (timing, memory usage, GPU vs CPU comparison) + comparison table vs existing bosonic simulators
 
+
+## Benchmarks
+
+Compare CUDA-CVDV (GPU, position encoding) with bosonic-qiskit (CPU, Fock basis) in the task of **CV-to-DV state transfer** [Phys. Rev. Lett. 128, 110503 (2022)](https://link.aps.org/doi/10.1103/PhysRevLett.128.110503) with 4 qubits and 1 qumode.
+
+```bash
+cd benchmarks
+./run.sh
+```
+
+### Performance Results
+
+While Bosonic-Qiskit struggles to run beyond CV dimension 128 (7 qubits) due to dense matrix operations, CVDV efficiently simulates up to CV dimension 16384 (14 qubits) on GPU with 50x speed than bosonic-qiskit with CV dimension 128 (7 qubits).
+The speedup comes from both the efficiency of simulation algorithm based on position encoding and its natural compatibility with GPU parallelism.
+
+![Performance Comparison](benchmarks/results/comparison.png)
+
+*Benchmark: CV-to-DV state transfer (4 DV qubits) with varying CV dimension. CVDV uses position encoding on GPU, bosonic-qiskit uses Fock basis on CPU. Tested on NVIDIA RTX 4070 Laptop GPU.*
+
+To do: estimate truncation error caused by simulation.
+
+### State Visualization Example
+
+The benchmarks also generate state visualizations showing DV probability distributions and CV Wigner functions:
+
+| Initial State | Final State |
+|:-------------:|:-----------:|
+| ![Initial State](benchmarks/results/cvdv_initial_state.png) | ![Final State](benchmarks/results/cvdv_final_state.png) |
+
+*Example: CV-to-DV state transfer protocol. Left: Initial |+⟩⊗4 ⊗ |α=1⟩ state. Right: Encoded state after transfer circuit showing CV displaced to vacuum and DV register encoding the original CV state.*
+
+Results saved to `benchmarks/results/` with timing data in JSON format (`benchmark_results.json`) and visualization plots.
+
+
 ## Why Position Wave Function Encoding?
 
 ### The Problem with Fock Basis
@@ -170,7 +204,6 @@ The test suite (`tests/test_core.py`) validates correctness using **inner produc
 - Multi-register systems (beam splitter)
 - Fourier transform reversibility
 - State normalization preservation
-
 
 ## Debugging
 

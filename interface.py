@@ -11,7 +11,7 @@ from numpy import pi, sqrt
 
 import matplotlib.pyplot as plt
 import scienceplots
-plt.style.use(['science', 'grid'])
+plt.style.use(['science'])
 plt.rcParams.update({'font.size': 18, 'text.usetex': True})
 
 # Get project paths
