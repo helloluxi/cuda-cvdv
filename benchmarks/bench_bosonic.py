@@ -54,18 +54,22 @@ def run_bosonic_transfer_experiment(n_dv_qubits=4, cv_cutoff=64, lam=0.29, retur
 
     # Initialize CV register to cat state (|α=0⟩ + |α=2.0⟩)
     # Use numerically robust recurrence relation: c_n = α/√n · c_{n-1}
-    alpha = 2.0
-    cat_state = np.zeros(actual_cutoff, dtype=np.complex128)
+    alpha0 = -1.0
+    alpha1 = 2.0
+    cat0 = np.zeros(actual_cutoff, dtype=np.complex128)
+    cat1 = np.zeros(actual_cutoff, dtype=np.complex128)
     
     # Initialize n=0 term
-    cat_state[0] = np.exp(-abs(alpha)**2/2)
+    cat0[0] = np.exp(-abs(alpha0)**2/2)
+    cat1[0] = np.exp(-abs(alpha1)**2/2)
     for n in range(1, actual_cutoff):
-        cat_state[n] = cat_state[n-1] * alpha / np.sqrt(n)
+        cat0[n] = cat0[n-1] * alpha0 / np.sqrt(n)
+        cat1[n] = cat1[n-1] * alpha1 / np.sqrt(n)
     
     # Form cat state and normalize
-    cat_state[0] += 1
-    cat_state = cat_state / np.linalg.norm(cat_state)
-    circuit.cv_initialize(cat_state, cv_reg[0])
+    cat = cat0 + cat1
+    cat = cat / np.linalg.norm(cat)
+    circuit.cv_initialize(cat, cv_reg[0])
     
     # Capture initial state if plots are requested
     if return_plots:

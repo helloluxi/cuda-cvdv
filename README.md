@@ -13,37 +13,45 @@ A high-performance CUDA library for simulating hybrid continuous-variable (CV) a
 + [ ] Add performance benchmarks (timing, memory usage, GPU vs CPU comparison) + comparison table vs existing bosonic simulators
 
 
-## Benchmarks
+## Benchmarks: CV-to-DV State Transfer
 
-Compare CUDA-CVDV (GPU, position encoding) with bosonic-qiskit (CPU, Fock basis) in the task of **CV-to-DV state transfer** [Phys. Rev. Lett. 128, 110503 (2022)](https://link.aps.org/doi/10.1103/PhysRevLett.128.110503) with 4 qubits and 1 qumode.
+The position encoding approach naturally enables **universal transfer of CV modes into qubits**, where the position wave function coefficients $\psi(q_j)$ are directly encoded into the qubit register amplitudes. This capability is demonstrated through the **CV-to-DV state transfer protocol** [Phys. Rev. Lett. 128, 110503 (2022)](https://link.aps.org/doi/10.1103/PhysRevLett.128.110503).
 
-```bash
-cd benchmarks
-./run.sh
-```
+**How it works**: The algorithm transfers a CV state's position-space representation into a discrete qubit register:
+$$|\psi\rangle_{\text{CV}} = \sum_j \psi(q_j) |j\rangle \xrightarrow{\text{transfer}} \sum_j \psi(q_j) |j\rangle_{\text{DV}}$$
 
-### Performance Results
+The position wave function coefficients become the computational basis amplitudes of qubits, making this operation natural for position encoding but challenging for Fock-basis simulators.
 
-While Bosonic-Qiskit struggles to run beyond CV dimension 128 (7 qubits) due to dense matrix operations, CVDV efficiently simulates up to CV dimension 16384 (14 qubits) on GPU with 50x speed than bosonic-qiskit with CV dimension 128 (7 qubits).
-The speedup comes from both the efficiency of simulation algorithm based on position encoding and its natural compatibility with GPU parallelism.
+### Performance Comparison
+
+The benchmark compares CVDV (GPU, position encoding) against bosonic-qiskit (CPU, Fock basis) across varying CV dimensions:
 
 ![Performance Comparison](benchmarks/results/comparison.png)
 
-*Benchmark: CV-to-DV state transfer (4 DV qubits) with varying CV dimension. CVDV uses position encoding on GPU, bosonic-qiskit uses Fock basis on CPU. Tested on NVIDIA RTX 4070 Laptop GPU.*
+*Performance scaling with CV dimension. CVDV efficiently simulates up to dimension 16384 (14 qubits) on GPU with 50× speedup over bosonic-qiskit at dimension 128 (7 qubits). Bosonic-qiskit cannot scale beyond dimension 128 due to dense matrix operations. Tested on NVIDIA RTX 4070 Laptop GPU.*
 
-To do: estimate truncation error caused by simulation.
+**Key Insight**: The exponential advantage comes from both the algorithm's efficiency (position encoding eliminates dense matrices) and GPU parallelism (independent grid point operations).
 
-### State Visualization Example
+### Run Benchmarks
 
-The benchmarks also generate state visualizations showing DV probability distributions and CV Wigner functions:
+```bash
+./benchmarks/run.sh
+```
 
-| Initial State | Final State |
-|:-------------:|:-----------:|
-| ![Initial State](benchmarks/results/cvdv_initial_state.png) | ![Final State](benchmarks/results/cvdv_final_state.png) |
+Results saved to `benchmarks/results/` with timing data (`benchmark_results.json`) and visualization plots.
 
-*Example: CV-to-DV state transfer protocol. Left: Initial |+⟩⊗4 ⊗ |α=1⟩ state. Right: Encoded state after transfer circuit showing CV displaced to vacuum and DV register encoding the original CV state.*
+### Visualization
 
-Results saved to `benchmarks/results/` with timing data in JSON format (`benchmark_results.json`) and visualization plots.
+The benchmark demonstrates transferring a cat state from a CV mode to a 4-qubit register:
+
+**Initial State**
+
+![Initial State](benchmarks/results/cvdv_initial_state.png)
+
+**Final State**
+
+![Final State](benchmarks/results/cvdv_final_state.png)
+
 
 
 ## Why Position Wave Function Encoding?

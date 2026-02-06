@@ -31,19 +31,20 @@ def run_cvdv_transfer_experiment(n_dv_qubits=4, cv_qubits=12, lam=0.29, return_p
         dict: Contains 'time' and optionally 'plots' with initial/final state data
     """
     t_start = time.perf_counter()
-    alpha = 2.0
+    cat0_center = -1.0 * sqrt(2)
+    cat1_center = 2.0 * sqrt(2)
+    dim = 1<<cv_qubits
+    dx = sqrt(2*pi/dim)
+    x = (np.arange(dim)-0.5*(dim-1)) * dx
+    cat0 = np.exp(-(x-cat0_center)**2/2)
+    cat1 = np.exp(-(x-cat1_center)**2/2)
+    cat = cat0 + cat1
+    cat = cat / np.linalg.norm(cat)
     
     # Capture initial state if plots are requested
     if return_plots:
         sim_initial = CVDV([n_dv_qubits, cv_qubits])
         sim_initial.setUniform(0)
-        dim = 1<<cv_qubits
-        dx = sqrt(2*pi/dim)
-        x = (np.arange(dim)-0.5*(dim-1)) * dx
-        cat0 = np.exp(-x**2/2)
-        cat1 = np.exp(-(x-alpha*sqrt(2))**2/2)
-        cat = cat0 + cat1
-        cat = cat / np.linalg.norm(cat)
         sim_initial.setCoeffs(1, cat)
         sim_initial.initStateVector()
         probs_dv_initial = sim_initial.measure(0)
@@ -52,14 +53,6 @@ def run_cvdv_transfer_experiment(n_dv_qubits=4, cv_qubits=12, lam=0.29, return_p
     # Initialize system
     sim = CVDV([n_dv_qubits, cv_qubits])
     sim.setUniform(0)
-    
-    dim = 1<<cv_qubits
-    dx = sqrt(2*pi/dim)
-    x = (np.arange(dim)-0.5*(dim-1)) * dx
-    cat0 = np.exp(-x**2/2)
-    cat1 = np.exp(-(x-alpha*sqrt(2))**2/2)
-    cat = cat0 + cat1
-    cat = cat / np.linalg.norm(cat)  # Normalize
     sim.setCoeffs(1, cat)
     
     sim.initStateVector()
