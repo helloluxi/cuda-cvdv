@@ -6,11 +6,11 @@ A high-performance CUDA library for simulating hybrid continuous-variable (CV) a
 
 ## Todo List
 
-+ [ ] Add example for Product Formula and QSP
-+ [ ] More efficient FFT, Wigner function and Husimi Q function calculations by convolution
-+ [ ] Add visual examples to README (Wigner function plots, architecture diagram)
++ [ ] Add example notebooks for Product Formula and QSP
++ [ ] Implement more efficient CUDA kernels for FFT, Wigner function and Husimi Q function
++ [x] Add visual examples to README (Wigner function plots, architecture diagram)
 + [x] Create unit test suite with pytest for core operations
-+ [ ] Add performance benchmarks (timing, memory usage, GPU vs CPU comparison) + comparison table vs existing bosonic simulators
++ [x] Add performance benchmarks (timing, memory usage, GPU vs CPU comparison) + comparison table vs existing bosonic simulators
 
 
 ## Benchmarks: CV-to-DV State Transfer
@@ -18,19 +18,17 @@ A high-performance CUDA library for simulating hybrid continuous-variable (CV) a
 The position encoding approach naturally enables **universal transfer of CV modes into qubits**, where the position wave function coefficients $\psi(q_j)$ are directly encoded into the qubit register amplitudes. This capability is demonstrated through the **CV-to-DV state transfer protocol** [Phys. Rev. Lett. 128, 110503 (2022)](https://link.aps.org/doi/10.1103/PhysRevLett.128.110503).
 
 **How it works**: The algorithm transfers a CV state's position-space representation into a discrete qubit register:
-$$|\psi\rangle_{\text{CV}} = \sum_j \psi(q_j) |j\rangle \xrightarrow{\text{transfer}} \sum_j \psi(q_j) |j\rangle_{\text{DV}}$$
+$$|\psi\rangle_{\text{CV}} = \int \psi(q) |q\rangle \, dq \mapsto \sqrt{\lambda} \sum_{j=0}^{N-1} \psi(\lambda\tilde{j}) |j\rangle_{\text{DV}},$$
 
-The position wave function coefficients become the computational basis amplitudes of qubits, making this operation natural for position encoding but challenging for Fock-basis simulators.
+where $\lambda = \sqrt{2\pi/N}$ is the grid spacing and $\tilde{j} = j - (N-1)/2$ is the shifted index.
 
-### Performance Comparison
+### Performance Comparison (Tested on NVIDIA RTX 4070 Laptop GPU)
 
-The benchmark compares CVDV (GPU, position encoding) against bosonic-qiskit (CPU, Fock basis) across varying CV dimensions:
+The benchmark compares CUDA-CVDV (GPU, position encoding) against bosonic-qiskit (CPU, Fock basis) across varying CV dimensions:
 
 ![Performance Comparison](benchmarks/results/comparison.png)
 
-*Performance scaling with CV dimension. CVDV efficiently simulates up to dimension 16384 (14 qubits) on GPU with 50× speedup over bosonic-qiskit at dimension 128 (7 qubits). Bosonic-qiskit cannot scale beyond dimension 128 due to dense matrix operations. Tested on NVIDIA RTX 4070 Laptop GPU.*
-
-**Key Insight**: The exponential advantage comes from both the algorithm's efficiency (position encoding eliminates dense matrices) and GPU parallelism (independent grid point operations).
+*Performance scaling with CV dimension. CUDA-CVDV efficiently simulates up to dimension **16384** (14 qubits) on GPU with **50×** speedup over bosonic-qiskit at dimension **128** (7 qubits). Bosonic-qiskit's runtime scales up significantly beyond dimension 128 due to dense matrix operations.*
 
 ### Run Benchmarks
 
@@ -79,7 +77,7 @@ This encoding offers:
 
 ### Register-Based Architecture
 
-CVDV uses a unified **register abstraction** where all quantum systems are discrete registers with dimension $2^n$:
+CUDA-CVDV uses a unified **register abstraction** where all quantum systems are discrete registers with dimension $2^n$:
 
 ```
 Register 0: 2^numQubits[0] levels
