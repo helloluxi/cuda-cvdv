@@ -76,7 +76,11 @@ def load_library():
     # void cvdvSetCoeffs(CVDVContext* ctx, int regIdx, double* coeffs, int length)
     lib.cvdvSetCoeffs.argtypes = [ctypes.c_void_p, c_int, POINTER(c_double), c_int]
     lib.cvdvSetCoeffs.restype = None
-    
+
+    # void cvdvSetCat(CVDVContext* ctx, int regIdx, double* data, int length)
+    lib.cvdvSetCat.argtypes = [ctypes.c_void_p, c_int, POINTER(c_double), c_int]
+    lib.cvdvSetCat.restype = None
+
     # void cvdvDisplacement(CVDVContext* ctx, int regIdx, double betaRe, double betaIm)
     lib.cvdvDisplacement.argtypes = [ctypes.c_void_p, c_int, c_double, c_double]
     lib.cvdvDisplacement.restype = None
@@ -302,7 +306,7 @@ class CVDV:
     
     def setCoeffs(self, regIdx, coeffs):
         """Set register to arbitrary coefficient array directly.
-        
+
         Args:
             regIdx: Register index
             coeffs: Array of complex coefficients (must match register dimension)
@@ -316,7 +320,35 @@ class CVDV:
         lib.cvdvSetCoeffs(self.ctx, regIdx,
                           coeffs_interleaved.ctypes.data_as(POINTER(c_double)),
                           len(coeffs))
-    
+
+    def setCat(self, regIdx, cat_states):
+        """Set register to cat state (superposition of coherent states) and normalize.
+
+        Args:
+            regIdx: Register index
+            cat_states: List of tuples [(alpha0, coeff0), (alpha1, coeff1), ...]
+                       where alpha_i are complex coherent state amplitudes
+                       and coeff_i are complex coefficients.
+                       State will be normalized: (c0|α0⟩ + c1|α1⟩ + ...) / norm
+
+        Example:
+            # Create cat state: (|α⟩ + |-α⟩) / √2
+            sim.setCat(0, [(2.0, 1.0), (-2.0, 1.0)])
+        """
+        cat_states = [(complex(alpha), complex(coeff)) for alpha, coeff in cat_states]
+
+        # Interleave: [alphaRe, alphaIm, coeffRe, coeffIm, ...]
+        data = np.empty(4 * len(cat_states), dtype=np.float64)
+        for i, (alpha, coeff) in enumerate(cat_states):
+            data[4*i] = alpha.real
+            data[4*i+1] = alpha.imag
+            data[4*i+2] = coeff.real
+            data[4*i+3] = coeff.imag
+
+        lib.cvdvSetCat(self.ctx, regIdx,
+                       data.ctypes.data_as(POINTER(c_double)),
+                       len(cat_states))
+
     def displacement(self, regIdx, beta):
         """Apply displacement operator D(β) to register."""
         if isinstance(beta, (int, float)):

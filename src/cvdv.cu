@@ -170,27 +170,107 @@ __global__ void kernelSetFocks(cuDoubleComplex* state, int cvDim, double dx,
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= cvDim) return;
     double x = gridX(idx, cvDim, dx);
-    
+
     // Fock state superposition using normalized Hermite function recurrence:
     // psi_0(x) = exp(-x^2/2) / pi^(1/4) * sqrt(dx)
     // psi_n(x) = sqrt(2/n) * x * psi_{n-1}(x) - sqrt((n-1)/n) * psi_{n-2}(x)
     cuDoubleComplex result = make_cuDoubleComplex(0.0, 0.0);
-    
+
     double psiPrev = 0.0;
     double psiCurr = exp(-0.5 * x * x) * PI_POW_NEG_QUARTER * sqrt(dx);
-    
+
     for (int n = 0; n < length; n++) {
         if (n > 0) {
             double psiNext = sqrt(2.0 / n) * x * psiCurr - sqrt((n - 1.0) / n) * psiPrev;
             psiPrev = psiCurr;
             psiCurr = psiNext;
         }
-        
+
         // Add coefficient * |n>
         cuDoubleComplex term = cuCmul(coeffs[n], make_cuDoubleComplex(psiCurr, 0.0));
         result = cuCadd(result, term);
     }
     state[idx] = result;
+}
+
+// Cat state: superposition of coherent states
+// Takes array of [alpha_i, coeff_i] pairs
+__global__ void kernelSetCat(cuDoubleComplex* state, int cvDim, double dx,
+                              const cuDoubleComplex* alphas, const cuDoubleComplex* coeffs, int length) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= cvDim) return;
+
+    double x = gridX(idx, cvDim, dx);
+    cuDoubleComplex result = make_cuDoubleComplex(0.0, 0.0);
+
+    // Compute superposition of coherent states: sum_i coeff_i * |alpha_i>
+    for (int i = 0; i < length; i++) {
+        double alphaRe = cuCreal(alphas[i]);
+        double alphaIm = cuCimag(alphas[i]);
+
+        // Coherent state |alpha> in position representation
+        // q = sqrt(2) * Re(alpha), p = sqrt(2) * Im(alpha)
+        double q = SQRT2 * alphaRe;
+        double p = SQRT2 * alphaIm;
+
+        double norm = PI_POW_NEG_QUARTER;
+        double gauss = exp(-0.5 * (x - q) * (x - q));
+        double phase = p * x - p * q / 2.0;
+
+        cuDoubleComplex phaseFactor = phaseToZ(phase);
+        double amplitude = norm * gauss * sqrt(dx);
+
+        cuDoubleComplex coherentState = make_cuDoubleComplex(
+            amplitude * cuCreal(phaseFactor),
+            amplitude * cuCimag(phaseFactor)
+        );
+
+        // Add coeff_i * |alpha_i>
+        result = cuCadd(result, cuCmul(coeffs[i], coherentState));
+    }
+
+    state[idx] = result;
+}
+
+// Compute norm for a single register array (reduction within block)
+__global__ void kernelComputeRegisterNorm(double* partialSums, const cuDoubleComplex* state, int cvDim) {
+    extern __shared__ double sdataReg[];
+
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    double localSum = 0.0;
+
+    // Grid-stride loop
+    for (int i = idx; i < cvDim; i += blockDim.x * gridDim.x) {
+        localSum += absSquare(state[i]);
+    }
+
+    // Store in shared memory
+    sdataReg[threadIdx.x] = localSum;
+    __syncthreads();
+
+    // Reduce within block
+    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            sdataReg[threadIdx.x] += sdataReg[threadIdx.x + s];
+        }
+        __syncthreads();
+    }
+
+    // Write block result
+    if (threadIdx.x == 0) {
+        partialSums[blockIdx.x] = sdataReg[0];
+    }
+}
+
+// Normalize register array by dividing by a scalar
+__global__ void kernelNormalizeRegister(cuDoubleComplex* state, int cvDim, double invNorm) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= cvDim) return;
+
+    state[idx] = make_cuDoubleComplex(
+        cuCreal(state[idx]) * invNorm,
+        cuCimag(state[idx]) * invNorm
+    );
 }
 
 #pragma endregion
@@ -969,7 +1049,7 @@ void cvdvInitStateVector(CVDVContext* ctx) {
     delete[] hState;
 
     logInfo(ctx, "State vector initialized: %d registers, total size: %zu", ctx->gNumReg, totalSize);
-    printf("Initialized state with %d registers, total size: %zu\n", ctx->gNumReg, totalSize);
+    // printf("Initialized state with %d registers, total size: %zu\n", ctx->gNumReg, totalSize);
 }
 
 void cvdvFree(CVDVContext* ctx) {
@@ -1181,6 +1261,95 @@ void cvdvSetCoeffs(CVDVContext* ctx, int regIdx, double* coeffs, int length) {
     delete[] hCoeffs;
 
     logDebug(ctx, "Register %d set to custom coefficients", regIdx);
+}
+
+void cvdvSetCat(CVDVContext* ctx, int regIdx, double* data, int length) {
+    if (!ctx) return;
+    if (regIdx < 0 || regIdx >= ctx->gNumReg) {
+        logError(ctx, "Invalid register index: %d", regIdx);
+        return;
+    }
+
+    logInfo(ctx, "Setting register %d to cat state with %d coherent states", regIdx, length);
+
+    size_t cvDim = 1 << ctx->gQbts[regIdx];
+    double dx = ctx->gGridSteps[regIdx];
+
+    if (fabs(dx) < 1e-15) {
+        logError(ctx, "Cat state requires CV mode (dx > 0)");
+        return;
+    }
+
+    // Parse data array: [alphaRe, alphaIm, coeffRe, coeffIm, ...] for each coherent state
+    cuDoubleComplex* hAlphas = new cuDoubleComplex[length];
+    cuDoubleComplex* hCoeffs = new cuDoubleComplex[length];
+
+    for (int i = 0; i < length; i++) {
+        hAlphas[i] = make_cuDoubleComplex(data[4*i], data[4*i+1]);
+        hCoeffs[i] = make_cuDoubleComplex(data[4*i+2], data[4*i+3]);
+    }
+
+    // Copy to device
+    cuDoubleComplex* dAlphas;
+    cuDoubleComplex* dCoeffs;
+    checkCudaErrors(ctx, cudaMalloc(&dAlphas, length * sizeof(cuDoubleComplex)));
+    checkCudaErrors(ctx, cudaMalloc(&dCoeffs, length * sizeof(cuDoubleComplex)));
+    checkCudaErrors(ctx, cudaMemcpy(dAlphas, hAlphas, length * sizeof(cuDoubleComplex),
+                               cudaMemcpyHostToDevice));
+    checkCudaErrors(ctx, cudaMemcpy(dCoeffs, hCoeffs, length * sizeof(cuDoubleComplex),
+                               cudaMemcpyHostToDevice));
+
+    // Compute cat state (unnormalized)
+    int grid = (cvDim + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
+    kernelSetCat<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dRegisterArrays[regIdx], cvDim, dx,
+                                             dAlphas, dCoeffs, length);
+    checkCudaErrors(ctx, cudaGetLastError());
+    checkCudaErrors(ctx, cudaDeviceSynchronize());
+
+    // Compute norm using reduction
+    int numBlocks = min(grid, 1024);
+    double* dPartialSums;
+    checkCudaErrors(ctx, cudaMalloc(&dPartialSums, numBlocks * sizeof(double)));
+
+    size_t sharedMemSize = CUDA_BLOCK_SIZE * sizeof(double);
+    kernelComputeRegisterNorm<<<numBlocks, CUDA_BLOCK_SIZE, sharedMemSize>>>(
+        dPartialSums, ctx->dRegisterArrays[regIdx], cvDim);
+    checkCudaErrors(ctx, cudaGetLastError());
+    checkCudaErrors(ctx, cudaDeviceSynchronize());
+
+    // Download partial sums and reduce on host
+    double* hPartialSums = new double[numBlocks];
+    checkCudaErrors(ctx, cudaMemcpy(hPartialSums, dPartialSums,
+                               numBlocks * sizeof(double), cudaMemcpyDeviceToHost));
+
+    double norm2 = 0.0;
+    for (int i = 0; i < numBlocks; i++) {
+        norm2 += hPartialSums[i];
+    }
+    double norm = sqrt(norm2);
+
+    logDebug(ctx, "Cat state norm before normalization: %.10f", norm);
+
+    // Normalize the state
+    if (norm > 1e-15) {
+        double invNorm = 1.0 / norm;
+        kernelNormalizeRegister<<<grid, CUDA_BLOCK_SIZE>>>(
+            ctx->dRegisterArrays[regIdx], cvDim, invNorm);
+        checkCudaErrors(ctx, cudaGetLastError());
+        checkCudaErrors(ctx, cudaDeviceSynchronize());
+    } else {
+        logError(ctx, "Cat state has near-zero norm, cannot normalize");
+    }
+
+    // Cleanup
+    delete[] hAlphas;
+    delete[] hCoeffs;
+    delete[] hPartialSums;
+    cudaFree(dAlphas);
+    cudaFree(dCoeffs);
+    cudaFree(dPartialSums);
+
+    logDebug(ctx, "Register %d set to normalized cat state", regIdx);
 }
 
 #pragma endregion

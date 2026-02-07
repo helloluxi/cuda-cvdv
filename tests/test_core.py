@@ -24,7 +24,7 @@ class TestCoreOperations:
     
     def test_displacement_on_vacuum(self):
         """Test displacement operator: D(α)|0⟩ = |α⟩."""
-        alpha = 1.5 - 0.5j
+        alpha = (np.random.random() - 0.5) * 4 + 1j * (np.random.random() - 0.5) * 4
         
         # Path 1: Apply displacement to vacuum
         sim = CVDV([10])
@@ -40,8 +40,8 @@ class TestCoreOperations:
     
     def test_displacement_composition(self):
         """Test that D(α)D(β)|0⟩ = D(α+β)|0⟩."""
-        alpha = 1.0 + 0.5j
-        beta = 0.5 - 1.0j
+        alpha = (np.random.random() - 0.5) * 4 + 1j * (np.random.random() - 0.5) * 4
+        beta = (np.random.random() - 0.5) * 4 + 1j * (np.random.random() - 0.5) * 4
         
         # First path: D(α)D(β)|0⟩
         sim = CVDV([10])
@@ -58,19 +58,21 @@ class TestCoreOperations:
     
     def test_fourier_transform(self):
         """Test that FT_Q2P followed by FT_P2Q returns to original state."""
+        nFock = np.random.randint(0, 20)  # Random Fock state from 0 to 19
+        
         sim = CVDV([10])
-        sim.setFock(0, 4)
+        sim.setFock(0, nFock)
         sim.initStateVector()
         
-        # Apply FT Q->P and expect the same |4> state
+        # Apply FT Q->P and expect the same |nFock> state
         sim.ftQ2P(0)
         overlap = np.abs(sim.innerProduct())
-        assert np.abs(overlap - 1.0) < 1e-10, f"FT_Q2P overlap: {overlap}"
+        assert np.abs(overlap - 1.0) < 1e-10, f"FT_Q2P overlap for |{nFock}⟩: {overlap}"
         
-        # Apply FT P->Q and expect the same |4> state
+        # Apply FT P->Q and expect the same |nFock> state
         sim.ftP2Q(0)
         overlap = np.abs(sim.innerProduct())
-        assert np.abs(overlap - 1.0) < 1e-10, f"FT_P2Q overlap: {overlap}"
+        assert np.abs(overlap - 1.0) < 1e-10, f"FT_P2Q overlap for |{nFock}⟩: {overlap}"
     
     def test_qubit_gates(self):
         """Test all available qubit gates: Hadamard and Pauli rotations (Rx, Ry, Rz)."""
@@ -88,30 +90,30 @@ class TestCoreOperations:
         overlap = np.abs(sim.innerProduct())
         assert np.abs(overlap - 1.0) < 1e-10, f"Rx(π)|+⟩ should equal |+⟩, overlap: {overlap}"
 
-        # Rz(π/2)|+⟩ = |-⟩
+        # Rz(π)|+⟩ = |-⟩
         sim.pauliRotation(0, 0, 2, pi)  # Rz(π)
         sim.setCoeffs(0, [1/sqrt(2), -1/sqrt(2)])
         overlap = np.abs(sim.innerProduct())
         assert np.abs(overlap - 1.0) < 1e-10, f"Rz(π)|+⟩ should equal |-⟩, overlap: {overlap}"
 
-        # Ry(π/2)|-⟩ = i|+⟩
+        # Ry(π)|-⟩ = i|+⟩
         sim.pauliRotation(0, 0, 1, pi)  # Ry(π)
         sim.setUniform(0)
         overlap = np.abs(sim.innerProduct())
         assert np.abs(overlap - 1.0) < 1e-10, f"Ry(π)|-⟩ should equal i|+⟩, overlap: {overlap}"
 
-        # Measure H Rz(theta)|+⟩
-        theta = 0.5
+        # Measure H Rz(theta)|+⟩ with random theta
+        theta = (np.random.random() - 0.5) * 2 * pi
         sim.pauliRotation(0, 0, 2, theta)
         sim.hadamard(0, 0)
         probs = sim.measure(0)
-        assert np.abs(probs[0] - np.cos(theta/2)**2) < 1e-10, f"Measurement probability mismatch: {probs[0]}"
-        assert np.abs(probs[1] - np.sin(theta/2)**2) < 1e-10, f"Measurement probability mismatch: {probs[1]}"
+        assert np.abs(probs[0] - np.cos(theta/2)**2) < 1e-10, f"Measurement probability mismatch for theta={theta}: {probs[0]}"
+        assert np.abs(probs[1] - np.sin(theta/2)**2) < 1e-10, f"Measurement probability mismatch for theta={theta}: {probs[1]}"
 
     def test_conditional_displacement_commutator(self):
         """Test CD commutator identity: Rz(4xy) D(-iy) CD(-x) D(iy) CD(x) = I"""
-        x = 0.6
-        y = 0.8
+        x = (np.random.random() - 0.5) * 2
+        y = (np.random.random() - 0.5) * 2
 
         sim = CVDV([1, 10])  # 1 qubit + 1024-point CV mode
         sim.setUniform(0)    # |+⟩ qubit
@@ -127,7 +129,7 @@ class TestCoreOperations:
 
         # Should return to initial state |+⟩ ⊗ |vac⟩
         overlap = np.abs(sim.innerProduct())
-        assert np.abs(overlap - 1.0) < 1e-10, f"CD commutator should be identity, overlap: {overlap}"
+        assert np.abs(overlap - 1.0) < 1e-10, f"CD commutator should be identity for x={x}, y={y}, overlap: {overlap}"
     
     def test_rotation(self):
         """Test phase space rotation on coherent state."""
@@ -137,22 +139,17 @@ class TestCoreOperations:
         sim.setCoherent(0, alpha)
         sim.initStateVector()
         
-        # Apply -pi/4 rotation and test overlap with |alpha*exp(i*pi/4)>
-        sim.rotation(0, -pi/4)
-        sim.setCoherent(0, alpha * np.exp(1j * pi/4))
+        # Apply random rotation and test overlap
+        theta = (np.random.random() - 0.5) * 10
+        sim.rotation(0, theta)
+        sim.setCoherent(0, alpha * np.exp(-1j * theta))
         overlap = np.abs(sim.innerProduct())
-        assert np.abs(overlap - 1.0) < 1e-10, f"Rotation(-π/4) overlap: {overlap}"
-        
-        # Apply 3*pi/2 rotation and test overlap with |-i*alpha>
-        sim.rotation(0, 3 * pi/4)
-        sim.setCoherent(0, -1j * alpha)
-        overlap = np.abs(sim.innerProduct())
-        assert np.abs(overlap - 1.0) < 1e-10, f"Rotation(3π/2) overlap: {overlap}"
+        assert np.abs(overlap - 1.0) < 1e-10, f"Rotation(${theta}) overlap: {overlap}"
 
     def test_squeeze(self):
         """Test squeezing operation conjugated displacement."""
-        alpha = 3.0
-        r = 0.5
+        alpha = (np.random.random() - 0.5) * 6
+        r = (np.random.random() - 0.5) * 2
         
         sim = CVDV([10])
         sim.setCoherent(0, 3j)
@@ -162,32 +159,33 @@ class TestCoreOperations:
         sim.squeeze(0, r)
         sim.displacement(0, -alpha*np.exp(r))
         overlap = np.abs(sim.innerProduct())
-        assert np.abs(overlap - 1.0) < 1e-10, f"Squeezing conjugated displacement overlap: {overlap}"
+        assert np.abs(overlap - 1.0) < 1e-10, f"Squeezing conjugated displacement overlap for alpha={alpha}, r={r}: {overlap}"
 
     def test_beam_splitter(self):
-        """Test squeezing operation on Fock state + vacuum state pair."""
-        nFock = 5
-
+        """Test beam splitter operation on Fock state + vacuum state pair."""
+        nFock = np.random.randint(3, 10)  # Random Fock state from 3 to 9
         sim = CVDV([10, 10])
         sim.setFock(0, nFock)
         sim.setFock(1, 0)
         sim.initStateVector()
-        sim.beamSplitter(0, 1, pi / 2)
-
-        from scipy.special import comb
-        ips = np.array([comb(nFock, j, exact=True) / 2**nFock for j in range(nFock+1)])
+        # Apply beam splitter with random angle
+        theta = (np.random.random() - 0.5) * 10
+        sim.beamSplitter(0, 1, theta)
+        # Calculate overlap deviations using binomial coefficient recursion
+        p1 = np.cos(theta/2)**2
+        p2 = np.sin(theta/2)**2
+        ips = np.zeros(nFock + 1)
+        # Initialize for j=0: C(nFock, 0) = 1
+        theoretical = p2**nFock
         for j in range(nFock+1):
+            if j > 0:
+                # Use recursion: C(n,k) = C(n,k-1) * (n-k+1) / k
+                theoretical *= (nFock - j + 1) / j * p1 / p2
             sim.setFock(0, j)
             sim.setFock(1, nFock - j)
-            ips[j] -= np.abs(sim.innerProduct()) ** 2
+            ips[j] = theoretical - np.abs(sim.innerProduct()) ** 2
         
-        assert np.allclose(ips, 0, atol=1e-10), "Beam splitter output should match binomial distribution"
-
-        sim.beamSplitter(0, 1, -1.5 * pi)
-        sim.setFock(0, 0)
-        sim.setFock(1, nFock)
-        overlap = np.abs(sim.innerProduct())
-        assert np.abs(overlap - 1.0) < 1e-10, f"Beam splitter inverse overlap: {overlap}"
+        assert np.allclose(ips, 0, atol=1e-10), f"BS({theta}$) on |{nFock}⟩|0⟩ overlap deviations: {ips}"
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

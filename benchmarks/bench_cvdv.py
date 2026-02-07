@@ -31,29 +31,31 @@ def run_cvdv_transfer_experiment(n_dv_qubits=4, cv_qubits=12, lam=0.29, return_p
         dict: Contains 'time' and optionally 'plots' with initial/final state data
     """
     t_start = time.perf_counter()
-    cat0_center = -1.0 * sqrt(2)
-    cat1_center = 2.0 * sqrt(2)
-    dim = 1<<cv_qubits
-    dx = sqrt(2*pi/dim)
-    x = (np.arange(dim)-0.5*(dim-1)) * dx
-    cat0 = np.exp(-(x-cat0_center)**2/2)
-    cat1 = np.exp(-(x-cat1_center)**2/2)
-    cat = cat0 + cat1
-    cat = cat / np.linalg.norm(cat)
-    
+    # Define cat state parameters
+    # Cat state: |cat⟩ = c0|α0⟩ + c1|α1⟩ where α = q/√2 + i·p/√2
+    cat0_center = -1.0 * sqrt(2)  # q0 = -sqrt(2)
+    cat1_center = 2.0 * sqrt(2)   # q1 = 2*sqrt(2)
+
+    # Convert to coherent state amplitudes: α = q/√2
+    alpha0 = cat0_center / sqrt(2)  # α0 = -1.0
+    alpha1 = cat1_center / sqrt(2)  # α1 = 2.0
+
+    # Cat state with equal coefficients (will be normalized automatically)
+    cat_states = [(alpha0, 1.0), (alpha1, 1.0)]
+
     # Capture initial state if plots are requested
     if return_plots:
         sim_initial = CVDV([n_dv_qubits, cv_qubits])
         sim_initial.setUniform(0)
-        sim_initial.setCoeffs(1, cat)
+        sim_initial.setCat(1, cat_states)
         sim_initial.initStateVector()
         probs_dv_initial = sim_initial.measure(0)
         wigner_cv_initial = sim_initial.getWignerFullMode(1, wignerN=201, wXMax=5, wPMax=5)
-    
+
     # Initialize system
     sim = CVDV([n_dv_qubits, cv_qubits])
     sim.setUniform(0)
-    sim.setCoeffs(1, cat)
+    sim.setCat(1, cat_states)
     
     sim.initStateVector()
     
@@ -189,7 +191,7 @@ def visualize_cvdv_transfer(n_dv_qubits=4, cv_qubits=12):
                        cmap='RdBu', vmin=-vmax, vmax=vmax, aspect='equal')
     axes[1].set_xlabel('q')
     axes[1].set_ylabel('p')
-    axes[1].set_title('Initial CV: Cat (|1⟩+|-1⟩)')
+    axes[1].set_title('Initial CV')
     plt.colorbar(im, ax=axes[1])
     plt.tight_layout()
     
@@ -204,7 +206,7 @@ def visualize_cvdv_transfer(n_dv_qubits=4, cv_qubits=12):
     axes[0].bar(range(len(probs_dv_final)), probs_dv_final[shifted_idx], color='steelblue', alpha=0.7)
     axes[0].set_xlabel('Basis state')
     axes[0].set_ylabel('Probability')
-    axes[0].set_title('Final DV: |Ψ⟩_DV (shifted)')
+    axes[0].set_title('Final DV (shifted)')
     axes[0].set_xlim(-0.5, len(probs_dv_final) - 0.5)
     axes[0].grid(True, alpha=0.3)
     
@@ -213,7 +215,7 @@ def visualize_cvdv_transfer(n_dv_qubits=4, cv_qubits=12):
                        cmap='RdBu', vmin=-vmax, vmax=vmax, aspect='equal')
     axes[1].set_xlabel('q')
     axes[1].set_ylabel('p')
-    axes[1].set_title('Final CV: |0̃⟩_CV')
+    axes[1].set_title('Final CV')
     plt.colorbar(im, ax=axes[1])
     plt.tight_layout()
     

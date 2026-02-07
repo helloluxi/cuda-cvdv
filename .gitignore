@@ -45,6 +45,7 @@ Makefile.generated
 .memory/
 .agent/
 .github/copilot-instructions.md
+.cache/
 
 # Logs and Temporary Files
 *.log

@@ -18,7 +18,7 @@ A high-performance CUDA library for simulating hybrid continuous-variable (CV) a
 The position encoding approach naturally enables **universal transfer of CV modes into qubits**, where the position wave function coefficients $\psi(q_j)$ are directly encoded into the qubit register amplitudes. This capability is demonstrated through the **CV-to-DV state transfer protocol** [Phys. Rev. Lett. 128, 110503 (2022)](https://link.aps.org/doi/10.1103/PhysRevLett.128.110503).
 
 **How it works**: The algorithm transfers a CV state's position-space representation into a discrete qubit register:
-$$|\psi\rangle_{\text{CV}} = \int \psi(q) |q\rangle \, dq \mapsto \sqrt{\lambda} \sum_{j=0}^{N-1} \psi(\lambda\tilde{j}) |j\rangle_{\text{DV}},$$
+$$|\psi\rangle_{\text{CV}} = \int \psi(q) |q\rangle dq \mapsto \sqrt{\lambda} \sum_{j=0}^{N-1} \psi(\lambda\tilde{j}) |j\rangle`_{\text{DV}}`,$$
 
 where $\lambda = \sqrt{2\pi/N}$ is the grid spacing and $\tilde{j} = j - (N-1)/2$ is the shifted index.
 
@@ -183,9 +183,7 @@ This project uses **pytest** for automated testing. Tests require a CUDA-capable
 ### Run Tests
 
 ```bash
-make test          # Build CUDA library and run all tests
-make build         # Build CUDA library only
-make clean         # Remove build artifacts
+make test
 ```
 
 ### Pre-commit Hooks
