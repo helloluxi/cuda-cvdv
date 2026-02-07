@@ -101,6 +101,10 @@ def load_library():
     lib.cvdvParity.argtypes = [ctypes.c_void_p, c_int]
     lib.cvdvParity.restype = None
 
+    # void cvdvConditionalParity(CVDVContext* ctx, int targetReg, int ctrlReg, int ctrlQubit)
+    lib.cvdvConditionalParity.argtypes = [ctypes.c_void_p, c_int, c_int, c_int]
+    lib.cvdvConditionalParity.restype = None
+
     # void cvdvSwapRegisters(CVDVContext* ctx, int reg1, int reg2)
     lib.cvdvSwapRegisters.argtypes = [ctypes.c_void_p, c_int, c_int]
     lib.cvdvSwapRegisters.restype = None
@@ -109,13 +113,21 @@ def load_library():
     lib.cvdvPhaseSquare.argtypes = [ctypes.c_void_p, c_int, c_double]
     lib.cvdvPhaseSquare.restype = None
 
+    # void cvdvPhaseCubic(CVDVContext* ctx, int regIdx, double t)
+    lib.cvdvPhaseCubic.argtypes = [ctypes.c_void_p, c_int, c_double]
+    lib.cvdvPhaseCubic.restype = None
+
     # void cvdvRotation(CVDVContext* ctx, int regIdx, double theta)
     lib.cvdvRotation.argtypes = [ctypes.c_void_p, c_int, c_double]
     lib.cvdvRotation.restype = None
 
-    # void cvdvSqueezing(CVDVContext* ctx, int regIdx, double r)
-    lib.cvdvSqueezing.argtypes = [ctypes.c_void_p, c_int, c_double]
-    lib.cvdvSqueezing.restype = None
+    # void cvdvConditionalRotation(CVDVContext* ctx, int targetReg, int ctrlReg, int ctrlQubit, double theta)
+    lib.cvdvConditionalRotation.argtypes = [ctypes.c_void_p, c_int, c_int, c_int, c_double]
+    lib.cvdvConditionalRotation.restype = None
+
+    # void cvdvSqueeze(CVDVContext* ctx, int regIdx, double r)
+    lib.cvdvSqueeze.argtypes = [ctypes.c_void_p, c_int, c_double]
+    lib.cvdvSqueeze.restype = None
 
     # void cvdvBeamSplitter(CVDVContext* ctx, int reg1, int reg2, double theta)
     lib.cvdvBeamSplitter.argtypes = [ctypes.c_void_p, c_int, c_int, c_double]
@@ -349,7 +361,7 @@ class CVDV:
                        data.ctypes.data_as(POINTER(c_double)),
                        len(cat_states))
 
-    def displacement(self, regIdx, beta):
+    def d(self, regIdx, beta):
         """Apply displacement operator D(β) to register."""
         if isinstance(beta, (int, float)):
             beta = complex(beta, 0.0)
@@ -369,26 +381,43 @@ class CVDV:
         lib.cvdvConditionalDisplacement(self.ctx, targetReg, ctrlReg, ctrlQubit, 
                    c_double(alpha.real), c_double(alpha.imag))
     
-    def pauliRotation(self, regIdx, targetQubit, axis, theta):
-        """Apply Pauli rotation to qubit in register.
-        
+    def cr(self, targetReg, ctrlReg, ctrlQubit, theta):
+        """Apply conditional rotation CR(θ) controlled by qubit.
+
+        Implements: CR(θ) = exp(-i/2 Z tan(θ/2) Q²) exp(-i/2 Z sin(θ) P²) exp(-i/2 Z tan(θ/2) Q²)
+        where Z acts on ctrlQubit and Q,P act on targetReg.
+        |0⟩ gets R(θ), |1⟩ gets R(-θ).
+
         Args:
-            regIdx: Register index
-            targetQubit: Qubit index within register
-            axis: 0=X, 1=Y, 2=Z
-            theta: Rotation angle
+            targetReg: Target register index (receives rotation)
+            ctrlReg: Control register index
+            ctrlQubit: Qubit index within control register
+            theta: Rotation angle in radians
         """
-        lib.cvdvPauliRotation(self.ctx, regIdx, targetQubit, axis, theta)
+        lib.cvdvConditionalRotation(self.ctx, targetReg, ctrlReg, ctrlQubit, c_double(theta))
+
+    def rx(self, regIdx, targetQubit, theta):
+        lib.cvdvPauliRotation(self.ctx, regIdx, targetQubit, 0, theta)
+
+    def ry(self, regIdx, targetQubit, theta):
+        lib.cvdvPauliRotation(self.ctx, regIdx, targetQubit, 1, theta)
+
+    def rz(self, regIdx, targetQubit, theta):
+        lib.cvdvPauliRotation(self.ctx, regIdx, targetQubit, 2, theta)
     
-    def hadamard(self, regIdx, targetQubit):
+    def h(self, regIdx, targetQubit):
         """Apply Hadamard gate to qubit in register."""
         lib.cvdvHadamard(self.ctx, regIdx, targetQubit)
 
-    def parity(self, regIdx):
+    def p(self, regIdx):
         """Apply parity gate: flips all qubits of a register (|j⟩ → |N-1-j⟩)."""
         lib.cvdvParity(self.ctx, regIdx)
 
-    def swapRegisters(self, reg1, reg2):
+    def cp(self, targetReg, ctrlReg, ctrlQubit):
+        """Apply conditional parity: identity on |0⟩, parity on |1⟩ control branch."""
+        lib.cvdvConditionalParity(self.ctx, targetReg, ctrlReg, ctrlQubit)
+
+    def swap(self, reg1, reg2):
         """Swap the contents of two registers (must have same number of qubits)."""
         lib.cvdvSwapRegisters(self.ctx, reg1, reg2)
 
@@ -401,7 +430,16 @@ class CVDV:
         """
         lib.cvdvPhaseSquare(self.ctx, regIdx, t)
 
-    def rotation(self, regIdx, theta):
+    def phaseCubic(self, regIdx, t):
+        """Apply cubic phase gate: exp(i*t*q^3) in position space.
+
+        Args:
+            regIdx: Register index
+            t: Phase coefficient
+        """
+        lib.cvdvPhaseCubic(self.ctx, regIdx, t)
+
+    def r(self, regIdx, theta):
         """Apply rotation gate R(θ) in phase space.
 
         Implements: R(θ) = exp(-i/2 tan(θ/2) q^2) exp(-i/2 sin(θ) p^2) exp(-i/2 tan(θ/2) q^2)
@@ -413,7 +451,7 @@ class CVDV:
         """
         lib.cvdvRotation(self.ctx, regIdx, theta)
 
-    def squeeze(self, regIdx, r):
+    def s(self, regIdx, r):
         """Apply squeezing gate S(r).
 
         Implements the squeezing operator decomposed into q^2 and p^2 phases.
@@ -423,9 +461,9 @@ class CVDV:
             regIdx: Register index
             r: Squeezing parameter
         """
-        lib.cvdvSqueezing(self.ctx, regIdx, r)
+        lib.cvdvSqueeze(self.ctx, regIdx, r)
 
-    def beamSplitter(self, reg1, reg2, theta):
+    def bs(self, reg1, reg2, theta):
         """Apply beam splitter gate BS(θ) between two registers.
 
         Implements: BS(θ) = exp(-i*tan(θ/4)*q1*q2/2) * exp(-i*sin(θ/2)*p1*p2/2) * exp(-i*tan(θ/4)*q1*q2/2)
@@ -566,7 +604,7 @@ class CVDV:
         dx = self.grid_steps[regIdx]
         return (np.arange(dim) - dim // 2) * dx
     
-    def measure(self, regIdx):
+    def m(self, regIdx):
         """Compute measurement probabilities for all basis states of a register.
         
         Args:

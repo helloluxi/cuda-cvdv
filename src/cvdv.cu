@@ -323,6 +323,35 @@ __global__ void kernelApplyControlledQ(cuDoubleComplex* state, size_t totalSize,
     }
 }
 
+// Apply controlled phase based on position squared: exp(i*t*Z*x^2)
+// where Z acts on ctrlQubit in ctrlReg
+__global__ void kernelApplyControlledQ2(cuDoubleComplex* state, size_t totalSize,
+                                                        int targetReg, int ctrlReg, int ctrlQubit,
+                                                        const int* qbts, const double* gridSteps,
+                                                        const int* flwQbts,
+                                                        double t) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= totalSize) return;
+
+    size_t targetDim = 1 << qbts[targetReg];
+    double dx = gridSteps[targetReg];
+    size_t targetLocalIdx = getLocalIndex(idx, flwQbts[targetReg], qbts[targetReg]);
+
+    // Extract control qubit state
+    size_t ctrlLocalIdx = getLocalIndex(idx, flwQbts[ctrlReg], qbts[ctrlReg]);
+    int ctrlMask = 1 << (qbts[ctrlReg] - 1 - ctrlQubit);
+
+    double x = gridX(targetLocalIdx, targetDim, dx);
+    double phase = t * x * x;
+
+    // Z operator: |0⟩ gets +phase, |1⟩ gets -phase
+    if (ctrlLocalIdx & ctrlMask) {
+        state[idx] = cmulPhase(state[idx], -phase);
+    } else {
+        state[idx] = cmulPhase(state[idx], phase);
+    }
+}
+
 // Apply Pauli rotation to a specific qubit within a register
 __global__ void kernelPauliRotation(cuDoubleComplex* state, size_t totalSize,
                                                 int regIdx, int qubitIdx,
@@ -475,6 +504,31 @@ __global__ void kernelParity(cuDoubleComplex* state, size_t totalSize,
     state[partnerIdx] = tmp;
 }
 
+__global__ void kernelConditionalParity(cuDoubleComplex* state, size_t totalSize,
+                             int targetReg, int ctrlReg, int ctrlQubit,
+                             const int* qbts, const int* flwQbts) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= totalSize) return;
+
+    // Only act on |1⟩ control branch
+    size_t ctrlLocalIdx = getLocalIndex(idx, flwQbts[ctrlReg], qbts[ctrlReg]);
+    int ctrlMask = 1 << (qbts[ctrlReg] - 1 - ctrlQubit);
+    if (!(ctrlLocalIdx & ctrlMask)) return;
+
+    size_t regDim = 1 << qbts[targetReg];
+    size_t localIdx = getLocalIndex(idx, flwQbts[targetReg], qbts[targetReg]);
+
+    size_t flipped = (regDim - 1) - localIdx;
+    if (localIdx >= flipped) return;
+
+    size_t regStride = 1 << flwQbts[targetReg];
+    size_t partnerIdx = idx + (flipped - localIdx) * regStride;
+
+    cuDoubleComplex tmp = state[idx];
+    state[idx] = state[partnerIdx];
+    state[partnerIdx] = tmp;
+}
+
 // SWAP gate: swap the qubit contents of two registers (must have same numQubits)
 // Maps |i⟩₁|j⟩₂ → |j⟩₁|i⟩₂
 __global__ void kernelSwapRegisters(cuDoubleComplex* state, size_t totalSize,
@@ -516,6 +570,23 @@ __global__ void kernelApplyOneModeQ2(cuDoubleComplex* state, size_t totalSize,
 
     double x = gridX(localIdx, regDim, dx);
     state[idx] = cmulPhase(state[idx], t * x * x);
+}
+
+// Apply phase factor to a specific register: exp(i*phaseCoeff*x)
+__global__ void kernelApplyOneModeQ3(cuDoubleComplex* state, size_t totalSize,
+                                             int regIdx,
+                                             const int* qbts, const double* gridSteps,
+                                             const int* flwQbts,
+                                             double phaseCoeff) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= totalSize) return;
+
+    size_t regDim = 1 << qbts[regIdx];
+    double dx = gridSteps[regIdx];
+    size_t localIdx = getLocalIndex(idx, flwQbts[regIdx], qbts[regIdx]);
+
+    double x = gridX(localIdx, regDim, dx);
+    state[idx] = cmulPhase(state[idx], phaseCoeff * x * x * x);
 }
 
 // Apply two-mode position coupling: exp(i*coeff*q1*q2)
@@ -1709,6 +1780,29 @@ void cvdvParity(CVDVContext* ctx, int regIdx) {
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 }
 
+void cvdvConditionalParity(CVDVContext* ctx, int targetReg, int ctrlReg, int ctrlQubit) {
+    if (!ctx) return;
+    if (targetReg < 0 || targetReg >= ctx->gNumReg) {
+        fprintf(stderr, "Invalid target register index: %d\n", targetReg);
+        return;
+    }
+    if (ctrlReg < 0 || ctrlReg >= ctx->gNumReg) {
+        fprintf(stderr, "Invalid control register index: %d\n", ctrlReg);
+        return;
+    }
+    if (ctrlQubit < 0 || ctrlQubit >= ctx->gQbts[ctrlReg]) {
+        fprintf(stderr, "Invalid control qubit index: %d\n", ctrlQubit);
+        return;
+    }
+
+    int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
+    kernelConditionalParity<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+                                            targetReg, ctrlReg, ctrlQubit,
+                                            ctx->gQbts, ctx->gFlwQbts);
+    checkCudaErrors(ctx, cudaGetLastError());
+    checkCudaErrors(ctx, cudaDeviceSynchronize());
+}
+
 void cvdvSwapRegisters(CVDVContext* ctx, int reg1, int reg2) {
     if (!ctx) return;
     if (reg1 < 0 || reg1 >= ctx->gNumReg || reg2 < 0 || reg2 >= ctx->gNumReg) {
@@ -1739,6 +1833,20 @@ void cvdvPhaseSquare(CVDVContext* ctx, int regIdx, double t) {
     int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
 
     kernelApplyOneModeQ2<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), regIdx, ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, t);
+    checkCudaErrors(ctx, cudaGetLastError());
+    checkCudaErrors(ctx, cudaDeviceSynchronize());
+}
+
+void cvdvPhaseCubic(CVDVContext* ctx, int regIdx, double t) {
+    if (!ctx) return;
+    if (regIdx < 0 || regIdx >= ctx->gNumReg) {
+        fprintf(stderr, "Invalid register index: %d\n", regIdx);
+        return;
+    }
+
+    int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
+
+    kernelApplyOneModeQ3<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), regIdx, ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, t);
     checkCudaErrors(ctx, cudaGetLastError());
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 }
@@ -1790,7 +1898,73 @@ void cvdvRotation(CVDVContext* ctx, int regIdx, double theta) {
     cvdvRotationSmall(ctx, regIdx, remainder);
 }
 
-void cvdvSqueezing(CVDVContext* ctx, int regIdx, double r) {
+// Internal helper: apply controlled phase square exp(i*t*Z*q^2)
+static void cvdvControlledPhaseSquare(CVDVContext* ctx, int targetReg, int ctrlReg, int ctrlQubit, double t) {
+    int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
+
+    kernelApplyControlledQ2<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+                                                targetReg, ctrlReg, ctrlQubit,
+                                                ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, t);
+    checkCudaErrors(ctx, cudaGetLastError());
+    checkCudaErrors(ctx, cudaDeviceSynchronize());
+}
+
+// Internal: small-angle conditional rotation |θ| ≤ π/4
+static void cvdvConditionalRotationSmall(CVDVContext* ctx, int targetReg, int ctrlReg, int ctrlQubit, double theta) {
+    if (fabs(theta) < 1e-15) return;
+
+    // CR(θ) = exp(-i/2 Z tan(θ/2) q^2) exp(-i/2 Z sin(θ) p^2) exp(-i/2 Z tan(θ/2) q^2)
+    double tanHalfTheta = tan(theta / 2.0);
+    double sinTheta = sin(theta);
+
+    cvdvControlledPhaseSquare(ctx, targetReg, ctrlReg, ctrlQubit, -0.5 * tanHalfTheta);
+    cvdvFtQ2P(ctx, targetReg);
+    cvdvControlledPhaseSquare(ctx, targetReg, ctrlReg, ctrlQubit, -0.5 * sinTheta);
+    cvdvFtP2Q(ctx, targetReg);
+    cvdvControlledPhaseSquare(ctx, targetReg, ctrlReg, ctrlQubit, -0.5 * tanHalfTheta);
+}
+
+void cvdvConditionalRotation(CVDVContext* ctx, int targetReg, int ctrlReg, int ctrlQubit, double theta) {
+    if (!ctx) return;
+    if (targetReg < 0 || targetReg >= ctx->gNumReg) {
+        fprintf(stderr, "Invalid target register index: %d\n", targetReg);
+        return;
+    }
+    if (ctrlReg < 0 || ctrlReg >= ctx->gNumReg) {
+        fprintf(stderr, "Invalid control register index: %d\n", ctrlReg);
+        return;
+    }
+    if (ctrlQubit < 0 || ctrlQubit >= ctx->gQbts[ctrlReg]) {
+        fprintf(stderr, "Invalid control qubit index: %d\n", ctrlQubit);
+        return;
+    }
+
+    // For |θ| > π/4, decompose R(θ) = R(θ₀) R(θ-θ₀)
+    // where θ₀ ∈ (π/2)Z is chosen so |θ-θ₀| ≤ π/4
+    // R(π/2) = FT, R(π) = Parity, R(-π/2) = FT†
+
+    // Find nearest multiple of π/2
+    double theta0 = round(theta / (PI / 2.0)) * (PI / 2.0);
+    double remainder = theta - theta0;
+
+    // Apply R(θ₀) for the integer-multiple part
+    // theta0 / (π/2) gives the number of quarter-turns
+    int quarterTurns = (int)round(theta0 / (PI / 2.0));
+    // Normalize to [0,4) since R(2π) = identity
+    quarterTurns = ((quarterTurns % 4) + 4) % 4;
+
+    switch (quarterTurns) {
+        case 0: break;  // identity
+        case 1: cvdvFtQ2P(ctx, targetReg); cvdvConditionalParity(ctx, targetReg, ctrlReg, ctrlQubit); cvdvPauliRotation(ctx, ctrlReg, ctrlQubit, 2, PI/2); break;
+        case 2: cvdvParity(ctx, targetReg); cvdvPauliRotation(ctx, ctrlReg, ctrlQubit, 2, PI); break;
+        case 3: cvdvFtP2Q(ctx, targetReg); cvdvConditionalParity(ctx, targetReg, ctrlReg, ctrlQubit); cvdvPauliRotation(ctx, ctrlReg, ctrlQubit, 2, -PI/2); break;
+    }
+
+    // Apply small-angle remainder
+    cvdvConditionalRotationSmall(ctx, targetReg, ctrlReg, ctrlQubit, remainder);
+}
+
+void cvdvSqueeze(CVDVContext* ctx, int regIdx, double r) {
     if (!ctx) return;
     if (regIdx < 0 || regIdx >= ctx->gNumReg) {
         fprintf(stderr, "Invalid register index: %d\n", regIdx);

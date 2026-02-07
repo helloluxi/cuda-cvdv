@@ -49,7 +49,7 @@ def run_cvdv_transfer_experiment(n_dv_qubits=4, cv_qubits=12, lam=0.29, return_p
         sim_initial.setUniform(0)
         sim_initial.setCat(1, cat_states)
         sim_initial.initStateVector()
-        probs_dv_initial = sim_initial.measure(0)
+        probs_dv_initial = sim_initial.m(0)
         wigner_cv_initial = sim_initial.getWignerFullMode(1, wignerN=201, wXMax=5, wPMax=5)
 
     # Initialize system
@@ -68,16 +68,16 @@ def run_cvdv_transfer_experiment(n_dv_qubits=4, cv_qubits=12, lam=0.29, return_p
         
         # V_k: exp(i·v_k·q·σ_y)
         v_k = -pi / (2 * lam * (1 << k))
-        sim.pauliRotation(dvReg, qubitIdx, 0, pi/2)
+        sim.rx(dvReg, qubitIdx, pi/2)
         sim.cd(cvReg, dvReg, qubitIdx, 1j * v_k / sqrt(2))
-        sim.pauliRotation(dvReg, qubitIdx, 0, -pi/2)
+        sim.rx(dvReg, qubitIdx, -pi/2)
         
         # W_k: exp(i·w_k·p·σ_x)
         w_k = lam * (1 << k) / 2 * (-1 if k == n_dv_qubits else 1)
         sim.cd(cvReg, dvReg, qubitIdx, -w_k / sqrt(2))
     
     # Measure final state
-    probs_dv_final = sim.measure(0)
+    probs_dv_final = sim.m(0)
     
     t_total = time.perf_counter() - t_start
     

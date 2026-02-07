@@ -116,7 +116,11 @@ tests/
 examples/
   cvdv_transfer.ipynb  # CV-DV state transfer demo
   qcst.ipynb           # Quantum coherent state transform demo
-test.ipynb             # Interactive testing notebook
+benchmarks/
+  bench_cvdv.py        # CUDA-CVDV benchmark
+  bench_bosonic.py     # bosonic-qiskit benchmark
+  run_benchmarks.py    # Benchmark runner
+  run.sh               # Benchmark entry point
 CMakeLists.txt         # Build configuration
 Makefile               # Build & test commands
 run.sh                 # Build script (creates build/libcvdv.so)
@@ -141,9 +145,9 @@ sim.setCoherent(1, 2+1j)  # Coherent state |α=2+i⟩
 sim.initStateVector()
 
 # Apply operations
-sim.hadamard(0, 0)           # Hadamard on qubit
+sim.h(0, 0)           # Hadamard on qubit
 sim.cd(1, 0, 0, 1.5)         # Conditional displacement
-sim.displacement(1, -1+0.5j) # Unconditional displacement
+sim.d(1, -1+0.5j) # Unconditional displacement
 
 # Visualize
 wigner = sim.getWignerSingleSlice(1, [-1], wignerN=201, wXMax=5, wPMax=5)
@@ -154,19 +158,19 @@ wigner = sim.getWignerSingleSlice(1, [-1], wignerN=201, wXMax=5, wPMax=5)
 **Critical**: Follow this 3-step pattern:
 
 1. **Create** instance with register sizes
-2. **Initialize** each register (`setZero`, `setCoherent`, `setFock`, `setFocks`, `setUniform`)
+2. **Initialize** each register (`setZero`, `setCoherent`, `setFock`, `setFocks`, `setCoeffs`, `setCat`, `setUniform`)
 3. **Build** tensor product with `initStateVector()`
 
 ### Available Operations
 
 | Category | Operations |
 |----------|------------|
-| **CV Gates** | `displacement(α)` ($e^{\alpha\hat{a}^\dagger - \alpha^*\hat{a}}$), `squeeze(r)` ($e^{r(\hat{a}^2 - \hat{a}^{\dagger 2})/2}$), `rotation(θ)` ($e^{i\theta \hat{a}^\dagger \hat{a}}$), `sheer(t)` ($e^{it\hat{q}^2/2}$) |
-| **DV Gates** | `hadamard()` ($H$), `pauliRotation(axis, θ)` (axis=0,1,2: $R_x(\theta), R_y(\theta), R_z(\theta)$) |
-| **Hybrid** | `cd(α)` ($e^{Z(\alpha\hat{a}^\dagger - \alpha^*\hat{a})}$) |
-| **Two-Mode** | `beamSplitter(θ)`, `q1q2(coeff)` ($e^{i t \hat{q}_1 \hat{q}_2}$), `swapRegisters()` |
+| **CV Gates** | `d(α)` ($e^{\alpha\hat{a}^\dagger - \alpha^*\hat{a}}$), `s(r)` ($e^{r(\hat{a}^2 - \hat{a}^{\dagger 2})/2}$), `r(θ)` ($e^{i\theta \hat{a}^\dagger \hat{a}}$), `sheer(t)` ($e^{it\hat{q}^2}$), `phaseCubic(t)` ($e^{it\hat{q}^3}$), `p()` (parity) |
+| **DV Gates** | `h()` ($H$), `rx(θ)` ($R_x(\theta)$), `ry(θ)` ($R_y(\theta)$), `rz(θ)` ($R_z(\theta)$) |
+| **Hybrid** | `cd(α)` ($e^{Z(\alpha\hat{a}^\dagger - \alpha^*\hat{a})}$), `cr(θ)` (conditional rotation), `cp()` (conditional parity) |
+| **Two-Mode** | `bs(θ)`, `q1q2(coeff)` ($e^{i t \hat{q}_1 \hat{q}_2}$), `swap()` |
 | **Transforms** | `ftQ2P()`, `ftP2Q()` (Fourier transforms) |
-| **Measurement** | `measure()`, `jointMeasure()`, `getState()` |
+| **Measurement** | `m()`, `jointMeasure()`, `getState()`, `innerProduct()`, `getNorm()` |
 | **Visualization** | `getWignerSingleSlice()`, `getWignerFullMode()`, `getHusimiQFullMode()` |
 
 ## Example Notebooks

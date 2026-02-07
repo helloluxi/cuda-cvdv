@@ -30,7 +30,7 @@ class TestCoreOperations:
         sim = CVDV([10])
         sim.setFock(0, 0)
         sim.initStateVector()
-        sim.displacement(0, alpha)
+        sim.d(0, alpha)
         
         # Test overlap with |alpha>
         sim.setCoherent(0, alpha)
@@ -47,8 +47,8 @@ class TestCoreOperations:
         sim = CVDV([10])
         sim.setFock(0, 0)
         sim.initStateVector()
-        sim.displacement(0, beta)
-        sim.displacement(0, alpha)
+        sim.d(0, beta)
+        sim.d(0, alpha)
         
         # Test overlap with |alpha + beta>
         sim.setCoherent(0, alpha + beta)
@@ -80,33 +80,33 @@ class TestCoreOperations:
         sim = CVDV([1])
         sim.setZero(0)
         sim.initStateVector()
-        sim.hadamard(0, 0)
+        sim.h(0, 0)
         sim.setUniform(0)
         overlap = np.abs(sim.innerProduct())
         assert np.abs(overlap - 1.0) < 1e-10, f"H|0⟩ should equal |+⟩, overlap: {overlap}"
 
         # Rx(π)|+⟩ = |+⟩
-        sim.pauliRotation(0, 0, 0, pi)  # Rx(π)
+        sim.rx(0, 0, pi)  # Rx(π)
         overlap = np.abs(sim.innerProduct())
         assert np.abs(overlap - 1.0) < 1e-10, f"Rx(π)|+⟩ should equal |+⟩, overlap: {overlap}"
 
         # Rz(π)|+⟩ = |-⟩
-        sim.pauliRotation(0, 0, 2, pi)  # Rz(π)
+        sim.rz(0, 0, pi)  # Rz(π)
         sim.setCoeffs(0, [1/sqrt(2), -1/sqrt(2)])
         overlap = np.abs(sim.innerProduct())
         assert np.abs(overlap - 1.0) < 1e-10, f"Rz(π)|+⟩ should equal |-⟩, overlap: {overlap}"
 
         # Ry(π)|-⟩ = i|+⟩
-        sim.pauliRotation(0, 0, 1, pi)  # Ry(π)
+        sim.ry(0, 0, pi)  # Ry(π)
         sim.setUniform(0)
         overlap = np.abs(sim.innerProduct())
         assert np.abs(overlap - 1.0) < 1e-10, f"Ry(π)|-⟩ should equal i|+⟩, overlap: {overlap}"
 
         # Measure H Rz(theta)|+⟩ with random theta
         theta = (np.random.random() - 0.5) * 2 * pi
-        sim.pauliRotation(0, 0, 2, theta)
-        sim.hadamard(0, 0)
-        probs = sim.measure(0)
+        sim.rz(0, 0, theta)
+        sim.h(0, 0)
+        probs = sim.m(0)
         assert np.abs(probs[0] - np.cos(theta/2)**2) < 1e-10, f"Measurement probability mismatch for theta={theta}: {probs[0]}"
         assert np.abs(probs[1] - np.sin(theta/2)**2) < 1e-10, f"Measurement probability mismatch for theta={theta}: {probs[1]}"
 
@@ -122,10 +122,10 @@ class TestCoreOperations:
 
         # Apply CD(x) -> D(iy) -> CD(-x) -> D(-iy) -> Rz(-2xy)
         sim.cd(targetReg=1, ctrlReg=0, ctrlQubit=0, alpha=x)
-        sim.displacement(1, 1j * y)
+        sim.d(1, 1j * y)
         sim.cd(targetReg=1, ctrlReg=0, ctrlQubit=0, alpha=-x)
-        sim.displacement(1, -1j * y)
-        sim.pauliRotation(0, 0, 2, 4 * x * y)
+        sim.d(1, -1j * y)
+        sim.rz(0, 0, 4 * x * y)
 
         # Should return to initial state |+⟩ ⊗ |vac⟩
         overlap = np.abs(sim.innerProduct())
@@ -141,7 +141,7 @@ class TestCoreOperations:
         
         # Apply random rotation and test overlap
         theta = (np.random.random() - 0.5) * 10
-        sim.rotation(0, theta)
+        sim.r(0, theta)
         sim.setCoherent(0, alpha * np.exp(-1j * theta))
         overlap = np.abs(sim.innerProduct())
         assert np.abs(overlap - 1.0) < 1e-10, f"Rotation(${theta}) overlap: {overlap}"
@@ -154,10 +154,10 @@ class TestCoreOperations:
         sim = CVDV([10])
         sim.setCoherent(0, 3j)
         sim.initStateVector()
-        sim.squeeze(0, -r)
-        sim.displacement(0, alpha)
-        sim.squeeze(0, r)
-        sim.displacement(0, -alpha*np.exp(r))
+        sim.s(0, -r)
+        sim.d(0, alpha)
+        sim.s(0, r)
+        sim.d(0, -alpha*np.exp(r))
         overlap = np.abs(sim.innerProduct())
         assert np.abs(overlap - 1.0) < 1e-10, f"Squeezing conjugated displacement overlap for alpha={alpha}, r={r}: {overlap}"
 
@@ -170,7 +170,7 @@ class TestCoreOperations:
         sim.initStateVector()
         # Apply beam splitter with random angle
         theta = (np.random.random() - 0.5) * 10
-        sim.beamSplitter(0, 1, theta)
+        sim.bs(0, 1, theta)
         # Calculate overlap deviations using binomial coefficient recursion
         p1 = np.cos(theta/2)**2
         p2 = np.sin(theta/2)**2
@@ -186,6 +186,22 @@ class TestCoreOperations:
             ips[j] = theoretical - np.abs(sim.innerProduct()) ** 2
         
         assert np.allclose(ips, 0, atol=1e-10), f"BS({theta}$) on |{nFock}⟩|0⟩ overlap deviations: {ips}"
+
+    def test_conditional_rotation(self):
+        nFock = np.random.randint(0, 32)
+        theta = (np.random.random() - 0.5) * 10
+        
+        sim = CVDV([1, 10])  # 1 qubit + 1024-point CV mode
+        sim.setUniform(0)    # |+⟩ qubit
+        sim.setFock(1, nFock)    # Fock state
+        sim.initStateVector()
+
+        sim.cr(targetReg=1, ctrlReg=0, ctrlQubit=0, theta=theta)
+        sim.rz(0, 0, theta * -(2*nFock + 1))
+
+        # Test overlap with initial state
+        overlap = np.abs(sim.innerProduct())
+        assert np.abs(overlap - 1.0) < 1e-10, f"CR({theta}) on |+⟩|{nFock}⟩ overlap: {overlap}"
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
