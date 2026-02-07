@@ -7,7 +7,7 @@ A high-performance CUDA library for simulating hybrid continuous-variable (CV) a
 ## Todo List
 
 + [ ] Add example notebooks for Product Formula and QSP
-+ [ ] Implement more efficient CUDA kernels for FFT, Wigner function and Husimi Q function
++ [ ] Implement more efficient CUDA kernels for Wigner function and Husimi Q function
 + [x] Add visual examples to README (Wigner function plots, architecture diagram)
 + [x] Create unit test suite with pytest for core operations
 + [x] Add performance benchmarks (timing, memory usage, GPU vs CPU comparison) + comparison table vs existing bosonic simulators
@@ -26,17 +26,17 @@ where $\lambda = \sqrt{2\pi/N}$ is the grid spacing and $\tilde{j} = j - (N-1)/2
 
 The benchmark compares CUDA-CVDV (GPU, position encoding) against bosonic-qiskit (CPU, Fock basis) across varying CV dimensions:
 
-![Performance Comparison](benchmarks/results/comparison.png)
+![Performance Comparison](benchmarks/state_transfer/results/comparison.png)
 
 *Performance scaling with CV dimension. CUDA-CVDV efficiently simulates up to dimension **16384** (14 qubits) on GPU with **50×** speedup over bosonic-qiskit at dimension **128** (7 qubits). Bosonic-qiskit's runtime scales up significantly beyond dimension 128 due to dense matrix operations.*
 
 ### Run Benchmarks
 
 ```bash
-./benchmarks/run.sh
+./benchmarks/state_transfer/run.sh
 ```
 
-Results saved to `benchmarks/results/` with timing data (`benchmark_results.json`) and visualization plots.
+Results saved to `benchmarks/state_transfer/results/` with timing data (`benchmark_results.json`) and visualization plots.
 
 ### Visualization
 
@@ -44,11 +44,21 @@ The benchmark demonstrates transferring a cat state from a CV mode to a 4-qubit 
 
 **Initial State**
 
-![Initial State](benchmarks/results/cvdv_initial_state.png)
+![Initial State](benchmarks/state_transfer/results/cvdv_initial_state.png)
 
 **Final State**
 
-![Final State](benchmarks/results/cvdv_final_state.png)
+![Final State](benchmarks/state_transfer/results/cvdv_final_state.png)
+
+### Gate Operation Benchmarks
+
+Individual gate timing across different register configurations (single CV, DV+CV, double CV, DV+double CV):
+
+```bash
+./benchmarks/ops_time/run.sh
+```
+
+Results saved to `benchmarks/ops_time/results/` with per-gate timing plots and raw data (`bench_ops.json`).
 
 
 
@@ -117,10 +127,14 @@ examples/
   cvdv_transfer.ipynb  # CV-DV state transfer demo
   qcst.ipynb           # Quantum coherent state transform demo
 benchmarks/
-  bench_cvdv.py        # CUDA-CVDV benchmark
-  bench_bosonic.py     # bosonic-qiskit benchmark
-  run_benchmarks.py    # Benchmark runner
-  run.sh               # Benchmark entry point
+  state_transfer/      # CV-to-DV state transfer benchmark
+    bench_cvdv.py      #   CUDA-CVDV benchmark
+    bench_bosonic.py   #   bosonic-qiskit comparison
+    run_benchmarks.py  #   Benchmark runner
+    run.sh             #   Entry point
+  ops_time/            # Individual gate operation benchmarks
+    bench_ops.py       #   Gate timing across configs
+    run.sh             #   Entry point
 CMakeLists.txt         # Build configuration
 Makefile               # Build & test commands
 run.sh                 # Build script (creates build/libcvdv.so)

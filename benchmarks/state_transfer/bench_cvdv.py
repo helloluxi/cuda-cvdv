@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 from numpy import pi, sqrt
 
 # Add parent directory to path to import interface
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from interface import CVDV
 
 
