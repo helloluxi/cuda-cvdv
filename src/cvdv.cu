@@ -296,7 +296,7 @@ __global__ void kernelApplyOneModeQ(cuDoubleComplex* state, size_t totalSize,
 
 // Apply controlled phase to a specific register with control from another register
 // exp(i*phaseCoeff*Z*x) where Z acts on ctrlQubit in ctrlReg
-__global__ void kernelApplyControlledQ(cuDoubleComplex* state, size_t totalSize,
+__global__ void kernelApplyConditionalOneModeQ(cuDoubleComplex* state, size_t totalSize,
                                                          int targetReg, int ctrlReg, int ctrlQubit,
                                                          const int* qbts, const double* gridSteps,
                                                          const int* flwQbts,
@@ -325,7 +325,7 @@ __global__ void kernelApplyControlledQ(cuDoubleComplex* state, size_t totalSize,
 
 // Apply controlled phase based on position squared: exp(i*t*Z*x^2)
 // where Z acts on ctrlQubit in ctrlReg
-__global__ void kernelApplyControlledQ2(cuDoubleComplex* state, size_t totalSize,
+__global__ void kernalApplyConditionalOneModeQ2(cuDoubleComplex* state, size_t totalSize,
                                                         int targetReg, int ctrlReg, int ctrlQubit,
                                                         const int* qbts, const double* gridSteps,
                                                         const int* flwQbts,
@@ -611,6 +611,41 @@ __global__ void kernelApplyTwoModeQQ(cuDoubleComplex* state, size_t totalSize,
     double q2 = gridX(local2, reg2Dim, dx2);
     
     state[idx] = cmulPhase(state[idx], coeff * q1 * q2);
+}
+
+// Apply controlled two-mode position coupling: exp(i*coeff*Z*q1*q2)
+// where Z acts on ctrlQubit in ctrlReg
+__global__ void kernelApplyConditionalTwoModeQQ(cuDoubleComplex* state, size_t totalSize,
+                                          int reg1Idx, int reg2Idx,
+                                          int ctrlReg, int ctrlQubit,
+                                          const int* qbts, const double* gridSteps,
+                                          const int* flwQbts,
+                                          double coeff) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= totalSize) return;
+
+    size_t reg1Dim = 1 << qbts[reg1Idx];
+    size_t reg2Dim = 1 << qbts[reg2Idx];
+    double dx1 = gridSteps[reg1Idx];
+    double dx2 = gridSteps[reg2Idx];
+
+    size_t local1 = getLocalIndex(idx, flwQbts[reg1Idx], qbts[reg1Idx]);
+    size_t local2 = getLocalIndex(idx, flwQbts[reg2Idx], qbts[reg2Idx]);
+
+    // Extract control qubit state
+    size_t ctrlLocalIdx = getLocalIndex(idx, flwQbts[ctrlReg], qbts[ctrlReg]);
+    int ctrlMask = 1 << (qbts[ctrlReg] - 1 - ctrlQubit);
+
+    double q1 = gridX(local1, reg1Dim, dx1);
+    double q2 = gridX(local2, reg2Dim, dx2);
+    double phase = coeff * q1 * q2;
+
+    // Z operator: |0⟩ gets +phase, |1⟩ gets -phase
+    if (ctrlLocalIdx & ctrlMask) {
+        state[idx] = cmulPhase(state[idx], -phase);
+    } else {
+        state[idx] = cmulPhase(state[idx], phase);
+    }
 }
 
 #pragma endregion
@@ -1709,7 +1744,7 @@ void cvdvConditionalDisplacement(CVDVContext* ctx, int targetReg, int ctrlReg, i
 
     // Step 1: Apply CD(i*Im(α)) = exp(i√2 Im(α) Z q) in position space
     if (fabs(alphaIm) > 1e-12) {
-        kernelApplyControlledQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+        kernelApplyConditionalOneModeQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
                                                 targetReg, ctrlReg, ctrlQubit,
                                                 ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
                                                 SQRT2 * alphaIm);
@@ -1723,7 +1758,7 @@ void cvdvConditionalDisplacement(CVDVContext* ctx, int targetReg, int ctrlReg, i
         cvdvFtQ2P(ctx, targetReg);
 
         // Apply exp(-i√2 Re(α) Z p) in momentum space
-        kernelApplyControlledQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+        kernelApplyConditionalOneModeQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
                                                 targetReg, ctrlReg, ctrlQubit,
                                                 ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
                                                 -SQRT2 * alphaRe);
@@ -1902,7 +1937,7 @@ void cvdvRotation(CVDVContext* ctx, int regIdx, double theta) {
 static void cvdvControlledPhaseSquare(CVDVContext* ctx, int targetReg, int ctrlReg, int ctrlQubit, double t) {
     int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
 
-    kernelApplyControlledQ2<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+    kernalApplyConditionalOneModeQ2<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
                                                 targetReg, ctrlReg, ctrlQubit,
                                                 ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, t);
     checkCudaErrors(ctx, cudaGetLastError());
@@ -1977,21 +2012,58 @@ void cvdvSqueeze(CVDVContext* ctx, int regIdx, double r) {
     double expMinusR = exp(-r);
     double t = exp(-r / 2.0) * sqrt(fabs(1.0 - expMinusR));
 
-    // First: exp(i(e^{-r}-1)/(2te^r) p^2) in momentum space
-    cvdvFtQ2P(ctx, regIdx);
-    cvdvPhaseSquare(ctx, regIdx, (expMinusR - 1.0) / (2.0 * t * expR));
-    cvdvFtP2Q(ctx, regIdx);
+    // First: exp(i(t)/2 q^2) in position space
+    cvdvPhaseSquare(ctx, regIdx, 0.5 * t);
 
-    // Second: exp(-i(te^r)/2 q^2) in position space
-    cvdvPhaseSquare(ctx, regIdx, -0.5 * t * expR);
-
-    // Third: exp(i(1-e^{-r})/(2t) p^2) in momentum space
+    // Second: exp(i(1-e^{-r})/(2t) p^2) in momentum space
     cvdvFtQ2P(ctx, regIdx);
     cvdvPhaseSquare(ctx, regIdx, (1.0 - expMinusR) / (2.0 * t));
     cvdvFtP2Q(ctx, regIdx);
 
-    // Fourth: exp(i(t)/2 q^2) in position space
-    cvdvPhaseSquare(ctx, regIdx, 0.5 * t);
+    // Third: exp(-i(te^r)/2 q^2) in position space
+    cvdvPhaseSquare(ctx, regIdx, -0.5 * t * expR);
+
+    // Fourth: exp(i(e^{-r}-1)/(2te^r) p^2) in momentum space
+    cvdvFtQ2P(ctx, regIdx);
+    cvdvPhaseSquare(ctx, regIdx, (expMinusR - 1.0) / (2.0 * t * expR));
+    cvdvFtP2Q(ctx, regIdx);
+}
+
+void cvdvConditionalSqueeze(CVDVContext* ctx, int targetReg, int ctrlReg, int ctrlQubit, double r) {
+    if (!ctx) return;
+    if (targetReg < 0 || targetReg >= ctx->gNumReg) {
+        fprintf(stderr, "Invalid target register index: %d\n", targetReg);
+        return;
+    }
+    if (ctrlReg < 0 || ctrlReg >= ctx->gNumReg) {
+        fprintf(stderr, "Invalid control register index: %d\n", ctrlReg);
+        return;
+    }
+    if (ctrlQubit < 0 || ctrlQubit >= ctx->gQbts[ctrlReg]) {
+        fprintf(stderr, "Invalid control qubit index: %d\n", ctrlQubit);
+        return;
+    }
+
+    // CS(r) = conditional version of S(r), replacing cvdvPhaseSquare with cvdvControlledPhaseSquare
+    double chR = cosh(r);
+    double shR = sinh(r);
+    double s = sqrt(2.0 * abs(sinh(0.5 * r)));
+
+    // First
+    cvdvPhaseSquare(ctx, targetReg, 0.5 * s * chR);
+    cvdvControlledPhaseSquare(ctx, targetReg, ctrlReg, ctrlQubit, -0.5 * s * shR);
+    // Second
+    cvdvFtQ2P(ctx, targetReg);
+    cvdvPhaseSquare(ctx, targetReg, 0.5 * (chR - 1) / s);
+    cvdvControlledPhaseSquare(ctx, targetReg, ctrlReg, ctrlQubit, 0.5 * shR / s);
+    cvdvFtP2Q(ctx, targetReg);
+    // Third
+    cvdvPhaseSquare(ctx, targetReg, -0.5 * s);
+    // Fourth
+    cvdvFtQ2P(ctx, targetReg);
+    cvdvPhaseSquare(ctx, targetReg, 0.5 * (chR - 1) / s);
+    cvdvControlledPhaseSquare(ctx, targetReg, ctrlReg, ctrlQubit, -0.5 * shR / s);
+    cvdvFtP2Q(ctx, targetReg);
 }
 
 // Internal: small-angle beam splitter |θ| ≤ π/2
@@ -2071,6 +2143,88 @@ void cvdvBeamSplitter(CVDVContext* ctx, int reg1, int reg2, double theta) {
 
     // Apply small-angle remainder
     cvdvBeamSplitterSmall(ctx, reg1, reg2, remainder);
+}
+
+// Internal: small-angle conditional beam splitter |θ| ≤ π/2
+// |0⟩ gets BS(θ), |1⟩ gets BS(-θ)
+static void cvdvConditionalBeamSplitterSmall(CVDVContext* ctx, int reg1, int reg2, int ctrlReg, int ctrlQubit, double theta) {
+    if (fabs(theta) < 1e-15) return;
+
+    double coeff_q = -tan(0.25 * theta);
+    double coeff_p = -sin(0.5  * theta);
+
+    int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
+
+    kernelApplyConditionalTwoModeQQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+                                        reg1, reg2,
+                                        ctrlReg, ctrlQubit,
+                                        ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
+                                        coeff_q);
+    checkCudaErrors(ctx, cudaDeviceSynchronize());
+
+    cvdvFtQ2P(ctx, reg1);
+    cvdvFtQ2P(ctx, reg2);
+
+    kernelApplyConditionalTwoModeQQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+                                        reg1, reg2,
+                                        ctrlReg, ctrlQubit,
+                                        ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
+                                        coeff_p);
+    checkCudaErrors(ctx, cudaDeviceSynchronize());
+
+    cvdvFtP2Q(ctx, reg1);
+    cvdvFtP2Q(ctx, reg2);
+
+    kernelApplyConditionalTwoModeQQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+                                        reg1, reg2,
+                                        ctrlReg, ctrlQubit,
+                                        ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
+                                        coeff_q);
+    checkCudaErrors(ctx, cudaDeviceSynchronize());
+}
+
+void cvdvConditionalBeamSplitter(CVDVContext* ctx, int reg1, int reg2, int ctrlReg, int ctrlQubit, double theta) {
+    if (!ctx) return;
+    if (reg1 < 0 || reg1 >= ctx->gNumReg || reg2 < 0 || reg2 >= ctx->gNumReg) {
+        fprintf(stderr, "Invalid register indices: %d, %d\n", reg1, reg2);
+        return;
+    }
+    if (reg1 == reg2) {
+        fprintf(stderr, "Conditional beam splitter requires two different registers\n");
+        return;
+    }
+
+    // For |θ| > π/2, decompose CBS(θ) = BS(θ₀) CBS(θ-θ₀)
+    // BS(θ₀) applied unconditionally (correct for even half-turns; odd half-turns are approximate)
+    double theta0 = round(theta / PI) * PI;
+    double remainder = theta - theta0;
+
+    int halfTurns = (int)round(theta0 / PI);
+    halfTurns = ((halfTurns % 4) + 4) % 4;
+
+    switch (halfTurns) {
+        case 0: break;
+        case 1:
+            cvdvFtQ2P(ctx, reg1);
+            cvdvFtQ2P(ctx, reg2);
+            cvdvConditionalParity(ctx, reg1, ctrlReg, ctrlQubit);
+            cvdvConditionalParity(ctx, reg2, ctrlReg, ctrlQubit);
+            cvdvSwapRegisters(ctx, reg1, reg2);
+            break;
+        case 2:
+            cvdvParity(ctx, reg1);
+            cvdvParity(ctx, reg2);
+            break;
+        case 3:
+            cvdvFtP2Q(ctx, reg1);
+            cvdvFtP2Q(ctx, reg2);
+            cvdvConditionalParity(ctx, reg1, ctrlReg, ctrlQubit);
+            cvdvConditionalParity(ctx, reg2, ctrlReg, ctrlQubit);
+            cvdvSwapRegisters(ctx, reg1, reg2);
+            break;
+    }
+
+    cvdvConditionalBeamSplitterSmall(ctx, reg1, reg2, ctrlReg, ctrlQubit, remainder);
 }
 
 void cvdvQ1Q2Gate(CVDVContext* ctx, int reg1, int reg2, double coeff) {

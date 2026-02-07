@@ -129,9 +129,17 @@ def load_library():
     lib.cvdvSqueeze.argtypes = [ctypes.c_void_p, c_int, c_double]
     lib.cvdvSqueeze.restype = None
 
+    # void cvdvConditionalSqueeze(CVDVContext* ctx, int targetReg, int ctrlReg, int ctrlQubit, double r)
+    lib.cvdvConditionalSqueeze.argtypes = [ctypes.c_void_p, c_int, c_int, c_int, c_double]
+    lib.cvdvConditionalSqueeze.restype = None
+
     # void cvdvBeamSplitter(CVDVContext* ctx, int reg1, int reg2, double theta)
     lib.cvdvBeamSplitter.argtypes = [ctypes.c_void_p, c_int, c_int, c_double]
     lib.cvdvBeamSplitter.restype = None
+
+    # void cvdvConditionalBeamSplitter(CVDVContext* ctx, int reg1, int reg2, int ctrlReg, int ctrlQubit, double theta)
+    lib.cvdvConditionalBeamSplitter.argtypes = [ctypes.c_void_p, c_int, c_int, c_int, c_int, c_double]
+    lib.cvdvConditionalBeamSplitter.restype = None
 
     # void cvdvQ1Q2Gate(CVDVContext* ctx, int reg1, int reg2, double coeff)
     lib.cvdvQ1Q2Gate.argtypes = [ctypes.c_void_p, c_int, c_int, c_double]
@@ -396,6 +404,15 @@ class CVDV:
         """
         lib.cvdvConditionalRotation(self.ctx, targetReg, ctrlReg, ctrlQubit, c_double(theta))
 
+    def x(self, regIdx, targetQubit):
+        lib.cvdvPauliRotation(self.ctx, regIdx, targetQubit, 0, pi)
+
+    def y(self, regIdx, targetQubit):
+        lib.cvdvPauliRotation(self.ctx, regIdx, targetQubit, 1, pi)
+
+    def z(self, regIdx, targetQubit):
+        lib.cvdvPauliRotation(self.ctx, regIdx, targetQubit, 2, pi)
+
     def rx(self, regIdx, targetQubit, theta):
         lib.cvdvPauliRotation(self.ctx, regIdx, targetQubit, 0, theta)
 
@@ -463,6 +480,19 @@ class CVDV:
         """
         lib.cvdvSqueeze(self.ctx, regIdx, r)
 
+    def cs(self, targetReg, ctrlReg, ctrlQubit, r):
+        """Apply conditional squeezing gate CS(r) controlled by qubit.
+
+        |0⟩ gets S(r), |1⟩ gets S(-r).
+
+        Args:
+            targetReg: Target register index (receives squeezing)
+            ctrlReg: Control register index
+            ctrlQubit: Qubit index within control register
+            r: Squeezing parameter
+        """
+        lib.cvdvConditionalSqueeze(self.ctx, targetReg, ctrlReg, ctrlQubit, c_double(r))
+
     def bs(self, reg1, reg2, theta):
         """Apply beam splitter gate BS(θ) between two registers.
 
@@ -475,6 +505,20 @@ class CVDV:
             theta: Beam splitter angle in radians
         """
         lib.cvdvBeamSplitter(self.ctx, reg1, reg2, theta)
+
+    def cbs(self, reg1, reg2, ctrlReg, ctrlQubit, theta):
+        """Apply conditional beam splitter CBS(θ) controlled by qubit.
+
+        |0⟩ gets BS(θ), |1⟩ gets BS(-θ).
+
+        Args:
+            reg1: First register index
+            reg2: Second register index
+            ctrlReg: Control register index
+            ctrlQubit: Qubit index within control register
+            theta: Beam splitter angle in radians
+        """
+        lib.cvdvConditionalBeamSplitter(self.ctx, reg1, reg2, ctrlReg, ctrlQubit, c_double(theta))
 
     def q1q2(self, reg1, reg2, coeff):
         """Apply Q1Q2 interaction gate between two registers.

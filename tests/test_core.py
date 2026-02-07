@@ -157,7 +157,7 @@ class TestCoreOperations:
         sim.s(0, -r)
         sim.d(0, alpha)
         sim.s(0, r)
-        sim.d(0, -alpha*np.exp(r))
+        sim.d(0, -alpha*np.exp(-r))
         overlap = np.abs(sim.innerProduct())
         assert np.abs(overlap - 1.0) < 1e-10, f"Squeezing conjugated displacement overlap for alpha={alpha}, r={r}: {overlap}"
 
@@ -202,6 +202,42 @@ class TestCoreOperations:
         # Test overlap with initial state
         overlap = np.abs(sim.innerProduct())
         assert np.abs(overlap - 1.0) < 1e-10, f"CR({theta}) on |+⟩|{nFock}⟩ overlap: {overlap}"
+
+    def test_conditional_squeeze(self):
+        r = (np.random.random() - 0.5) * 2
+        alpha = (np.random.random() - 0.5) * 2
+        
+        sim = CVDV([1, 10])  # 1 qubit + 1024-point CV mode
+        sim.setUniform(0)    # |+⟩ qubit
+        sim.setFock(1, 0)    # vacuum mode
+        sim.initStateVector()
+
+        sim.cs(targetReg=1, ctrlReg=0, ctrlQubit=0, r=r)
+        sim.d(1, alpha)
+        sim.cs(targetReg=1, ctrlReg=0, ctrlQubit=0, r=-r)
+        sim.d(1, -alpha * np.cosh(r))
+        sim.cd(1, 0, 0, -alpha * np.sinh(r))
+
+        # Test overlap with initial state
+        overlap = np.abs(sim.innerProduct())
+        assert np.abs(overlap - 1.0) < 1e-10, f"CS({r}) on |+⟩|vac⟩ overlap: {overlap}"
+
+    def test_conditional_beam_splitter(self):
+        """Test beam splitter operation on Fock state + vacuum state pair."""
+        nFock = np.random.randint(3, 10)  # Random Fock state from 3 to 9
+        sim = CVDV([1, 10, 10])
+        sim.setUniform(0)    # |+⟩ qubit
+        sim.setFock(1, nFock)
+        sim.setFock(2, 0)
+        sim.initStateVector()
+        # Apply beam splitter with random angle
+        theta = (np.random.random() - 0.5) * 10
+        sim.cbs(1, 2, 0, 0, theta)
+        sim.cp(2, 0, 0)
+        sim.bs(1, 2, -theta)
+        # Test overlap with initial state
+        overlap = np.abs(sim.innerProduct())
+        assert np.abs(overlap - 1.0) < 1e-10, f"CBS({theta}$) on |+⟩|{nFock}⟩|0⟩ overlap: {overlap}"
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
