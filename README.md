@@ -95,6 +95,26 @@ This encoding offers:
 3. **Controlled Error Source**: Errors arise **only** from QFT basis switching between position and momentum representations—not from Trotter or other approximations
 4. **CUDA-Friendly Parallelism**: Each grid point is processed independently, achieving near-optimal GPU utilization
 
+## Architecture
+
+```mermaid
+graph TD
+    API[Python Interface]
+
+    API --> G["<b>Gaussian CV</b><br/>Displacement · Rotation<br/>Squeezing · Beam Splitter"]
+    API --> DV["<b>Qubit Gates</b><br/>Hadamard · Pauli Rotation"]
+    API --> HY["<b>Hybrid Gates</b><br/>Cond. Displacement · Rotation<br/>Squeezing · Parity · Beam Splitter"]
+    API --> RO["<b>Readout</b><br/>Measurement · Wigner · Husimi-Q"]
+
+    G & DV & HY & RO --> S
+
+    subgraph S["GPU — Dense State Vector"]
+        PSI["<b>|Ψ⟩</b> stored as dense state vector"]
+        OPS["All gates decompose into<br/>parallel phase kicks · batched FFT"]
+        PSI --- OPS
+    end
+```
+
 ## Data Format
 
 ### Register-Based Architecture
