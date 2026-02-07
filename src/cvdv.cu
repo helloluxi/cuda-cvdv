@@ -666,174 +666,216 @@ __global__ void kernelApplyScalarRegister(cuDoubleComplex* data, size_t totalSiz
 #pragma endregion
 
 #pragma region Utility Kernels
-// Compute Wigner function W(x,p) = (1/π) ∫ ψ*(x+y)ψ(x-y)e^(2ipy) dy for a register slice
-__global__ void kernelComputeWignerSingleSlice(double* wigner, const cuDoubleComplex* state,
-                                                    int regIdx, const int* sliceIndices,
-                                                    int cvDim, double dx,
-                                                    int wignerN, double wXMax, double wPMax,
-                                                    const int* qbts, const int* flwQbts) {
-    int wIdx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (wIdx >= wignerN * wignerN) return;
 
-    int wxIdx = wIdx % wignerN;
-    int wpIdx = wIdx / wignerN;
+// ============ FFT-based Wigner Function ============
+// Build integrand f_x[y] = Σ_other conj(ψ(x+y)) · ψ(x-y) for batched FFT (FullMode: trace over all other registers)
+__global__ void kernelBuildWignerIntegrand(
+    cuDoubleComplex* dBuf,            // output: [wignerN x cvDim] contiguous rows
+    const cuDoubleComplex* state,
+    int regIdx, int cvDim, double dx,
+    int wignerN, double wXMax,
+    int numReg, const int* qbts, const int* flwQbts)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = wignerN * cvDim;
+    if (tid >= total) return;
+
+    int wxIdx = tid / cvDim;
+    int yIdx  = tid % cvDim;
 
     double wDx = 2.0 * wXMax / (wignerN - 1);
-    double wDp = 2.0 * wPMax / (wignerN - 1);
-
     double wx = -wXMax + wxIdx * wDx;
-    double wp = -wPMax + wpIdx * wDp;
+    double y  = gridX(yIdx, cvDim, dx);
 
-    // Compute base index for slice: sum over all registers except target
-    size_t baseIdx = 0;
-    // Count registers to know when to stop
-    for (int r = 0; ; r++) {
-        if (flwQbts[r] == 0 && r > 0) {
-            break;
-        }
-        if (r != regIdx) {
-            baseIdx += sliceIndices[r] << flwQbts[r];
-        }
-    }
-    size_t regStride = 1 << flwQbts[regIdx];
+    int xpyIdx = (int)round((wx + y) / dx) + cvDim / 2;
+    int xmyIdx = (int)round((wx - y) / dx) + cvDim / 2;
 
-    // Integrate over y: W(x,p) = (1/π) ∫ ψ*(x+y)ψ(x-y)e^(2ipy) dy
-    double realSum = 0.0;
-    for (int yIdx = 0; yIdx < cvDim; yIdx++) {
-        double y = gridX(yIdx, cvDim, dx);
+    cuDoubleComplex sum = make_cuDoubleComplex(0.0, 0.0);
 
-        // Grid indices for x±y
-        int xpyIdx = (int)round((wx + y) / dx) + cvDim / 2;
-        int xmyIdx = (int)round((wx - y) / dx) + cvDim / 2;
+    if (xpyIdx >= 0 && xpyIdx < cvDim && xmyIdx >= 0 && xmyIdx < cvDim) {
+        size_t regStride = 1 << flwQbts[regIdx];
+        int totalQubits = qbts[0] + flwQbts[0];
+        size_t otherSize = 1 << (totalQubits - qbts[regIdx]);
 
-        if (xpyIdx >= 0 && xpyIdx < cvDim && xmyIdx >= 0 && xmyIdx < cvDim) {
-            // Direct index computation: globalIdx = baseIdx + localIdx * regStride
-            size_t idxPy = baseIdx + xpyIdx * regStride;
-            size_t idxMy = baseIdx + xmyIdx * regStride;
-
-            cuDoubleComplex psiXpy = state[idxPy];
-            cuDoubleComplex psiXmy = state[idxMy];
-            cuDoubleComplex prod = conjMul(psiXpy, psiXmy);
-
-            double phase = 2.0 * wp * y;
-            realSum += cuCreal(prod) * cos(phase) - cuCimag(prod) * sin(phase);
-        }
-    }
-
-    wigner[wIdx] = realSum * dx / PI;
-}
-
-// Compute Wigner function W(x,p) summed over all other registers
-// This computes the reduced Wigner function by tracing out all registers except regIdx
-__global__ void kernelComputeWignerFullMode(double* wigner, const cuDoubleComplex* state,
-                                                 int regIdx, int cvDim, double dx,
-                                                 int wignerN, double wXMax, double wPMax,
-                                                 int numReg, const int* qbts, const int* flwQbts) {
-    // Use grid-stride loop for better occupancy
-    int wIdx = blockIdx.x * blockDim.x + threadIdx.x;
-    int totalWignerPoints = wignerN * wignerN;
-    
-    // Pre-compute constants
-    double wDx = 2.0 * wXMax / (wignerN - 1);
-    double wDp = 2.0 * wPMax / (wignerN - 1);
-    size_t regStride = 1 << flwQbts[regIdx];
-    
-    // Total size of all other registers combined = 2^(total qubits - this register's qubits)
-    int totalQubits = qbts[0] + flwQbts[0];
-    size_t otherSize = 1 << (totalQubits - qbts[regIdx]);
-    
-    // Grid-stride loop to process multiple Wigner points per thread if needed
-    for (int w = wIdx; w < totalWignerPoints; w += blockDim.x * gridDim.x) {
-        int wxIdx = w % wignerN;
-        int wpIdx = w / wignerN;
-
-        double wx = -wXMax + wxIdx * wDx;
-        double wp = -wPMax + wpIdx * wDp;
-
-        // Sum over all configurations of other registers
-        double realSum = 0.0;
-        
-        // Loop over all possible states of other registers
         for (size_t otherIdx = 0; otherIdx < otherSize; otherIdx++) {
-            // Reconstruct global base index for this configuration of other registers
-            
-            // Extract base index from compressed representation
             size_t baseIdx = 0;
             size_t remainingIdx = otherIdx;
-            
             for (int r = numReg - 1; r >= 0; r--) {
                 if (r == regIdx) continue;
-                
                 size_t rDim = 1 << qbts[r];
                 size_t rStride = 1 << flwQbts[r];
-                size_t rLocalIdx = remainingIdx % rDim;
+                baseIdx += (remainingIdx % rDim) * rStride;
                 remainingIdx /= rDim;
-                
-                baseIdx += rLocalIdx * rStride;
             }
-            
-            // Now compute Wigner for this slice - use register variables for accumulation
-            for (int yIdx = 0; yIdx < cvDim; yIdx++) {
-                double y = gridX(yIdx, cvDim, dx);
-
-                // Grid indices for x±y
-                int xpyIdx = (int)round((wx + y) / dx) + cvDim / 2;
-                int xmyIdx = (int)round((wx - y) / dx) + cvDim / 2;
-
-                if (xpyIdx >= 0 && xpyIdx < cvDim && xmyIdx >= 0 && xmyIdx < cvDim) {
-                    size_t idxPy = baseIdx + xpyIdx * regStride;
-                    size_t idxMy = baseIdx + xmyIdx * regStride;
-
-                    cuDoubleComplex psiXpy = state[idxPy];
-                    cuDoubleComplex psiXmy = state[idxMy];
-                    cuDoubleComplex prod = conjMul(psiXpy, psiXmy);
-
-                    double phase = 2.0 * wp * y;
-                    realSum += cuCreal(prod) * cos(phase) - cuCimag(prod) * sin(phase);
-                }
-            }
+            size_t idxPy = baseIdx + xpyIdx * regStride;
+            size_t idxMy = baseIdx + xmyIdx * regStride;
+            sum = cuCadd(sum, conjMul(state[idxPy], state[idxMy]));
         }
-
-        wigner[w] = realSum * dx / PI;
     }
+
+    dBuf[wxIdx * cvDim + yIdx] = sum;
 }
 
-// TODO: Use Convolution to speed up computation
-__global__ void kernelComputeHusimiQFullMode(double* outHusimiQ, const cuDoubleComplex* state,
-                                             int regIdx, double dx,
-                                             int qN, double qMax,
-                                             int numReg, const int* qbts, const int* flwQbts) {
-    // Thread ID in flattened grid
-    int husimiGridIdx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (husimiGridIdx >= qN * qN) return;
-    
-    // Pre-compute grid parameters
+// Build integrand for SingleSlice (one fixed configuration of other registers)
+__global__ void kernelBuildWignerIntegrandSingleSlice(
+    cuDoubleComplex* dBuf,            // output: [wignerN x cvDim] contiguous rows
+    const cuDoubleComplex* state,
+    int regIdx, const int* sliceIndices,
+    int cvDim, double dx,
+    int wignerN, double wXMax,
+    const int* qbts, const int* flwQbts)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = wignerN * cvDim;
+    if (tid >= total) return;
+
+    int wxIdx = tid / cvDim;
+    int yIdx  = tid % cvDim;
+
+    double wDx = 2.0 * wXMax / (wignerN - 1);
+    double wx = -wXMax + wxIdx * wDx;
+    double y  = gridX(yIdx, cvDim, dx);
+
+    int xpyIdx = (int)round((wx + y) / dx) + cvDim / 2;
+    int xmyIdx = (int)round((wx - y) / dx) + cvDim / 2;
+
+    cuDoubleComplex val = make_cuDoubleComplex(0.0, 0.0);
+
+    if (xpyIdx >= 0 && xpyIdx < cvDim && xmyIdx >= 0 && xmyIdx < cvDim) {
+        // Compute base index for the fixed slice
+        size_t baseIdx = 0;
+        for (int r = 0; ; r++) {
+            if (flwQbts[r] == 0 && r > 0) break;
+            if (r != regIdx) {
+                baseIdx += sliceIndices[r] << flwQbts[r];
+            }
+        }
+        size_t regStride = 1 << flwQbts[regIdx];
+        size_t idxPy = baseIdx + xpyIdx * regStride;
+        size_t idxMy = baseIdx + xmyIdx * regStride;
+        val = conjMul(state[idxPy], state[idxMy]);
+    }
+
+    dBuf[wxIdx * cvDim + yIdx] = val;
+}
+
+// Extract Wigner values from FFT output at user-requested p-grid points
+// cuFFT INVERSE: G[k] = Σ_j f[j] e^{+2πijk/N}, matching p_k = πk/(N·dx)
+// W(x, p) = (dx/π) Re(e^{-ip(N-1)dx} · G[k])
+__global__ void kernelExtractWigner(
+    double* wigner,                    // output: [wignerN x wignerN]
+    const cuDoubleComplex* dFFTOut,    // input:  [wignerN x cvDim] post-IFFT
+    int cvDim, double dx,
+    int wignerN, double wPMax)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= wignerN * wignerN) return;
+
+    int wxIdx = tid % wignerN;
+    int wpIdx = tid / wignerN;
+
+    double wDp = 2.0 * wPMax / (wignerN - 1);
+    double wp = -wPMax + wpIdx * wDp;
+
+    // Map wp to FFT bin index
+    // IFFT freq: p_k = πk/(cvDim·dx) for k=0..cvDim-1 (before fftshift)
+    // After fftshift: p_{k'} = (k' - cvDim/2) · π/(cvDim·dx)
+    // Invert: k' = wp·cvDim·dx/π + cvDim/2
+    double dp = PI / ((double)cvDim * dx);
+    int kShifted = (int)round(wp / dp + cvDim * 0.5);
+
+    if (kShifted < 0) kShifted = 0;
+    if (kShifted >= cvDim) kShifted = cvDim - 1;
+
+    // Undo fftshift to get cuFFT output index: k = (kShifted + cvDim/2) % cvDim
+    int k = (kShifted + cvDim / 2) % cvDim;
+
+    cuDoubleComplex G = dFFTOut[wxIdx * cvDim + k];
+
+    // Phase correction: e^{-ip·(cvDim-1)·dx} where p is the actual FFT frequency
+    double pActual = (kShifted - cvDim * 0.5) * dp;
+    double phase = -pActual * (cvDim - 1) * dx;
+
+    double result = cuCreal(G) * cos(phase) - cuCimag(G) * sin(phase);
+    wigner[tid] = result * dx / PI;
+}
+
+// ============ FFT-based Husimi Q Function ============
+// Build windowed signal h_q[x] = π^{-1/4} exp(-½(x-q)²) √dx · ψ_slice(x) for one slice
+__global__ void kernelBuildHusimiWindowed(
+    cuDoubleComplex* dBuf,            // output: [qN x cvDim] contiguous rows
+    const cuDoubleComplex* state,
+    int regIdx, double dx,
+    int qN, double qMax,
+    size_t sliceIdx,
+    const int* qbts, const int* flwQbts)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int cvDim = 1 << qbts[regIdx];
+    int total = qN * cvDim;
+    if (tid >= total) return;
+
+    int qIdx = tid / cvDim;
+    int xIdx = tid % cvDim;
+
     double dq = 2.0 * qMax / (qN - 1);
-    int qIdx = husimiGridIdx % qN;
-    int pIdx = husimiGridIdx / qN;
     double sample_q = -qMax + qIdx * dq;
-    double sample_p = -qMax + pIdx * dq;
-    
-    double res = 0;
-    cuDoubleComplex localOverlapSum;
-    size_t cvDim = 1 << qbts[regIdx];
-    size_t sliceCount = 1 << (qbts[0] + flwQbts[0] - qbts[regIdx]);
+    double x = gridX(xIdx, cvDim, dx);
+
+    // Gaussian window (no phase factor — phases cancel in |·|²)
+    double amplitude = PI_POW_NEG_QUARTER * exp(-0.5 * (x - sample_q) * (x - sample_q)) * sqrt(dx);
+
+    // State vector element for this slice (same bitmask indexing as before)
     int qbtsAfterCV = flwQbts[regIdx];
     size_t qbtsAfterCVMask = (1 << qbtsAfterCV) - 1;
-    for (size_t sliceIdx = 0; sliceIdx < sliceCount; ++sliceIdx) {
-        localOverlapSum = make_cuDoubleComplex(0.0, 0.0);
-        for (int xIdx = 0; xIdx < cvDim; ++xIdx) {
-            double x = gridX(xIdx, cvDim, dx);
-            double amplitude = PI_POW_NEG_QUARTER * exp(-0.5 * (x - sample_q) * (x - sample_q)) * sqrt(dx); // Normalize as qubit regsiter
-            cuDoubleComplex phaseFactor = phaseToZ(sample_p * (x - 0.5 * sample_q));
-            localOverlapSum = cuCadd(localOverlapSum, cuCmul(conjMul(phaseFactor,
-                state[(sliceIdx & qbtsAfterCVMask) | (xIdx << flwQbts[regIdx]) | ((sliceIdx & ~qbtsAfterCVMask) << (qbts[regIdx]))]
-            ), amplitude));
-        }
-        res += absSquare(localOverlapSum);
-    }
-        
-    outHusimiQ[husimiGridIdx] = res / PI;
+    cuDoubleComplex psi = state[(sliceIdx & qbtsAfterCVMask) |
+                                (xIdx << flwQbts[regIdx]) |
+                                ((sliceIdx & ~qbtsAfterCVMask) << (qbts[regIdx]))];
+
+    dBuf[qIdx * cvDim + xIdx] = cuCmul(psi, amplitude);
+}
+
+// Accumulate |H[k]|² from FFT output into accumulation buffer
+__global__ void kernelAccumHusimiPower(
+    double* dAccum,                    // [qN x cvDim], accumulated across slices
+    const cuDoubleComplex* dFFTOut,    // [qN x cvDim], post-FFT for one slice
+    int totalElements)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= totalElements) return;
+    dAccum[tid] += absSquare(dFFTOut[tid]);
+}
+
+// Extract Husimi Q values from accumulated power spectrum at user-requested p-grid
+// cuFFT FORWARD: H[k] = Σ h[j] e^{-2πijk/N}, matching p_k = 2πk/(N·dx)
+// Q(q,p) = |H[k]|² / π  (no phase correction needed)
+__global__ void kernelExtractHusimi(
+    double* outHusimiQ,               // output: [qN x qN]
+    const double* dAccum,             // input:  [qN x cvDim]
+    int cvDim, double dx,
+    int qN, double qMax, double pMax)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= qN * qN) return;
+
+    int qIdx = tid % qN;
+    int pIdx = tid / qN;
+
+    double dp_out = 2.0 * pMax / (qN - 1);
+    double sample_p = -pMax + pIdx * dp_out;
+
+    // Map sample_p to FFT bin index
+    // FFT freq: p_k = 2πk/(cvDim·dx) for k=0..cvDim-1 (before fftshift)
+    // After fftshift: p_{k'} = (k' - cvDim/2) · 2π/(cvDim·dx)
+    double dp = 2.0 * PI / ((double)cvDim * dx);
+    int kShifted = (int)round(sample_p / dp + cvDim * 0.5);
+
+    if (kShifted < 0) kShifted = 0;
+    if (kShifted >= cvDim) kShifted = cvDim - 1;
+
+    int k = (kShifted + cvDim / 2) % cvDim;
+
+    outHusimiQ[tid] = dAccum[qIdx * cvDim + k] / PI;
 }
 
 // Compute probability of joint measurement for two registers by summing over all other registers
@@ -2260,7 +2302,6 @@ void cvdvGetWignerSingleSlice(CVDVContext* ctx, int regIdx, int* sliceIndices, d
         return;
     }
 
-    // Get register dimension and dx from managed memory (direct CPU access)
     size_t cvDim = 1 << ctx->gQbts[regIdx];
     double dx = ctx->gGridSteps[regIdx];
 
@@ -2270,20 +2311,45 @@ void cvdvGetWignerSingleSlice(CVDVContext* ctx, int regIdx, int* sliceIndices, d
     checkCudaErrors(ctx, cudaMemcpy(dSliceIndices, sliceIndices, ctx->gNumReg * sizeof(int),
                                cudaMemcpyHostToDevice));
 
+    // Step 1: Build integrand f_x[y] for all (wx, y) pairs
+    cuDoubleComplex* dBuf;
+    checkCudaErrors(ctx, cudaMalloc(&dBuf, wignerN * cvDim * sizeof(cuDoubleComplex)));
+
+    int buildGrid = (wignerN * cvDim + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
+    kernelBuildWignerIntegrandSingleSlice<<<buildGrid, CUDA_BLOCK_SIZE>>>(
+        dBuf, ctx->dState, regIdx, dSliceIndices, cvDim, dx, wignerN, wXMax,
+        ctx->gQbts, ctx->gFlwQbts);
+    checkCudaErrors(ctx, cudaDeviceSynchronize());
+
+    // Step 2: Batched IFFT — one per Wigner x-row
+    cufftHandle plan;
+    cufftResult cufftRes = cufftPlan1d(&plan, cvDim, CUFFT_Z2Z, wignerN);
+    if (cufftRes != CUFFT_SUCCESS) {
+        fprintf(stderr, "cuFFT plan creation failed: %d\n", cufftRes);
+        cudaFree(dBuf); cudaFree(dSliceIndices);
+        return;
+    }
+    cufftRes = cufftExecZ2Z(plan, dBuf, dBuf, CUFFT_INVERSE);
+    if (cufftRes != CUFFT_SUCCESS) {
+        fprintf(stderr, "cuFFT execution failed: %d\n", cufftRes);
+    }
+    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    cufftDestroy(plan);
+
+    // Step 3: Extract Wigner values at user-requested p-grid
     double* dWigner;
     checkCudaErrors(ctx, cudaMalloc(&dWigner, wignerN * wignerN * sizeof(double)));
 
-    int grid = (wignerN * wignerN + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
-
-    kernelComputeWignerSingleSlice<<<grid, CUDA_BLOCK_SIZE>>>(dWigner, ctx->dState, regIdx, dSliceIndices,
-                                                         cvDim, dx, wignerN,
-                                                         wXMax, wPMax, ctx->gQbts, ctx->gFlwQbts);
+    int extractGrid = (wignerN * wignerN + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
+    kernelExtractWigner<<<extractGrid, CUDA_BLOCK_SIZE>>>(
+        dWigner, dBuf, cvDim, dx, wignerN, wPMax);
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 
     checkCudaErrors(ctx, cudaMemcpy(wignerOut, dWigner, wignerN * wignerN * sizeof(double),
                                cudaMemcpyDeviceToHost));
 
     cudaFree(dWigner);
+    cudaFree(dBuf);
     cudaFree(dSliceIndices);
 }
 
@@ -2295,51 +2361,109 @@ void cvdvGetWignerFullMode(CVDVContext* ctx, int regIdx, double* wignerOut,
         return;
     }
 
-    // Get register dimension and dx from managed memory (direct CPU access)
     size_t cvDim = 1 << ctx->gQbts[regIdx];
     double dx = ctx->gGridSteps[regIdx];
 
+    // Step 1: Build integrand f_x[y] = Σ_other conj(ψ(x+y))·ψ(x-y)
+    cuDoubleComplex* dBuf;
+    checkCudaErrors(ctx, cudaMalloc(&dBuf, wignerN * cvDim * sizeof(cuDoubleComplex)));
+
+    int buildGrid = (wignerN * cvDim + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
+    kernelBuildWignerIntegrand<<<buildGrid, CUDA_BLOCK_SIZE>>>(
+        dBuf, ctx->dState, regIdx, cvDim, dx, wignerN, wXMax,
+        ctx->gNumReg, ctx->gQbts, ctx->gFlwQbts);
+    checkCudaErrors(ctx, cudaDeviceSynchronize());
+
+    // Step 2: Batched IFFT — transforms y→p for all x-rows
+    cufftHandle plan;
+    cufftResult cufftRes = cufftPlan1d(&plan, cvDim, CUFFT_Z2Z, wignerN);
+    if (cufftRes != CUFFT_SUCCESS) {
+        fprintf(stderr, "cuFFT plan creation failed: %d\n", cufftRes);
+        cudaFree(dBuf);
+        return;
+    }
+    cufftRes = cufftExecZ2Z(plan, dBuf, dBuf, CUFFT_INVERSE);
+    if (cufftRes != CUFFT_SUCCESS) {
+        fprintf(stderr, "cuFFT execution failed: %d\n", cufftRes);
+    }
+    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    cufftDestroy(plan);
+
+    // Step 3: Extract Wigner values at user-requested p-grid
     double* dWigner;
     checkCudaErrors(ctx, cudaMalloc(&dWigner, wignerN * wignerN * sizeof(double)));
 
-    int totalPoints = wignerN * wignerN;
-    int grid = (totalPoints + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
-
-    kernelComputeWignerFullMode<<<grid, CUDA_BLOCK_SIZE>>>(dWigner, ctx->dState, regIdx,
-                                                      cvDim, dx, wignerN,
-                                                      wXMax, wPMax, ctx->gNumReg, ctx->gQbts, ctx->gFlwQbts);
+    int extractGrid = (wignerN * wignerN + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
+    kernelExtractWigner<<<extractGrid, CUDA_BLOCK_SIZE>>>(
+        dWigner, dBuf, cvDim, dx, wignerN, wPMax);
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 
     checkCudaErrors(ctx, cudaMemcpy(wignerOut, dWigner, wignerN * wignerN * sizeof(double),
                                cudaMemcpyDeviceToHost));
 
     cudaFree(dWigner);
+    cudaFree(dBuf);
 }
 
-void cvdvGetHusimiQFullMode(CVDVContext* ctx, int regIdx, double* outHusimiQ, int qN, double qMax) {
+void cvdvGetHusimiQFullMode(CVDVContext* ctx, int regIdx, double* outHusimiQ, int qN, double qMax, double pMax) {
     if (!ctx) return;
     if (regIdx < 0 || regIdx >= ctx->gNumReg) {
         fprintf(stderr, "Invalid register index: %d\n", regIdx);
         return;
     }
 
-    // Get register dimension and dx from managed memory (direct CPU access)
+    size_t cvDim = 1 << ctx->gQbts[regIdx];
     double dx = ctx->gGridSteps[regIdx];
+    size_t sliceCount = 1 << (ctx->gTotalQbt - ctx->gQbts[regIdx]);
 
+    // Step 1: Allocate buffers
+    cuDoubleComplex* dBuf;
+    checkCudaErrors(ctx, cudaMalloc(&dBuf, qN * cvDim * sizeof(cuDoubleComplex)));
+
+    double* dAccum;
+    checkCudaErrors(ctx, cudaMalloc(&dAccum, qN * cvDim * sizeof(double)));
+    checkCudaErrors(ctx, cudaMemset(dAccum, 0, qN * cvDim * sizeof(double)));
+
+    // Step 2: Create cuFFT plan (reused across slices)
+    cufftHandle plan;
+    cufftResult cufftRes = cufftPlan1d(&plan, cvDim, CUFFT_Z2Z, qN);
+    if (cufftRes != CUFFT_SUCCESS) {
+        fprintf(stderr, "cuFFT plan creation failed: %d\n", cufftRes);
+        cudaFree(dBuf); cudaFree(dAccum);
+        return;
+    }
+
+    int buildGrid = (qN * cvDim + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
+
+    // Step 3: For each slice — build windowed signal, FFT, accumulate |H[k]|²
+    for (size_t sliceIdx = 0; sliceIdx < sliceCount; sliceIdx++) {
+        kernelBuildHusimiWindowed<<<buildGrid, CUDA_BLOCK_SIZE>>>(
+            dBuf, ctx->dState, regIdx, dx, qN, qMax, sliceIdx,
+            ctx->gQbts, ctx->gFlwQbts);
+
+        cufftExecZ2Z(plan, dBuf, dBuf, CUFFT_FORWARD);
+
+        kernelAccumHusimiPower<<<buildGrid, CUDA_BLOCK_SIZE>>>(
+            dAccum, dBuf, qN * cvDim);
+    }
+    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    cufftDestroy(plan);
+
+    // Step 4: Extract Q values at user-requested p-grid
     double* dHusimiQ;
     checkCudaErrors(ctx, cudaMalloc(&dHusimiQ, qN * qN * sizeof(double)));
 
-    int totalPoints = qN * qN;
-    int grid = (totalPoints + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
-
-    kernelComputeHusimiQFullMode<<<grid, CUDA_BLOCK_SIZE>>>(dHusimiQ, ctx->dState, regIdx, dx, qN,
-                                                   qMax, ctx->gNumReg, ctx->gQbts, ctx->gFlwQbts);
+    int extractGrid = (qN * qN + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
+    kernelExtractHusimi<<<extractGrid, CUDA_BLOCK_SIZE>>>(
+        dHusimiQ, dAccum, cvDim, dx, qN, qMax, pMax);
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 
     checkCudaErrors(ctx, cudaMemcpy(outHusimiQ, dHusimiQ, qN * qN * sizeof(double),
                                cudaMemcpyDeviceToHost));
 
     cudaFree(dHusimiQ);
+    cudaFree(dAccum);
+    cudaFree(dBuf);
 }
 
 void cvdvJointMeasure(CVDVContext* ctx, int reg1Idx, int reg2Idx, double* jointProbsOut) {
@@ -2399,49 +2523,40 @@ void cvdvGetState(CVDVContext* ctx, double* realOut, double* imagOut) {
 
 // CUDA kernel to compute marginal probabilities for a register
 // Sums |amplitude|^2 over all other registers
-__global__ void kernelComputeRegisterProbabilities(double* probabilities, const cuDoubleComplex* state,
-                                                    int regIdx, int numReg,
-                                                    const int* qbts, const int* flwQbts) {
-    // Each thread computes probability for one basis state of the target register
-    size_t regLocalIdx = blockIdx.x * blockDim.x + threadIdx.x;
-    size_t regDim = 1 << qbts[regIdx];
-    
-    if (regLocalIdx >= regDim) return;
-    
-    // Compute total elements in all other registers = 2^(total qubits - this register's qubits)
-    int totalQubits = qbts[0] + flwQbts[0];
-    size_t otherSize = 1 << (totalQubits - qbts[regIdx]);
-    
-    // Sum |amplitude|^2 over all indices where target register = regLocalIdx
-    double prob = 0.0;
-    
-    // Iterate over all possible values of other registers
-    for (size_t otherIdx = 0; otherIdx < otherSize; otherIdx++) {
-        // Reconstruct global index from regLocalIdx and otherIdx
-        // We need to insert regLocalIdx at the correct position
-        
-        size_t globalIdx = 0;
-        size_t tempOtherIdx = otherIdx;
-        size_t currentStride = 1;
-        
-        // Build global index from right to left (last register varies fastest)
-        for (int r = numReg - 1; r >= 0; r--) {
-            size_t localIdx;
-            if (r == regIdx) {
-                localIdx = regLocalIdx;
-            } else {
-                localIdx = tempOtherIdx % (1 << qbts[r]);
-                tempOtherIdx /= (1 << qbts[r]);
-            }
-            globalIdx += localIdx << flwQbts[r];
-            currentStride <<= qbts[r];
-        }
-        
-        cuDoubleComplex amp = state[globalIdx];
-        prob += cuCreal(amp) * cuCreal(amp) + cuCimag(amp) * cuCimag(amp);
+// Shared-memory path: accumulate per-block in shared memory, then flush to global
+__global__ void kernelMeasureShared(double* probabilities, const cuDoubleComplex* state,
+                                    int regShift, int regMask, int regDim, size_t totalSize) {
+    extern __shared__ double sProbs[];
+
+    for (int i = threadIdx.x; i < regDim; i += blockDim.x)
+        sProbs[i] = 0.0;
+    __syncthreads();
+
+    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = (size_t)blockDim.x * gridDim.x;
+
+    for (size_t i = idx; i < totalSize; i += stride) {
+        cuDoubleComplex amp = state[i];
+        double ampSq = cuCreal(amp) * cuCreal(amp) + cuCimag(amp) * cuCimag(amp);
+        atomicAdd(&sProbs[(i >> regShift) & regMask], ampSq);
     }
-    
-    probabilities[regLocalIdx] = prob;
+    __syncthreads();
+
+    for (int i = threadIdx.x; i < regDim; i += blockDim.x)
+        atomicAdd(&probabilities[i], sProbs[i]);
+}
+
+// Fallback: direct global atomicAdd for registers too large for shared memory
+__global__ void kernelMeasureGlobal(double* probabilities, const cuDoubleComplex* state,
+                                    int regShift, int regMask, size_t totalSize) {
+    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = (size_t)blockDim.x * gridDim.x;
+
+    for (size_t i = idx; i < totalSize; i += stride) {
+        cuDoubleComplex amp = state[i];
+        double ampSq = cuCreal(amp) * cuCreal(amp) + cuCimag(amp) * cuCimag(amp);
+        atomicAdd(&probabilities[(i >> regShift) & regMask], ampSq);
+    }
 }
 
 #pragma endregion
@@ -2502,20 +2617,33 @@ void cvdvMeasure(CVDVContext* ctx, int regIdx, double* probabilitiesOut) {
     logDebug(ctx, "Computing marginal probabilities for register %d", regIdx);
 
     size_t regDim = 1 << ctx->gQbts[regIdx];
-    
-    // Allocate device memory for probabilities
+    size_t totalSize = 1ULL << ctx->gTotalQbt;
+    int regShift = ctx->gFlwQbts[regIdx];
+    int regMask = (int)(regDim - 1);
+
+    // Allocate and zero-initialize device probabilities
     double* dProbs;
     checkCudaErrors(ctx, cudaMalloc(&dProbs, regDim * sizeof(double)));
-    
-    // Launch kernel to compute probabilities
-    int grid = (regDim + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
-    kernelComputeRegisterProbabilities<<<grid, CUDA_BLOCK_SIZE>>>(dProbs, ctx->dState, regIdx, ctx->gNumReg,
-                                                         ctx->gQbts, ctx->gFlwQbts);
+    checkCudaErrors(ctx, cudaMemset(dProbs, 0, regDim * sizeof(double)));
+
+    // Parallelize over full state vector
+    int numBlocks = (totalSize + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
+    numBlocks = min(numBlocks, 1024);
+
+    size_t sharedMemSize = regDim * sizeof(double);
+    if (sharedMemSize <= 48 * 1024) {
+        kernelMeasureShared<<<numBlocks, CUDA_BLOCK_SIZE, sharedMemSize>>>(
+            dProbs, ctx->dState, regShift, regMask, (int)regDim, totalSize);
+    } else {
+        kernelMeasureGlobal<<<numBlocks, CUDA_BLOCK_SIZE>>>(
+            dProbs, ctx->dState, regShift, regMask, totalSize);
+    }
     checkCudaErrors(ctx, cudaGetLastError());
     checkCudaErrors(ctx, cudaDeviceSynchronize());
-    
+
     // Copy results back to host
     checkCudaErrors(ctx, cudaMemcpy(probabilitiesOut, dProbs, regDim * sizeof(double), cudaMemcpyDeviceToHost));
+    checkCudaErrors(ctx, cudaFree(dProbs));
 }
 
 void cvdvInnerProduct(CVDVContext* ctx, double* realOut, double* imagOut) {

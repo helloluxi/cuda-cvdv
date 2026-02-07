@@ -34,42 +34,42 @@ def bench(regs, gate_fn):
 
 # Config definitions: (name, title, cv_qubits_list, regs_fn, gates_dict)
 CONFIGS = [
-    ('single_cv', '1 CV', [10, 11, 12], lambda q: [q], {
-        'D':        lambda s: s.d(0, 1.0),
-        'R':        lambda s: s.r(0, 0.5),
-        'S':        lambda s: s.s(0, 0.3),
+    ('1cv', '1 CV', [12, 14, 16], lambda q: [q], {
+        'Displace':        lambda s: s.d(0, 1.0),
+        'Rotate':        lambda s: s.r(0, 0.5),
+        'Squeeze':        lambda s: s.s(0, 0.3),
         'FT':       lambda s: s.ftQ2P(0),
         'Wigner':   lambda s: s.getWignerFullMode(0, wignerN=51),
         'Husimi-Q': lambda s: s.getHusimiQFullMode(0, qN=51),
     }),
-    ('dv_cv', '1 DV + 1 CV', [10, 11, 12], lambda q: [1, q], {
-        'Rz':       lambda s: s.rz(0, 0, 0.5),
+    ('1dv_1cv', '1 DV + 1 CV', [12, 14, 16], lambda q: [1, q], {
+        'Qubit Rz':       lambda s: s.rz(0, 0, 0.5),
         'FT':       lambda s: s.ftQ2P(1),
-        'CD':       lambda s: s.cd(1, 0, 0, 1.0),
-        'CR':       lambda s: s.cr(1, 0, 0, 0.5),
-        'CS':       lambda s: s.cs(1, 0, 0, 0.3),
-        'M':        lambda s: s.m(0),
+        'C-Displace':       lambda s: s.cd(1, 0, 0, 1.0),
+        'C-Rotate':       lambda s: s.cr(1, 0, 0, 0.5),
+        'C-Squeeze':       lambda s: s.cs(1, 0, 0, 0.3),
+        'Qubit Measure':        lambda s: s.m(0),
         'Wigner':   lambda s: s.getWignerFullMode(1, wignerN=51),
         'Husimi-Q': lambda s: s.getHusimiQFullMode(1, qN=51),
     }),
-    ('double_cv', '2 CV', [8, 9, 10], lambda q: [q, q], {
-        'D':        lambda s: s.d(0, 1.0),
-        'R':        lambda s: s.r(0, 0.5),
-        'S':        lambda s: s.s(0, 0.3),
+    ('2cv', '2 CV', [8, 9, 10], lambda q: [q, q], {
+        'Displace':        lambda s: s.d(0, 1.0),
+        'Rotate':        lambda s: s.r(0, 0.5),
+        'Squeeze':        lambda s: s.s(0, 0.3),
         'FT':       lambda s: s.ftQ2P(0),
-        'BS':       lambda s: s.bs(0, 1, 0.5),
+        'Beam Splitter':       lambda s: s.bs(0, 1, 0.5),
         'Wigner':   lambda s: s.getWignerFullMode(0, wignerN=51),
         'Husimi-Q': lambda s: s.getHusimiQFullMode(0, qN=51),
     }),
-    ('dv_double_cv', '1 DV + 2 CV', [8, 9, 10], lambda q: [1, q, q], {
-        'Rz':       lambda s: s.rz(0, 0, 0.5),
+    ('1dv_2cv', '1 DV + 2 CV', [8, 9, 10], lambda q: [1, q, q], {
+        'Qubit Rz':       lambda s: s.rz(0, 0, 0.5),
         'FT':       lambda s: s.ftQ2P(1),
-        'CD':       lambda s: s.cd(1, 0, 0, 1.0),
-        'CR':       lambda s: s.cr(1, 0, 0, 0.5),
-        'CS':       lambda s: s.cs(1, 0, 0, 0.3),
-        'BS':       lambda s: s.bs(1, 2, 0.5),
-        'CBS':      lambda s: s.cbs(1, 2, 0, 0, 0.5),
-        'M':        lambda s: s.m(0),
+        'C-Displace':       lambda s: s.cd(1, 0, 0, 1.0),
+        'C-Rotate':       lambda s: s.cr(1, 0, 0, 0.5),
+        'C-Squeeze':       lambda s: s.cs(1, 0, 0, 0.3),
+        'Beam Splitter':       lambda s: s.bs(1, 2, 0.5),
+        'C-Beam Splitter':      lambda s: s.cbs(1, 2, 0, 0, 0.5),
+        'Qubit Measure':        lambda s: s.m(0),
         'Wigner':   lambda s: s.getWignerFullMode(1, wignerN=51),
         'Husimi-Q': lambda s: s.getHusimiQFullMode(1, qN=51),
     }),
@@ -87,13 +87,12 @@ def plot_config(cfg_name, title, gate_names, cv_qubits, data):
         means = [np.mean(data[q][g]) * 1000 for g in gate_names]
         stds = [np.std(data[q][g]) * 1000 for g in gate_names]
         bars = ax.bar(x + (i - 1) * width, means, width, yerr=stds,
-                      label=f'CV Dim: {1<<q}', color=colors[i], capsize=3)
+                      label=f'CV Dimension: {1<<q}', color=colors[i], capsize=3)
         for bar, val in zip(bars, means):
             ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.5,
                     f'{val:.2f}' if val >= 1 else f'{val:.3f}',
                     ha='center', va='bottom', fontsize=10, rotation=45)
 
-    ax.set_xlabel('Gate')
     ax.set_ylabel('Runtime (ms)')
     ax.set_title(title)
     ax.set_xticks(x)

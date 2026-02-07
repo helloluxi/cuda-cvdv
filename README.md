@@ -7,7 +7,7 @@ A high-performance CUDA library for simulating hybrid continuous-variable (CV) a
 ## Todo List
 
 + [ ] Add example notebooks for Product Formula and QSP
-+ [ ] Implement more efficient CUDA kernels for Wigner function and Husimi Q function
++ [x] Implement more efficient CUDA kernels for Wigner function and Husimi Q function
 + [x] Add visual examples to README (Wigner function plots, architecture diagram)
 + [x] Create unit test suite with pytest for core operations
 + [x] Add performance benchmarks (timing, memory usage, GPU vs CPU comparison) + comparison table vs existing bosonic simulators
@@ -52,7 +52,19 @@ The benchmark demonstrates transferring a cat state from a CV mode to a 4-qubit 
 
 ### Gate Operation Benchmarks
 
-Individual gate timing across different register configurations (single CV, DV+CV, double CV, DV+double CV):
+Individual gate timing across different register configurations, tested on NVIDIA RTX 4070 Laptop GPU:
+
+![1 CV](benchmarks/ops_time/results/bench_1cv.png)
+
+![1 DV + 1 CV](benchmarks/ops_time/results/bench_1dv_1cv.png)
+
+![2 CV](benchmarks/ops_time/results/bench_2cv.png)
+
+![1 DV + 2 CV](benchmarks/ops_time/results/bench_1dv_2cv.png)
+
+- FT: Continuous Fourier Transform
+- C-{Displace, Squeeze, Rotate}: Conditional gates
+
 
 ```bash
 ./benchmarks/ops_time/run.sh
@@ -180,9 +192,9 @@ wigner = sim.getWignerSingleSlice(1, [-1], wignerN=201, wXMax=5, wPMax=5)
 | Category | Operations |
 |----------|------------|
 | **CV Gates** | `d(α)` ($e^{\alpha\hat{a}^\dagger - \alpha^*\hat{a}}$), `s(r)` ($e^{r(\hat{a}^2 - \hat{a}^{\dagger 2})/2}$), `r(θ)` ($e^{i\theta \hat{a}^\dagger \hat{a}}$), `sheer(t)` ($e^{it\hat{q}^2}$), `phaseCubic(t)` ($e^{it\hat{q}^3}$), `p()` (parity) |
-| **DV Gates** | `h()` ($H$), `rx(θ)` ($R_x(\theta)$), `ry(θ)` ($R_y(\theta)$), `rz(θ)` ($R_z(\theta)$) |
-| **Hybrid** | `cd(α)` ($e^{Z(\alpha\hat{a}^\dagger - \alpha^*\hat{a})}$), `cr(θ)` (conditional rotation), `cp()` (conditional parity) |
-| **Two-Mode** | `bs(θ)`, `q1q2(coeff)` ($e^{i t \hat{q}_1 \hat{q}_2}$), `swap()` |
+| **DV Gates** | `h()` ($H$), `x()`, `y()`, `z()` (Pauli), `rx(θ)` ($R_x(\theta)$), `ry(θ)` ($R_y(\theta)$), `rz(θ)` ($R_z(\theta)$) |
+| **Hybrid** | `cd(α)` ($e^{Z(\alpha\hat{a}^\dagger - \alpha^*\hat{a})}$), `cr(θ)` (conditional rotation), `cs(r)` (conditional squeezing), `cp()` (conditional parity) |
+| **Two-Mode** | `bs(θ)`, `cbs(θ)` (conditional beam splitter), `q1q2(coeff)` ($e^{i t \hat{q}_1 \hat{q}_2}$), `swap()` |
 | **Transforms** | `ftQ2P()`, `ftP2Q()` (Fourier transforms) |
 | **Measurement** | `m()`, `jointMeasure()`, `getState()`, `innerProduct()`, `getNorm()` |
 | **Visualization** | `getWignerSingleSlice()`, `getWignerFullMode()`, `getHusimiQFullMode()` |
@@ -191,7 +203,7 @@ wigner = sim.getWignerSingleSlice(1, [-1], wignerN=201, wXMax=5, wPMax=5)
 
 | Notebook | Description |
 |----------|-------------|
-| [examples/cvdv_transfer.ipynb](examples/cvdv_transfer.ipynb) | CV-to-DV state transfer protocol [arXiv:2106.12272](https://arxiv.org/abs/2106.12272) |
+| [examples/cvdv_transfer.ipynb](examples/state_transfer.ipynb) | CV-to-DV state transfer protocol [Phys. Rev. Lett. 128, 110503 (2022)](https://link.aps.org/doi/10.1103/PhysRevLett.128.110503) |
 | [examples/qcst.ipynb](examples/qcst.ipynb) | Quantum coherent state transform [arXiv: 2412.12871](https://arxiv.org/abs/2412.12871) |
 
 ## Testing

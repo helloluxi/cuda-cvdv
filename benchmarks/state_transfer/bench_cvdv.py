@@ -1,6 +1,6 @@
 """
 CVDV Benchmarks - CV-DV State Transfer Algorithm
-Based on arXiv:2106.12272
+Based on Phys. Rev. Lett. 128, 110503 (2022)
 
 Benchmarks the core operations of the CV-to-DV state transfer algorithm.
 """
