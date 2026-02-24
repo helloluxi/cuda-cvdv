@@ -12,9 +12,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from numpy import pi, sqrt
 
-# Add parent directory to path to import interface
+# Add parent directory to path to import src package
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from interface import CVDV
+from src import CVDV
 
 
 def run_cvdv_transfer_experiment(n_dv_qubits=4, cv_qubits=12, lam=0.29, return_plots=False):

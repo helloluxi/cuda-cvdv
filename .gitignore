@@ -41,9 +41,7 @@ Makefile.generated
 
 # AI Assistant Files
 .claude/
-.ai
 .memory/
-.agent/
 .github/copilot-instructions.md
 .cache/
 
@@ -54,10 +52,7 @@ Makefile.generated
 *.bak
 
 # Personal Notes (keep project docs)
-todo.md
 CLAUDE.md
-notes.md
-scratch.md
 
 # Benchmark results (keep reference plots/data, exclude temporary runs)
 benchmarks/results/*_temp.*
@@ -65,7 +60,4 @@ benchmarks/results/*_debug.*
 benchmarks/results/test_*
 
 # Environment
-.env
-.venv/
-venv/
-ENV/
+.venv

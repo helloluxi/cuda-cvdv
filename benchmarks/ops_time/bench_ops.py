@@ -4,7 +4,7 @@ import numpy as np
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(SCRIPT_DIR, '..', '..'))
-from interface import CVDV
+from src import CVDV
 import matplotlib.pyplot as plt
 
 WARMUP = 2

@@ -2,7 +2,9 @@
 CVDV Library - Python wrapper for CUDA quantum simulator
 """
 
+from typing import List, Tuple, Optional, Union, Sequence, Any
 import numpy as np
+import numpy.typing as npt
 import ctypes
 from ctypes import c_int, c_double, c_size_t, POINTER
 import subprocess
@@ -14,11 +16,11 @@ import scienceplots
 plt.style.use(['science'])
 plt.rcParams.update({'font.size': 18, 'text.usetex': True})
 
-# Get project paths
-project_dir = os.path.dirname(os.path.abspath(__file__))
+# Get project paths (adjusted for src/ directory)
+project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 build_dir = os.path.join(project_dir, 'build')
 
-def compile_library():
+def compile_library() -> None:
     """Compile the CUDA library."""
     result = subprocess.run(
         ['bash', os.path.join(project_dir, 'run.sh')],
@@ -30,7 +32,7 @@ def compile_library():
         raise RuntimeError('Build failed')
     print("Library compiled successfully!")
 
-def load_library():
+def load_library() -> ctypes.CDLL:
     """Load the compiled CUDA library and set up function signatures."""
     lib_path = os.path.join(build_dir, 'libcvdv.so')
     lib = ctypes.CDLL(lib_path)
@@ -228,7 +230,7 @@ class CVDV:
     3. Call initStateVector() to build the tensor product state
     """
     
-    def __init__(self, numQubits_list):
+    def __init__(self, numQubits_list: List[int]) -> None:
         """Initialize simulator with multiple registers.
         
         Grid steps (dx) are calculated automatically inside CUDA using:
@@ -282,32 +284,32 @@ class CVDV:
         except:
             pass
     
-    def initStateVector(self):
+    def initStateVector(self) -> None:
         """Build tensor product state from register arrays and upload to device.
         
         Must be called after all setXXX functions and before any operations.
         """
         lib.cvdvInitStateVector(self.ctx)
     
-    def setZero(self, regIdx):
+    def setZero(self, regIdx: int) -> None:
         """Set register to |0⟩ state and upload to device."""
         lib.cvdvSetZero(self.ctx, regIdx)
     
-    def setCoherent(self, regIdx, alpha):
+    def setCoherent(self, regIdx: int, alpha: Union[complex, float, int]) -> None:
         """Set register to coherent state |α⟩ and upload to device."""
         if isinstance(alpha, (int, float)):
             alpha = complex(alpha, 0.0)
         lib.cvdvSetCoherent(self.ctx, regIdx, c_double(alpha.real), c_double(alpha.imag))
     
-    def setFock(self, regIdx, n):
+    def setFock(self, regIdx: int, n: int) -> None:
         """Set register to Fock state |n⟩ and upload to device."""
         lib.cvdvSetFock(self.ctx, regIdx, n)
     
-    def setUniform(self, regIdx):
+    def setUniform(self, regIdx: int) -> None:
         """Set register to uniform superposition: all basis states with amplitude 1/sqrt(N)."""
         lib.cvdvSetUniform(self.ctx, regIdx)
     
-    def setFocks(self, regIdx, coeffs):
+    def setFocks(self, regIdx: int, coeffs: Union[Sequence[complex], npt.NDArray[np.complex128]]) -> None:
         """Set register to superposition of Fock states and upload to device.
         
         Args:
@@ -315,16 +317,16 @@ class CVDV:
             coeffs: List/array of complex coefficients [c0, c1, c2, ...]
                    State will be: c0|0⟩ + c1|1⟩ + c2|2⟩ + ...
         """
-        coeffs = np.array(coeffs, dtype=complex)
+        coeffs_arr = np.array(coeffs, dtype=complex)
         # Interleave real and imaginary parts: [re0, im0, re1, im1, ...]
-        coeffs_interleaved = np.empty(2 * len(coeffs), dtype=np.float64)
-        coeffs_interleaved[0::2] = coeffs.real
-        coeffs_interleaved[1::2] = coeffs.imag
+        coeffs_interleaved = np.empty(2 * len(coeffs_arr), dtype=np.float64)
+        coeffs_interleaved[0::2] = coeffs_arr.real  # type: ignore
+        coeffs_interleaved[1::2] = coeffs_arr.imag  # type: ignore
         lib.cvdvSetFocks(self.ctx, regIdx,
                           coeffs_interleaved.ctypes.data_as(POINTER(c_double)),
-                          len(coeffs))
+                          len(coeffs_arr))
     
-    def setCoeffs(self, regIdx, coeffs):
+    def setCoeffs(self, regIdx: int, coeffs: Union[Sequence[complex], npt.NDArray[np.complex128]]) -> None:
         """Set register to arbitrary coefficient array directly.
 
         Args:
@@ -332,16 +334,16 @@ class CVDV:
             coeffs: Array of complex coefficients (must match register dimension)
                    Coefficients should be pre-normalized.
         """
-        coeffs = np.array(coeffs, dtype=complex)
+        coeffs_arr = np.array(coeffs, dtype=complex)
         # Interleave real and imaginary parts: [re0, im0, re1, im1, ...]
-        coeffs_interleaved = np.empty(2 * len(coeffs), dtype=np.float64)
-        coeffs_interleaved[0::2] = coeffs.real
-        coeffs_interleaved[1::2] = coeffs.imag
+        coeffs_interleaved = np.empty(2 * len(coeffs_arr), dtype=np.float64)
+        coeffs_interleaved[0::2] = coeffs_arr.real  # type: ignore
+        coeffs_interleaved[1::2] = coeffs_arr.imag  # type: ignore
         lib.cvdvSetCoeffs(self.ctx, regIdx,
                           coeffs_interleaved.ctypes.data_as(POINTER(c_double)),
-                          len(coeffs))
+                          len(coeffs_arr))
 
-    def setCat(self, regIdx, cat_states):
+    def setCat(self, regIdx: int, cat_states: List[Tuple[Union[complex, float], Union[complex, float]]]) -> None:
         """Set register to cat state (superposition of coherent states) and normalize.
 
         Args:
@@ -369,13 +371,13 @@ class CVDV:
                        data.ctypes.data_as(POINTER(c_double)),
                        len(cat_states))
 
-    def d(self, regIdx, beta):
+    def d(self, regIdx: int, beta: Union[complex, float, int]) -> None:
         """Apply displacement operator D(β) to register."""
         if isinstance(beta, (int, float)):
             beta = complex(beta, 0.0)
         lib.cvdvDisplacement(self.ctx, regIdx, c_double(beta.real), c_double(beta.imag))
     
-    def cd(self, targetReg, ctrlReg, ctrlQubit, alpha):
+    def cd(self, targetReg: int, ctrlReg: int, ctrlQubit: int, alpha: Union[complex, float, int]) -> None:
         """Apply conditional displacement CD(α) controlled by qubit.
         
         Args:
@@ -389,7 +391,7 @@ class CVDV:
         lib.cvdvConditionalDisplacement(self.ctx, targetReg, ctrlReg, ctrlQubit, 
                    c_double(alpha.real), c_double(alpha.imag))
     
-    def cr(self, targetReg, ctrlReg, ctrlQubit, theta):
+    def cr(self, targetReg: int, ctrlReg: int, ctrlQubit: int, theta: float) -> None:
         """Apply conditional rotation CR(θ) controlled by qubit.
 
         Implements: CR(θ) = exp(-i/2 Z tan(θ/2) Q²) exp(-i/2 Z sin(θ) P²) exp(-i/2 Z tan(θ/2) Q²)
@@ -404,41 +406,41 @@ class CVDV:
         """
         lib.cvdvConditionalRotation(self.ctx, targetReg, ctrlReg, ctrlQubit, c_double(theta))
 
-    def x(self, regIdx, targetQubit):
+    def x(self, regIdx: int, targetQubit: int) -> None:
         lib.cvdvPauliRotation(self.ctx, regIdx, targetQubit, 0, pi)
 
-    def y(self, regIdx, targetQubit):
+    def y(self, regIdx: int, targetQubit: int) -> None:
         lib.cvdvPauliRotation(self.ctx, regIdx, targetQubit, 1, pi)
 
-    def z(self, regIdx, targetQubit):
+    def z(self, regIdx: int, targetQubit: int) -> None:
         lib.cvdvPauliRotation(self.ctx, regIdx, targetQubit, 2, pi)
 
-    def rx(self, regIdx, targetQubit, theta):
+    def rx(self, regIdx: int, targetQubit: int, theta: float) -> None:
         lib.cvdvPauliRotation(self.ctx, regIdx, targetQubit, 0, theta)
 
-    def ry(self, regIdx, targetQubit, theta):
+    def ry(self, regIdx: int, targetQubit: int, theta: float) -> None:
         lib.cvdvPauliRotation(self.ctx, regIdx, targetQubit, 1, theta)
 
-    def rz(self, regIdx, targetQubit, theta):
+    def rz(self, regIdx: int, targetQubit: int, theta: float) -> None:
         lib.cvdvPauliRotation(self.ctx, regIdx, targetQubit, 2, theta)
     
-    def h(self, regIdx, targetQubit):
+    def h(self, regIdx: int, targetQubit: int) -> None:
         """Apply Hadamard gate to qubit in register."""
         lib.cvdvHadamard(self.ctx, regIdx, targetQubit)
 
-    def p(self, regIdx):
+    def p(self, regIdx: int) -> None:
         """Apply parity gate: flips all qubits of a register (|j⟩ → |N-1-j⟩)."""
         lib.cvdvParity(self.ctx, regIdx)
 
-    def cp(self, targetReg, ctrlReg, ctrlQubit):
+    def cp(self, targetReg: int, ctrlReg: int, ctrlQubit: int) -> None:
         """Apply conditional parity: identity on |0⟩, parity on |1⟩ control branch."""
         lib.cvdvConditionalParity(self.ctx, targetReg, ctrlReg, ctrlQubit)
 
-    def swap(self, reg1, reg2):
+    def swap(self, reg1: int, reg2: int) -> None:
         """Swap the contents of two registers (must have same number of qubits)."""
         lib.cvdvSwapRegisters(self.ctx, reg1, reg2)
 
-    def sheer(self, regIdx, t):
+    def sheer(self, regIdx: int, t: float) -> None:
         """Apply phase square gate: exp(i*t*q^2) in position space.
 
         Args:
@@ -447,7 +449,7 @@ class CVDV:
         """
         lib.cvdvPhaseSquare(self.ctx, regIdx, t)
 
-    def phaseCubic(self, regIdx, t):
+    def phaseCubic(self, regIdx: int, t: float) -> None:
         """Apply cubic phase gate: exp(i*t*q^3) in position space.
 
         Args:
@@ -456,7 +458,7 @@ class CVDV:
         """
         lib.cvdvPhaseCubic(self.ctx, regIdx, t)
 
-    def r(self, regIdx, theta):
+    def r(self, regIdx: int, theta: float) -> None:
         """Apply rotation gate R(θ) in phase space.
 
         Implements: R(θ) = exp(-i/2 tan(θ/2) q^2) exp(-i/2 sin(θ) p^2) exp(-i/2 tan(θ/2) q^2)
@@ -468,7 +470,7 @@ class CVDV:
         """
         lib.cvdvRotation(self.ctx, regIdx, theta)
 
-    def s(self, regIdx, r):
+    def s(self, regIdx: int, r: float) -> None:
         """Apply squeezing gate S(r).
 
         Implements the squeezing operator decomposed into q^2 and p^2 phases.
@@ -480,7 +482,7 @@ class CVDV:
         """
         lib.cvdvSqueeze(self.ctx, regIdx, r)
 
-    def cs(self, targetReg, ctrlReg, ctrlQubit, r):
+    def cs(self, targetReg: int, ctrlReg: int, ctrlQubit: int, r: float) -> None:
         """Apply conditional squeezing gate CS(r) controlled by qubit.
 
         |0⟩ gets S(r), |1⟩ gets S(-r).
@@ -493,7 +495,7 @@ class CVDV:
         """
         lib.cvdvConditionalSqueeze(self.ctx, targetReg, ctrlReg, ctrlQubit, c_double(r))
 
-    def bs(self, reg1, reg2, theta):
+    def bs(self, reg1: int, reg2: int, theta: float) -> None:
         """Apply beam splitter gate BS(θ) between two registers.
 
         Implements: BS(θ) = exp(-i*tan(θ/4)*q1*q2/2) * exp(-i*sin(θ/2)*p1*p2/2) * exp(-i*tan(θ/4)*q1*q2/2)
@@ -506,7 +508,7 @@ class CVDV:
         """
         lib.cvdvBeamSplitter(self.ctx, reg1, reg2, theta)
 
-    def cbs(self, reg1, reg2, ctrlReg, ctrlQubit, theta):
+    def cbs(self, reg1: int, reg2: int, ctrlReg: int, ctrlQubit: int, theta: float) -> None:
         """Apply conditional beam splitter CBS(θ) controlled by qubit.
 
         |0⟩ gets BS(θ), |1⟩ gets BS(-θ).
@@ -520,7 +522,7 @@ class CVDV:
         """
         lib.cvdvConditionalBeamSplitter(self.ctx, reg1, reg2, ctrlReg, ctrlQubit, c_double(theta))
 
-    def q1q2(self, reg1, reg2, coeff):
+    def q1q2(self, reg1: int, reg2: int, coeff: float) -> None:
         """Apply Q1Q2 interaction gate between two registers.
 
         Implements: exp(i*coeff*q1*q2) where q1 and q2 are position operators.
@@ -532,16 +534,16 @@ class CVDV:
         """
         lib.cvdvQ1Q2Gate(self.ctx, reg1, reg2, coeff)
 
-    def ftQ2P(self, regIdx):
+    def ftQ2P(self, regIdx: int) -> None:
         """Apply Fourier transform: position to momentum representation."""
         lib.cvdvFtQ2P(self.ctx, regIdx)
     
-    def ftP2Q(self, regIdx):
+    def ftP2Q(self, regIdx: int) -> None:
         """Apply inverse Fourier transform: momentum to position representation."""
         lib.cvdvFtP2Q(self.ctx, regIdx)
     
-    def getWignerSingleSlice(self, regIdx, slice_indices, wignerN=101, 
-                             wXMax=5.0, wPMax=5.0):
+    def getWignerSingleSlice(self, regIdx: int, slice_indices: Sequence[int], wignerN: int = 101, 
+                             wXMax: float = 5.0, wPMax: float = 5.0) -> npt.NDArray[np.float64]:
         """Compute Wigner function for register at specific slice.
         
         Args:
@@ -566,7 +568,7 @@ class CVDV:
         )
         return wigner.reshape((wignerN, wignerN))
     
-    def getWignerFullMode(self, regIdx, wignerN=101, wXMax=5.0, wPMax=5.0):
+    def getWignerFullMode(self, regIdx: int, wignerN: int = 101, wXMax: float = 5.0, wPMax: float = 5.0) -> npt.NDArray[np.float64]:
         """Compute reduced Wigner function for register by tracing out all other registers.
         
         This efficiently sums over all possible states of other registers to compute
@@ -588,7 +590,7 @@ class CVDV:
         )
         return wigner.reshape((wignerN, wignerN))
     
-    def getHusimiQFullMode(self, regIdx, qN=101, qMax=5.0, pMax=5.0):
+    def getHusimiQFullMode(self, regIdx: int, qN: int = 101, qMax: float = 5.0, pMax: float = 5.0) -> npt.NDArray[np.float64]:
         """Compute Husimi Q function for register by tracing out all other registers.
         
         The Husimi Q function is defined as Q(q,p) = (1/π) ⟨α|ρ|α⟩ where α = (q + ip)/√2.
@@ -610,7 +612,7 @@ class CVDV:
         )
         return husimiQ.reshape((qN, qN))
     
-    def jointMeasure(self, reg1Idx, reg2Idx):
+    def jointMeasure(self, reg1Idx: int, reg2Idx: int) -> npt.NDArray[np.float64]:
         """Compute joint measurement probabilities for two DV registers.
         
         This computes the joint probability distribution P(i,j) for measuring
@@ -632,7 +634,7 @@ class CVDV:
         )
         return jointProbs.reshape((dim1, dim2))
     
-    def getState(self):
+    def getState(self) -> npt.NDArray[np.complex128]:
         """Get full state vector as complex array."""
         real_arr = np.zeros(self.total_size, dtype=np.float64)
         imag_arr = np.zeros(self.total_size, dtype=np.float64)
@@ -642,13 +644,13 @@ class CVDV:
         )
         return real_arr + 1j * imag_arr
     
-    def getXGrid(self, regIdx):
+    def getXGrid(self, regIdx: int) -> npt.NDArray[np.float64]:
         """Get position grid points for register."""
         dim = self.register_dims[regIdx]
         dx = self.grid_steps[regIdx]
-        return (np.arange(dim) - dim // 2) * dx
+        return (np.arange(dim) - (dim - 1) * 0.5) * dx
     
-    def m(self, regIdx):
+    def m(self, regIdx: int) -> npt.NDArray[np.float64]:
         """Compute measurement probabilities for all basis states of a register.
         
         Args:
@@ -662,7 +664,7 @@ class CVDV:
         lib.cvdvMeasure(self.ctx, regIdx, probs.ctypes.data_as(POINTER(c_double)))
         return probs
     
-    def innerProduct(self):
+    def innerProduct(self) -> complex:
         """Compute inner product between current state and register tensor product.
 
         Computes <current_state | register_tensor_product> where register_tensor_product
@@ -682,7 +684,7 @@ class CVDV:
         lib.cvdvInnerProduct(self.ctx, ctypes.byref(real_out), ctypes.byref(imag_out))
         return complex(real_out.value, imag_out.value)
 
-    def getNorm(self):
+    def getNorm(self) -> float:
         """Compute norm of the state vector (sum of |state[i]|^2).
 
         Returns:
@@ -690,7 +692,7 @@ class CVDV:
         """
         return lib.cvdvGetNorm(self.ctx)
 
-    def info(self):
+    def info(self) -> None:
         """Print system information."""
         # Calculate VRAM usage (complex double = 16 bytes per element)
         vram_gb = (self.total_size * 16) / (1024 * 1024 * 1024)
@@ -703,8 +705,8 @@ class CVDV:
             print(f"  Register {i}: dim={dim}, "
                   f"qubits={self.qubit_counts[i]}, dx={dx:.6f}, x_bound={x_bound:.6f}")
     
-    def plot_wigner(self, regIdx, slice_indices=None, wignerN=201, wignerMax=5.0, 
-                    cmap='RdBu', figsize=(7, 6), show=True):
+    def plotWigner(self, regIdx: int, slice_indices: Optional[Sequence[int]] = None, wignerN: int = 201, wignerMax: float = 5.0, 
+                    cmap: str = 'RdBu', figsize: Tuple[int, int] = (7, 6), show: bool = True) -> Tuple[Any, Any]:
         """Plot Wigner function for a register."""
         # Get Wigner function
         if slice_indices is not None:
@@ -717,7 +719,7 @@ class CVDV:
         # Create plot
         fig, ax = plt.subplots(figsize=figsize)
         vmax = np.max(np.abs(wigner))
-        im = ax.imshow(wigner, extent=[-wignerMax, wignerMax, -wignerMax, wignerMax],
+        im = ax.imshow(wigner, extent=(-wignerMax, wignerMax, -wignerMax, wignerMax),
                       origin='lower', cmap=cmap, vmin=-vmax, vmax=vmax, aspect='equal')
         ax.set_xlabel(r'$q$')
         ax.set_ylabel(r'$p$')
@@ -728,3 +730,36 @@ class CVDV:
             plt.show()
         
         return fig, ax
+
+
+# ==================== Backend Selection ====================
+
+# Import PyTorch backend
+from .torchCvdv import CVDVTorch
+
+# Export both backends and factory function
+__all__ = ['CVDV', 'CVDVTorch', 'create_cvdv']
+
+def create_cvdv(numQubits_list: List[int], backend: str = 'cuda') -> Union['CVDV', 'CVDVTorch']:
+    """Factory function to create CVDV instance with specified backend.
+    
+    Args:
+        numQubits_list: List of qubit counts for each register
+        backend: Backend to use ('cuda' or 'torch', default: 'cuda')
+    
+    Returns:
+        CVDV or CVDVTorch instance
+    
+    Example:
+        # Use CUDA backend (default)
+        sim = create_cvdv([10, 12])
+        
+        # Use PyTorch backend
+        sim = create_cvdv([10, 12], backend='torch')
+    """
+    if backend == 'cuda':
+        return CVDV(numQubits_list)
+    elif backend == 'torch':
+        return CVDVTorch(numQubits_list, device='cuda')
+    else:
+        raise ValueError(f"Unknown backend: {backend}. Use 'cuda' or 'torch'.")

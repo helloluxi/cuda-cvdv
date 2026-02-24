@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 import numpy as np
 from numpy import pi, sqrt
-from interface import CVDV
+from src import CVDV
 
 class TestCoreOperations:
     """Test core quantum operations using inner product validation."""
