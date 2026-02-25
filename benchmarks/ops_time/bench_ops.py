@@ -4,7 +4,7 @@ import numpy as np
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(SCRIPT_DIR, '..', '..'))
-from src import CVDV
+from src import CVDV, SeparableState
 import matplotlib.pyplot as plt
 
 WARMUP = 2
@@ -14,9 +14,10 @@ RESULTS_DIR = os.path.join(SCRIPT_DIR, 'results')
 
 def make_sim(regs):
     sim = CVDV(regs)
+    sep = SeparableState(regs)
     for i, q in enumerate(regs):
-        sim.setUniform(i) if q == 1 else sim.setFock(i, 0)
-    sim.initStateVector()
+        sep.setUniform(i) if q == 1 else sep.setFock(i, 0)
+    sim.initStateVector(sep)
     return sim
 
 

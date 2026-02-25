@@ -11,19 +11,30 @@ import subprocess
 import os
 from numpy import pi, sqrt
 
+import torch
 import matplotlib.pyplot as plt
 import scienceplots
 plt.style.use(['science'])
 plt.rcParams.update({'font.size': 18, 'text.usetex': True})
 
+from .separable import SeparableState
+
 # Get project paths (adjusted for src/ directory)
 project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 build_dir = os.path.join(project_dir, 'build')
 
-def compile_library() -> None:
-    """Compile the CUDA library."""
+# Lazy-loaded CUDA library (only compiled/loaded when backend='cuda' is first used)
+_lib: Optional[ctypes.CDLL] = None
+
+def _get_lib() -> ctypes.CDLL:
+    global _lib
+    if _lib is None:
+        _lib = _compile_and_load()
+    return _lib
+
+def _compile_and_load() -> ctypes.CDLL:
     result = subprocess.run(
-        ['bash', os.path.join(project_dir, 'run.sh')],
+        ['make', '-C', project_dir, 'build'],
         capture_output=True, text=True
     )
     print(result.stdout)
@@ -32,608 +43,729 @@ def compile_library() -> None:
         raise RuntimeError('Build failed')
     print("Library compiled successfully!")
 
-def load_library() -> ctypes.CDLL:
-    """Load the compiled CUDA library and set up function signatures."""
     lib_path = os.path.join(build_dir, 'libcvdv.so')
     lib = ctypes.CDLL(lib_path)
-    
-    # Define C function signatures
-    
-    # CVDVContext* cvdvCreate(int numReg, int* numQubits)
+
     lib.cvdvCreate.argtypes = [c_int, POINTER(c_int)]
     lib.cvdvCreate.restype = ctypes.c_void_p
-    
-    # void cvdvDestroy(CVDVContext* ctx)
     lib.cvdvDestroy.argtypes = [ctypes.c_void_p]
     lib.cvdvDestroy.restype = None
-    
-    # void cvdvInitStateVector(CVDVContext* ctx)
-    lib.cvdvInitStateVector.argtypes = [ctypes.c_void_p]
-    lib.cvdvInitStateVector.restype = None
-    
-    # void cvdvSetUniform(CVDVContext* ctx, int regIdx)
-    lib.cvdvSetUniform.argtypes = [ctypes.c_void_p, c_int]
-    lib.cvdvSetUniform.restype = None
-    
-    # void cvdvFree(CVDVContext* ctx)
+    lib.cvdvInitFromSeparable.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), c_int]
+    lib.cvdvInitFromSeparable.restype = None
     lib.cvdvFree.argtypes = [ctypes.c_void_p]
     lib.cvdvFree.restype = None
-    
-    # void cvdvSetZero(CVDVContext* ctx, int regIdx)
-    lib.cvdvSetZero.argtypes = [ctypes.c_void_p, c_int]
-    lib.cvdvSetZero.restype = None
-    
-    # void cvdvSetCoherent(CVDVContext* ctx, int regIdx, double alphaRe, double alphaIm)
-    lib.cvdvSetCoherent.argtypes = [ctypes.c_void_p, c_int, c_double, c_double]
-    lib.cvdvSetCoherent.restype = None
-    
-    # void cvdvSetFock(CVDVContext* ctx, int regIdx, int n)
-    lib.cvdvSetFock.argtypes = [ctypes.c_void_p, c_int, c_int]
-    lib.cvdvSetFock.restype = None
-    
-    # void cvdvSetFocks(CVDVContext* ctx, int regIdx, double* coeffs, int length)
-    lib.cvdvSetFocks.argtypes = [ctypes.c_void_p, c_int, POINTER(c_double), c_int]
-    lib.cvdvSetFocks.restype = None
-    
-    # void cvdvSetCoeffs(CVDVContext* ctx, int regIdx, double* coeffs, int length)
-    lib.cvdvSetCoeffs.argtypes = [ctypes.c_void_p, c_int, POINTER(c_double), c_int]
-    lib.cvdvSetCoeffs.restype = None
-
-    # void cvdvSetCat(CVDVContext* ctx, int regIdx, double* data, int length)
-    lib.cvdvSetCat.argtypes = [ctypes.c_void_p, c_int, POINTER(c_double), c_int]
-    lib.cvdvSetCat.restype = None
-
-    # void cvdvDisplacement(CVDVContext* ctx, int regIdx, double betaRe, double betaIm)
     lib.cvdvDisplacement.argtypes = [ctypes.c_void_p, c_int, c_double, c_double]
     lib.cvdvDisplacement.restype = None
-    
-    # void cvdvConditionalDisplacement(CVDVContext* ctx, int targetReg, int ctrlReg, int ctrlQubit, double alphaRe, double alphaIm)
     lib.cvdvConditionalDisplacement.argtypes = [ctypes.c_void_p, c_int, c_int, c_int, c_double, c_double]
     lib.cvdvConditionalDisplacement.restype = None
-    
-    # void cvdvPauliRotation(CVDVContext* ctx, int regIdx, int targetQubit, int axis, double theta)
     lib.cvdvPauliRotation.argtypes = [ctypes.c_void_p, c_int, c_int, c_int, c_double]
     lib.cvdvPauliRotation.restype = None
-    
-    # void cvdvHadamard(CVDVContext* ctx, int regIdx, int targetQubit)
     lib.cvdvHadamard.argtypes = [ctypes.c_void_p, c_int, c_int]
     lib.cvdvHadamard.restype = None
-
-    # void cvdvParity(CVDVContext* ctx, int regIdx)
     lib.cvdvParity.argtypes = [ctypes.c_void_p, c_int]
     lib.cvdvParity.restype = None
-
-    # void cvdvConditionalParity(CVDVContext* ctx, int targetReg, int ctrlReg, int ctrlQubit)
     lib.cvdvConditionalParity.argtypes = [ctypes.c_void_p, c_int, c_int, c_int]
     lib.cvdvConditionalParity.restype = None
-
-    # void cvdvSwapRegisters(CVDVContext* ctx, int reg1, int reg2)
     lib.cvdvSwapRegisters.argtypes = [ctypes.c_void_p, c_int, c_int]
     lib.cvdvSwapRegisters.restype = None
-
-    # void cvdvPhaseSquare(CVDVContext* ctx, int regIdx, double t)
     lib.cvdvPhaseSquare.argtypes = [ctypes.c_void_p, c_int, c_double]
     lib.cvdvPhaseSquare.restype = None
-
-    # void cvdvPhaseCubic(CVDVContext* ctx, int regIdx, double t)
     lib.cvdvPhaseCubic.argtypes = [ctypes.c_void_p, c_int, c_double]
     lib.cvdvPhaseCubic.restype = None
-
-    # void cvdvRotation(CVDVContext* ctx, int regIdx, double theta)
     lib.cvdvRotation.argtypes = [ctypes.c_void_p, c_int, c_double]
     lib.cvdvRotation.restype = None
-
-    # void cvdvConditionalRotation(CVDVContext* ctx, int targetReg, int ctrlReg, int ctrlQubit, double theta)
     lib.cvdvConditionalRotation.argtypes = [ctypes.c_void_p, c_int, c_int, c_int, c_double]
     lib.cvdvConditionalRotation.restype = None
-
-    # void cvdvSqueeze(CVDVContext* ctx, int regIdx, double r)
     lib.cvdvSqueeze.argtypes = [ctypes.c_void_p, c_int, c_double]
     lib.cvdvSqueeze.restype = None
-
-    # void cvdvConditionalSqueeze(CVDVContext* ctx, int targetReg, int ctrlReg, int ctrlQubit, double r)
     lib.cvdvConditionalSqueeze.argtypes = [ctypes.c_void_p, c_int, c_int, c_int, c_double]
     lib.cvdvConditionalSqueeze.restype = None
-
-    # void cvdvBeamSplitter(CVDVContext* ctx, int reg1, int reg2, double theta)
     lib.cvdvBeamSplitter.argtypes = [ctypes.c_void_p, c_int, c_int, c_double]
     lib.cvdvBeamSplitter.restype = None
-
-    # void cvdvConditionalBeamSplitter(CVDVContext* ctx, int reg1, int reg2, int ctrlReg, int ctrlQubit, double theta)
     lib.cvdvConditionalBeamSplitter.argtypes = [ctypes.c_void_p, c_int, c_int, c_int, c_int, c_double]
     lib.cvdvConditionalBeamSplitter.restype = None
-
-    # void cvdvQ1Q2Gate(CVDVContext* ctx, int reg1, int reg2, double coeff)
     lib.cvdvQ1Q2Gate.argtypes = [ctypes.c_void_p, c_int, c_int, c_double]
     lib.cvdvQ1Q2Gate.restype = None
-
-    # void cvdvFtQ2P(CVDVContext* ctx, int regIdx)
     lib.cvdvFtQ2P.argtypes = [ctypes.c_void_p, c_int]
     lib.cvdvFtQ2P.restype = None
-    
-    # void cvdvFtP2Q(CVDVContext* ctx, int regIdx)
     lib.cvdvFtP2Q.argtypes = [ctypes.c_void_p, c_int]
     lib.cvdvFtP2Q.restype = None
-    
-    # void cvdvGetWignerSingleSlice(CVDVContext* ctx, int regIdx, int* sliceIndices, double* wignerOut, int wignerN, double wXMax, double wPMax)
     lib.cvdvGetWignerSingleSlice.argtypes = [ctypes.c_void_p, c_int, POINTER(c_int), POINTER(c_double), c_int, c_double, c_double]
     lib.cvdvGetWignerSingleSlice.restype = None
-    
-    # void cvdvGetWignerFullMode(CVDVContext* ctx, int regIdx, double* wignerOut, int wignerN, double wXMax, double wPMax)
     lib.cvdvGetWignerFullMode.argtypes = [ctypes.c_void_p, c_int, POINTER(c_double), c_int, c_double, c_double]
     lib.cvdvGetWignerFullMode.restype = None
-    
-    # void cvdvGetHusimiQFullMode(CVDVContext* ctx, int regIdx, double* husimiQOut, int qN, double qMax, double pMax)
     lib.cvdvGetHusimiQFullMode.argtypes = [ctypes.c_void_p, c_int, POINTER(c_double), c_int, c_double, c_double]
     lib.cvdvGetHusimiQFullMode.restype = None
-    
-    # void cvdvJointMeasure(CVDVContext* ctx, int reg1Idx, int reg2Idx, double* jointProbsOut)
     lib.cvdvJointMeasure.argtypes = [ctypes.c_void_p, c_int, c_int, POINTER(c_double)]
     lib.cvdvJointMeasure.restype = None
-    
-    # void cvdvGetState(CVDVContext* ctx, double* realOut, double* imagOut)
     lib.cvdvGetState.argtypes = [ctypes.c_void_p, POINTER(c_double), POINTER(c_double)]
     lib.cvdvGetState.restype = None
-    
-    # int cvdvGetNumRegisters(CVDVContext* ctx)
     lib.cvdvGetNumRegisters.argtypes = [ctypes.c_void_p]
     lib.cvdvGetNumRegisters.restype = c_int
-    
-    # size_t cvdvGetTotalSize(CVDVContext* ctx)
     lib.cvdvGetTotalSize.argtypes = [ctypes.c_void_p]
     lib.cvdvGetTotalSize.restype = c_size_t
-    
-    # void cvdvGetRegisterInfo(CVDVContext* ctx, int* qubitCountsOut, double* gridStepsOut)
     lib.cvdvGetRegisterInfo.argtypes = [ctypes.c_void_p, POINTER(c_int), POINTER(c_double)]
     lib.cvdvGetRegisterInfo.restype = None
-    
-    # int cvdvGetRegisterDim(CVDVContext* ctx, int regIdx)
     lib.cvdvGetRegisterDim.argtypes = [ctypes.c_void_p, c_int]
     lib.cvdvGetRegisterDim.restype = c_int
-    
-    # double cvdvGetRegisterDx(CVDVContext* ctx, int regIdx)
     lib.cvdvGetRegisterDx.argtypes = [ctypes.c_void_p, c_int]
     lib.cvdvGetRegisterDx.restype = c_double
-    
-    # void cvdvMeasure(CVDVContext* ctx, int regIdx, double* probabilitiesOut)
     lib.cvdvMeasure.argtypes = [ctypes.c_void_p, c_int, POINTER(c_double)]
     lib.cvdvMeasure.restype = None
-    
-    # void cvdvInnerProduct(CVDVContext* ctx, double* realOut, double* imagOut)
-    lib.cvdvInnerProduct.argtypes = [ctypes.c_void_p, POINTER(c_double), POINTER(c_double)]
-    lib.cvdvInnerProduct.restype = None
-
-    # double cvdvGetNorm(CVDVContext* ctx)
+    lib.cvdvGetFidelity.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), c_int, POINTER(c_double)]
+    lib.cvdvGetFidelity.restype = None
     lib.cvdvGetNorm.argtypes = [ctypes.c_void_p]
     lib.cvdvGetNorm.restype = c_double
+    lib.cvdvSetStateFromDevicePtr.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    lib.cvdvSetStateFromDevicePtr.restype = None
 
     print(f"Library loaded successfully!")
     print(f"Debug logs are written to: {os.path.join(project_dir, 'cuda.log')}")
     print("NOTE: Log file is cleared each time CVDV() is instantiated")
-    
     return lib
-
-# Compile and load library
-compile_library()
-lib = load_library()
 
 
 class CVDV:
-    """Python wrapper for CUDA quantum simulator (register-based API).
-    
-    All registers are treated uniformly as discrete quantum systems with dimensions 2^numQubits.
-    Grid steps (dx) are automatically calculated for position-space operations.
-    
+    """Quantum simulator supporting cuda, torch-cuda, and torch-cpu backends.
+
     INITIALIZATION PATTERN:
-    1. Create CVDV instance (allocates registers)
-    2. Call setXXX functions to initialize each register
-    3. Call initStateVector() to build the tensor product state
+        sim = CVDV([8, 1], backend='cuda')   # or 'torch-cuda' / 'torch-cpu'
+        sep = SeparableState([8, 1])
+        sep.setCoherent(0, 2.0)
+        sep.setZero(1)
+        sim.initStateVector(sep)
     """
-    
-    def __init__(self, numQubits_list: List[int]) -> None:
-        """Initialize simulator with multiple registers.
-        
-        Grid steps (dx) are calculated automatically inside CUDA using:
-            reg_dim = 2^numQubits
-            dx = sqrt(2 * pi / reg_dim)
-            x_bound = sqrt(2 * pi * reg_dim)
-        
-        Args:
-            numQubits_list: List of qubit counts for each register
-                           Register dimension will be 2^numQubits
-        
-        Example (Single register with 4096 grid points):
-            CVDV([12])  # 2^12 = 4096 points
-        
-        Example (Two registers: small + large):
-            CVDV([1, 10])  # Register 0: 2 qubits, Register 1: 1024 points
-        """
-        # Convert to C arrays
-        numQubits_c = (c_int * len(numQubits_list))(*numQubits_list)
-        
-        # Create context with registers (merged create+allocate)
-        self.ctx = lib.cvdvCreate(len(numQubits_list), numQubits_c)
-        
+
+    def __init__(self, numQubits_list: List[int],
+                 backend: str = 'cuda') -> None:
+        assert backend in ('cuda', 'torch-cuda', 'torch-cpu'), \
+            f"backend must be 'cuda', 'torch-cuda', or 'torch-cpu', got {backend!r}"
+        self.backend = backend
         self.num_registers = len(numQubits_list)
-        
-        # Note: User must call setXXX functions followed by initStateVector()
-        # before performing any operations
-        
-        # Retrieve register info from host (device state not yet created)
-        self.qubit_counts = np.zeros(self.num_registers, dtype=np.int32)
-        self.grid_steps = np.zeros(self.num_registers, dtype=np.float64)
-        
-        # Compute dimensions locally (device not yet initialized)
-        self.register_dims = [1 << qubits for qubits in numQubits_list]
+        self.register_dims = [1 << q for q in numQubits_list]
         self.total_size = 1
-        for dim in self.register_dims:
-            self.total_size *= dim
-        
-        # Compute grid steps locally
-        for i in range(self.num_registers):
-            self.qubit_counts[i] = numQubits_list[i]
-            dim = self.register_dims[i]
-            self.grid_steps[i] = sqrt(2 * pi / dim)
-    
+        for d in self.register_dims:
+            self.total_size *= d
+        self.qubit_counts = np.array(numQubits_list, dtype=np.int32)
+        self.grid_steps = np.array(
+            [sqrt(2 * pi / d) for d in self.register_dims], dtype=np.float64
+        )
+
+        if backend == 'cuda':
+            lib = _get_lib()
+            numQubits_c = (c_int * len(numQubits_list))(*numQubits_list)
+            self.ctx = lib.cvdvCreate(len(numQubits_list), numQubits_c)
+        else:
+            
+            dev = 'cuda' if backend == 'torch-cuda' else 'cpu'
+            self.device = torch.device(dev)
+            self.state: Any = None  # torch.Tensor, set by initStateVector
+
     def __del__(self):
-        """Free CUDA resources."""
         try:
-            if hasattr(self, 'ctx') and self.ctx:
-                lib.cvdvDestroy(self.ctx)
+            if self.backend == 'cuda' and hasattr(self, 'ctx') and self.ctx:
+                _get_lib().cvdvDestroy(self.ctx)
                 self.ctx = None
         except:
             pass
-    
-    def initStateVector(self) -> None:
-        """Build tensor product state from register arrays and upload to device.
-        
-        Must be called after all setXXX functions and before any operations.
-        """
-        lib.cvdvInitStateVector(self.ctx)
-    
-    def setZero(self, regIdx: int) -> None:
-        """Set register to |0⟩ state and upload to device."""
-        lib.cvdvSetZero(self.ctx, regIdx)
-    
-    def setCoherent(self, regIdx: int, alpha: Union[complex, float, int]) -> None:
-        """Set register to coherent state |α⟩ and upload to device."""
-        if isinstance(alpha, (int, float)):
-            alpha = complex(alpha, 0.0)
-        lib.cvdvSetCoherent(self.ctx, regIdx, c_double(alpha.real), c_double(alpha.imag))
-    
-    def setFock(self, regIdx: int, n: int) -> None:
-        """Set register to Fock state |n⟩ and upload to device."""
-        lib.cvdvSetFock(self.ctx, regIdx, n)
-    
-    def setUniform(self, regIdx: int) -> None:
-        """Set register to uniform superposition: all basis states with amplitude 1/sqrt(N)."""
-        lib.cvdvSetUniform(self.ctx, regIdx)
-    
-    def setFocks(self, regIdx: int, coeffs: Union[Sequence[complex], npt.NDArray[np.complex128]]) -> None:
-        """Set register to superposition of Fock states and upload to device.
-        
-        Args:
-            regIdx: Register index
-            coeffs: List/array of complex coefficients [c0, c1, c2, ...]
-                   State will be: c0|0⟩ + c1|1⟩ + c2|2⟩ + ...
-        """
-        coeffs_arr = np.array(coeffs, dtype=complex)
-        # Interleave real and imaginary parts: [re0, im0, re1, im1, ...]
-        coeffs_interleaved = np.empty(2 * len(coeffs_arr), dtype=np.float64)
-        coeffs_interleaved[0::2] = coeffs_arr.real  # type: ignore
-        coeffs_interleaved[1::2] = coeffs_arr.imag  # type: ignore
-        lib.cvdvSetFocks(self.ctx, regIdx,
-                          coeffs_interleaved.ctypes.data_as(POINTER(c_double)),
-                          len(coeffs_arr))
-    
-    def setCoeffs(self, regIdx: int, coeffs: Union[Sequence[complex], npt.NDArray[np.complex128]]) -> None:
-        """Set register to arbitrary coefficient array directly.
 
-        Args:
-            regIdx: Register index
-            coeffs: Array of complex coefficients (must match register dimension)
-                   Coefficients should be pre-normalized.
-        """
-        coeffs_arr = np.array(coeffs, dtype=complex)
-        # Interleave real and imaginary parts: [re0, im0, re1, im1, ...]
-        coeffs_interleaved = np.empty(2 * len(coeffs_arr), dtype=np.float64)
-        coeffs_interleaved[0::2] = coeffs_arr.real  # type: ignore
-        coeffs_interleaved[1::2] = coeffs_arr.imag  # type: ignore
-        lib.cvdvSetCoeffs(self.ctx, regIdx,
-                          coeffs_interleaved.ctypes.data_as(POINTER(c_double)),
-                          len(coeffs_arr))
+    # ==================== State Initialization ====================
 
-    def setCat(self, regIdx: int, cat_states: List[Tuple[Union[complex, float], Union[complex, float]]]) -> None:
-        """Set register to cat state (superposition of coherent states) and normalize.
+    def initStateVector(self, sep: 'SeparableState') -> None:
+        """Build tensor-product state from a SeparableState (all backends)."""
+        self._initFromSeparable(sep)
 
-        Args:
-            regIdx: Register index
-            cat_states: List of tuples [(alpha0, coeff0), (alpha1, coeff1), ...]
-                       where alpha_i are complex coherent state amplitudes
-                       and coeff_i are complex coefficients.
-                       State will be normalized: (c0|α0⟩ + c1|α1⟩ + ...) / norm
+    def _initFromSeparable(self, sep: 'SeparableState') -> None:
+        sep.validate()
+        if sep.num_registers != self.num_registers:
+            raise ValueError(
+                f"SeparableState has {sep.num_registers} registers, CVDV expects {self.num_registers}"
+            )
+        for i, (sq, rq) in enumerate(zip(sep.qubit_counts, self.qubit_counts)):
+            if sq != rq:
+                raise ValueError(
+                    f"Register {i}: SeparableState has {sq} qubits, CVDV has {rq}"
+                )
 
-        Example:
-            # Create cat state: (|α⟩ + |-α⟩) / √2
-            sim.setCat(0, [(2.0, 1.0), (-2.0, 1.0)])
-        """
-        cat_states = [(complex(alpha), complex(coeff)) for alpha, coeff in cat_states]
+        if self.backend == 'cuda':
+            lib = _get_lib()
+            ptr_arr = (ctypes.c_void_p * self.num_registers)(
+                *[ctypes.c_void_p(arr.data_ptr()) for arr in sep.register_arrays]  # type: ignore[union-attr]
+            )
+            lib.cvdvInitFromSeparable(self.ctx, ptr_arr, c_int(self.num_registers))
 
-        # Interleave: [alphaRe, alphaIm, coeffRe, coeffIm, ...]
-        data = np.empty(4 * len(cat_states), dtype=np.float64)
-        for i, (alpha, coeff) in enumerate(cat_states):
-            data[4*i] = alpha.real
-            data[4*i+1] = alpha.imag
-            data[4*i+2] = coeff.real
-            data[4*i+3] = coeff.imag
+        else:
+            
+            arrays = [arr.to(self.device) for arr in sep.register_arrays]  # type: ignore[union-attr]
+            if self.num_registers == 1:
+                state = arrays[0].clone()
+            else:
+                state = torch.outer(arrays[0], arrays[1])
+                for i in range(2, self.num_registers):
+                    state = state.unsqueeze(-1) * arrays[i].reshape(*([1] * i), -1)
+            norm = torch.sqrt(torch.sum(torch.abs(state) ** 2))
+            self.state = state / norm
 
-        lib.cvdvSetCat(self.ctx, regIdx,
-                       data.ctypes.data_as(POINTER(c_double)),
-                       len(cat_states))
+    # ==================== Gate Operations ====================
+    # All gates dispatch on self.backend.
 
     def d(self, regIdx: int, beta: Union[complex, float, int]) -> None:
         """Apply displacement operator D(β) to register."""
         if isinstance(beta, (int, float)):
             beta = complex(beta, 0.0)
-        lib.cvdvDisplacement(self.ctx, regIdx, c_double(beta.real), c_double(beta.imag))
-    
+        if self.backend == 'cuda':
+            _get_lib().cvdvDisplacement(self.ctx, regIdx, c_double(beta.real), c_double(beta.imag))
+        else:
+            if abs(beta.imag) > 1e-12:
+                
+                x = self._tPositionGrid(regIdx)
+                phase = torch.exp(1j * sqrt(2) * beta.imag * x).to(torch.cdouble)
+                self._tApplyPhase(regIdx, phase)
+            if abs(beta.real) > 1e-12:
+                self.ftQ2P(regIdx)
+                
+                p = self._tPositionGrid(regIdx)
+                phase = torch.exp(-1j * sqrt(2) * beta.real * p).to(torch.cdouble)
+                self._tApplyPhase(regIdx, phase)
+                self.ftP2Q(regIdx)
+
     def cd(self, targetReg: int, ctrlReg: int, ctrlQubit: int, alpha: Union[complex, float, int]) -> None:
-        """Apply conditional displacement CD(α) controlled by qubit.
-        
-        Args:
-            targetReg: Target register index (receives displacement)
-            ctrlReg: Control register index
-            ctrlQubit: Qubit index within control register
-            alpha: Complex displacement parameter
-        """
+        """Apply conditional displacement CD(α) controlled by qubit."""
         if isinstance(alpha, (int, float)):
-            alpha = complex(alpha, 0.0)
-        lib.cvdvConditionalDisplacement(self.ctx, targetReg, ctrlReg, ctrlQubit, 
-                   c_double(alpha.real), c_double(alpha.imag))
-    
+            alpha = complex(alpha)
+        if self.backend == 'cuda':
+            _get_lib().cvdvConditionalDisplacement(self.ctx, targetReg, ctrlReg, ctrlQubit,
+                       c_double(alpha.real), c_double(alpha.imag))
+        else:
+            if abs(alpha.imag) > 1e-12:
+                self._tApplyCondPhaseQ(targetReg, ctrlReg, ctrlQubit, sqrt(2) * alpha.imag)
+            if abs(alpha.real) > 1e-12:
+                self.ftQ2P(targetReg)
+                self._tApplyCondPhaseQ(targetReg, ctrlReg, ctrlQubit, -sqrt(2) * alpha.real)
+                self.ftP2Q(targetReg)
+
     def cr(self, targetReg: int, ctrlReg: int, ctrlQubit: int, theta: float) -> None:
-        """Apply conditional rotation CR(θ) controlled by qubit.
-
-        Implements: CR(θ) = exp(-i/2 Z tan(θ/2) Q²) exp(-i/2 Z sin(θ) P²) exp(-i/2 Z tan(θ/2) Q²)
-        where Z acts on ctrlQubit and Q,P act on targetReg.
-        |0⟩ gets R(θ), |1⟩ gets R(-θ).
-
-        Args:
-            targetReg: Target register index (receives rotation)
-            ctrlReg: Control register index
-            ctrlQubit: Qubit index within control register
-            theta: Rotation angle in radians
-        """
-        lib.cvdvConditionalRotation(self.ctx, targetReg, ctrlReg, ctrlQubit, c_double(theta))
+        """Apply conditional rotation CR(θ) controlled by qubit."""
+        if self.backend == 'cuda':
+            _get_lib().cvdvConditionalRotation(self.ctx, targetReg, ctrlReg, ctrlQubit, c_double(theta))
+        else:
+            ratio = theta / (pi / 2)
+            theta0 = int(np.floor(ratio + 0.5)) * (pi / 2)
+            remainder = theta - theta0
+            quarter_turns = (int(np.floor(ratio + 0.5)) % 4 + 4) % 4
+            if quarter_turns == 1:
+                self.ftQ2P(targetReg)
+                self.cp(targetReg, ctrlReg, ctrlQubit)
+                self.rz(ctrlReg, ctrlQubit, pi / 2)
+            elif quarter_turns == 2:
+                self.p(targetReg)
+                self.rz(ctrlReg, ctrlQubit, pi)
+            elif quarter_turns == 3:
+                self.ftP2Q(targetReg)
+                self.cp(targetReg, ctrlReg, ctrlQubit)
+                self.rz(ctrlReg, ctrlQubit, -pi / 2)
+            if abs(remainder) > 1e-15:
+                tan_half = np.tan(remainder / 2)
+                sin_theta = np.sin(remainder)
+                self._tApplyCondPhaseQ2(targetReg, ctrlReg, ctrlQubit, -0.5 * tan_half)
+                self.ftQ2P(targetReg)
+                self._tApplyCondPhaseQ2(targetReg, ctrlReg, ctrlQubit, -0.5 * sin_theta)
+                self.ftP2Q(targetReg)
+                self._tApplyCondPhaseQ2(targetReg, ctrlReg, ctrlQubit, -0.5 * tan_half)
 
     def x(self, regIdx: int, targetQubit: int) -> None:
-        lib.cvdvPauliRotation(self.ctx, regIdx, targetQubit, 0, pi)
+        if self.backend == 'cuda':
+            _get_lib().cvdvPauliRotation(self.ctx, regIdx, targetQubit, 0, pi)
+        else:
+            self.rx(regIdx, targetQubit, pi)
 
     def y(self, regIdx: int, targetQubit: int) -> None:
-        lib.cvdvPauliRotation(self.ctx, regIdx, targetQubit, 1, pi)
+        if self.backend == 'cuda':
+            _get_lib().cvdvPauliRotation(self.ctx, regIdx, targetQubit, 1, pi)
+        else:
+            self.ry(regIdx, targetQubit, pi)
 
     def z(self, regIdx: int, targetQubit: int) -> None:
-        lib.cvdvPauliRotation(self.ctx, regIdx, targetQubit, 2, pi)
+        if self.backend == 'cuda':
+            _get_lib().cvdvPauliRotation(self.ctx, regIdx, targetQubit, 2, pi)
+        else:
+            self.rz(regIdx, targetQubit, pi)
 
     def rx(self, regIdx: int, targetQubit: int, theta: float) -> None:
-        lib.cvdvPauliRotation(self.ctx, regIdx, targetQubit, 0, theta)
+        if self.backend == 'cuda':
+            _get_lib().cvdvPauliRotation(self.ctx, regIdx, targetQubit, 0, theta)
+        else:
+            
+            c = np.cos(theta / 2); s = np.sin(theta / 2)
+            mat = torch.tensor([[c, -1j*s], [-1j*s, c]], dtype=torch.cdouble, device=self.device)
+            self._tApplyQubitGate(regIdx, targetQubit, mat)
 
     def ry(self, regIdx: int, targetQubit: int, theta: float) -> None:
-        lib.cvdvPauliRotation(self.ctx, regIdx, targetQubit, 1, theta)
+        if self.backend == 'cuda':
+            _get_lib().cvdvPauliRotation(self.ctx, regIdx, targetQubit, 1, theta)
+        else:
+            
+            c = np.cos(theta / 2); s = np.sin(theta / 2)
+            mat = torch.tensor([[c, -s], [s, c]], dtype=torch.cdouble, device=self.device)
+            self._tApplyQubitGate(regIdx, targetQubit, mat)
 
     def rz(self, regIdx: int, targetQubit: int, theta: float) -> None:
-        lib.cvdvPauliRotation(self.ctx, regIdx, targetQubit, 2, theta)
-    
+        if self.backend == 'cuda':
+            _get_lib().cvdvPauliRotation(self.ctx, regIdx, targetQubit, 2, theta)
+        else:
+            
+            mat = torch.tensor([[np.exp(-1j*theta/2), 0], [0, np.exp(1j*theta/2)]],
+                                dtype=torch.cdouble, device=self.device)
+            self._tApplyQubitGate(regIdx, targetQubit, mat)
+
     def h(self, regIdx: int, targetQubit: int) -> None:
-        """Apply Hadamard gate to qubit in register."""
-        lib.cvdvHadamard(self.ctx, regIdx, targetQubit)
+        if self.backend == 'cuda':
+            _get_lib().cvdvHadamard(self.ctx, regIdx, targetQubit)
+        else:
+            
+            mat = torch.tensor([[1, 1], [1, -1]], dtype=torch.cdouble, device=self.device) / sqrt(2)
+            self._tApplyQubitGate(regIdx, targetQubit, mat)
 
     def p(self, regIdx: int) -> None:
         """Apply parity gate: flips all qubits of a register (|j⟩ → |N-1-j⟩)."""
-        lib.cvdvParity(self.ctx, regIdx)
+        if self.backend == 'cuda':
+            _get_lib().cvdvParity(self.ctx, regIdx)
+        else:
+            
+            self.state = torch.flip(self.state, dims=[regIdx])
 
     def cp(self, targetReg: int, ctrlReg: int, ctrlQubit: int) -> None:
-        """Apply conditional parity: identity on |0⟩, parity on |1⟩ control branch."""
-        lib.cvdvConditionalParity(self.ctx, targetReg, ctrlReg, ctrlQubit)
+        """Apply conditional parity."""
+        if self.backend == 'cuda':
+            _get_lib().cvdvConditionalParity(self.ctx, targetReg, ctrlReg, ctrlQubit)
+        else:
+            
+            ctrl_dim = self.register_dims[ctrlReg]
+            n_ctrl = self.qubit_counts[ctrlReg]
+            perm = list(range(self.num_registers))
+            perm[0], perm[ctrlReg] = perm[ctrlReg], perm[0]
+            actual_target = targetReg if targetReg != 0 else ctrlReg
+            perm[1], perm[actual_target] = perm[actual_target], perm[1]
+            state = self.state.permute(*perm)
+            new_shape = [2] * n_ctrl + list(state.shape[1:])
+            state = state.reshape(new_shape)
+            qperm = list(range(n_ctrl))
+            qperm[0], qperm[ctrlQubit] = qperm[ctrlQubit], qperm[0]
+            state = state.permute(*qperm + list(range(n_ctrl, len(new_shape))))
+            state[1] = torch.flip(state[1], dims=[n_ctrl - 1])
+            state = state.permute(*[qperm.index(i) for i in range(n_ctrl)] + list(range(n_ctrl, len(state.shape))))
+            state = state.reshape([ctrl_dim] + list(state.shape[n_ctrl:]))
+            state = state.permute(*[perm.index(i) for i in range(self.num_registers)])
+            self.state = state
 
     def swap(self, reg1: int, reg2: int) -> None:
         """Swap the contents of two registers (must have same number of qubits)."""
-        lib.cvdvSwapRegisters(self.ctx, reg1, reg2)
+        if self.backend == 'cuda':
+            _get_lib().cvdvSwapRegisters(self.ctx, reg1, reg2)
+        else:
+            if self.qubit_counts[reg1] != self.qubit_counts[reg2]:
+                raise ValueError(f"SWAP requires registers with same number of qubits")
+            perm = list(range(self.num_registers))
+            perm[reg1], perm[reg2] = perm[reg2], perm[reg1]
+            self.state = self.state.permute(*perm)
 
     def sheer(self, regIdx: int, t: float) -> None:
-        """Apply phase square gate: exp(i*t*q^2) in position space.
-
-        Args:
-            regIdx: Register index
-            t: Phase coefficient
-        """
-        lib.cvdvPhaseSquare(self.ctx, regIdx, t)
+        """Apply phase square gate: exp(i*t*q^2) in position space."""
+        if self.backend == 'cuda':
+            _get_lib().cvdvPhaseSquare(self.ctx, regIdx, t)
+        else:
+            
+            x = self._tPositionGrid(regIdx)
+            self._tApplyPhase(regIdx, torch.exp(1j * t * x ** 2).to(torch.cdouble))
 
     def phaseCubic(self, regIdx: int, t: float) -> None:
-        """Apply cubic phase gate: exp(i*t*q^3) in position space.
-
-        Args:
-            regIdx: Register index
-            t: Phase coefficient
-        """
-        lib.cvdvPhaseCubic(self.ctx, regIdx, t)
+        """Apply cubic phase gate: exp(i*t*q^3) in position space."""
+        if self.backend == 'cuda':
+            _get_lib().cvdvPhaseCubic(self.ctx, regIdx, t)
+        else:
+            
+            x = self._tPositionGrid(regIdx)
+            self._tApplyPhase(regIdx, torch.exp(1j * t * x ** 3).to(torch.cdouble))
 
     def r(self, regIdx: int, theta: float) -> None:
-        """Apply rotation gate R(θ) in phase space.
-
-        Implements: R(θ) = exp(-i/2 tan(θ/2) q^2) exp(-i/2 sin(θ) p^2) exp(-i/2 tan(θ/2) q^2)
-        This is a symplectic rotation in phase space by angle θ.
-
-        Args:
-            regIdx: Register index
-            theta: Rotation angle in radians
-        """
-        lib.cvdvRotation(self.ctx, regIdx, theta)
+        """Apply rotation gate R(θ) in phase space."""
+        if self.backend == 'cuda':
+            _get_lib().cvdvRotation(self.ctx, regIdx, theta)
+        else:
+            ratio = theta / (pi / 2)
+            theta0 = int(np.floor(ratio + 0.5)) * (pi / 2)
+            remainder = theta - theta0
+            quarter_turns = (int(np.floor(ratio + 0.5)) % 4 + 4) % 4
+            if quarter_turns == 1:
+                self.ftQ2P(regIdx)
+            elif quarter_turns == 2:
+                self.p(regIdx)
+            elif quarter_turns == 3:
+                self.ftP2Q(regIdx)
+            if abs(remainder) > 1e-15:
+                self.sheer(regIdx, -0.5 * np.tan(remainder / 2))
+                self.ftQ2P(regIdx)
+                self.sheer(regIdx, -0.5 * np.sin(remainder))
+                self.ftP2Q(regIdx)
+                self.sheer(regIdx, -0.5 * np.tan(remainder / 2))
 
     def s(self, regIdx: int, r: float) -> None:
-        """Apply squeezing gate S(r).
-
-        Implements the squeezing operator decomposed into q^2 and p^2 phases.
-        Positive r squeezes position and expands momentum.
-
-        Args:
-            regIdx: Register index
-            r: Squeezing parameter
-        """
-        lib.cvdvSqueeze(self.ctx, regIdx, r)
+        """Apply squeezing gate S(r)."""
+        if self.backend == 'cuda':
+            _get_lib().cvdvSqueeze(self.ctx, regIdx, r)
+        else:
+            exp_r = np.exp(r)
+            exp_mr = np.exp(-r)
+            t = np.exp(-r / 2.0) * np.sqrt(abs(1.0 - exp_mr))
+            self.sheer(regIdx, 0.5 * t)
+            self.ftQ2P(regIdx)
+            self.sheer(regIdx, (1.0 - exp_mr) / (2.0 * t))
+            self.ftP2Q(regIdx)
+            self.sheer(regIdx, -0.5 * t * exp_r)
+            self.ftQ2P(regIdx)
+            self.sheer(regIdx, (exp_mr - 1.0) / (2.0 * t * exp_r))
+            self.ftP2Q(regIdx)
 
     def cs(self, targetReg: int, ctrlReg: int, ctrlQubit: int, r: float) -> None:
-        """Apply conditional squeezing gate CS(r) controlled by qubit.
-
-        |0⟩ gets S(r), |1⟩ gets S(-r).
-
-        Args:
-            targetReg: Target register index (receives squeezing)
-            ctrlReg: Control register index
-            ctrlQubit: Qubit index within control register
-            r: Squeezing parameter
-        """
-        lib.cvdvConditionalSqueeze(self.ctx, targetReg, ctrlReg, ctrlQubit, c_double(r))
+        """Apply conditional squeezing gate CS(r) controlled by qubit."""
+        if self.backend == 'cuda':
+            _get_lib().cvdvConditionalSqueeze(self.ctx, targetReg, ctrlReg, ctrlQubit, c_double(r))
+        else:
+            ch_r = np.cosh(r); sh_r = np.sinh(r)
+            sv = np.sqrt(2.0 * abs(np.sinh(0.5 * r)))
+            self.sheer(targetReg, 0.5 * sv * ch_r)
+            self._tApplyCondPhaseQ2(targetReg, ctrlReg, ctrlQubit, -0.5 * sv * sh_r)
+            self.ftQ2P(targetReg)
+            self.sheer(targetReg, 0.5 * (ch_r - 1) / sv)
+            self._tApplyCondPhaseQ2(targetReg, ctrlReg, ctrlQubit, 0.5 * sh_r / sv)
+            self.ftP2Q(targetReg)
+            self.sheer(targetReg, -0.5 * sv)
+            self.ftQ2P(targetReg)
+            self.sheer(targetReg, 0.5 * (ch_r - 1) / sv)
+            self._tApplyCondPhaseQ2(targetReg, ctrlReg, ctrlQubit, -0.5 * sh_r / sv)
+            self.ftP2Q(targetReg)
 
     def bs(self, reg1: int, reg2: int, theta: float) -> None:
-        """Apply beam splitter gate BS(θ) between two registers.
-
-        Implements: BS(θ) = exp(-i*tan(θ/4)*q1*q2/2) * exp(-i*sin(θ/2)*p1*p2/2) * exp(-i*tan(θ/4)*q1*q2/2)
-        where q and p are position and momentum operators.
-
-        Args:
-            reg1: First register index
-            reg2: Second register index
-            theta: Beam splitter angle in radians
-        """
-        lib.cvdvBeamSplitter(self.ctx, reg1, reg2, theta)
+        """Apply beam splitter gate BS(θ) between two registers."""
+        if self.backend == 'cuda':
+            _get_lib().cvdvBeamSplitter(self.ctx, reg1, reg2, theta)
+        else:
+            ratio = theta / pi
+            theta0 = int(np.floor(ratio + 0.5)) * pi
+            remainder = theta - theta0
+            half_turns = (int(np.floor(ratio + 0.5)) % 4 + 4) % 4
+            if half_turns == 1:
+                self.ftQ2P(reg1); self.ftQ2P(reg2); self.swap(reg1, reg2)
+            elif half_turns == 2:
+                self.p(reg1); self.p(reg2)
+            elif half_turns == 3:
+                self.ftP2Q(reg1); self.ftP2Q(reg2); self.swap(reg1, reg2)
+            if abs(remainder) > 1e-15:
+                tq = np.tan(remainder / 4); sh = np.sin(remainder / 2)
+                self.q1q2(reg1, reg2, -tq)
+                self.ftQ2P(reg1); self.ftQ2P(reg2)
+                self.q1q2(reg1, reg2, -sh)
+                self.ftP2Q(reg1); self.ftP2Q(reg2)
+                self.q1q2(reg1, reg2, -tq)
 
     def cbs(self, reg1: int, reg2: int, ctrlReg: int, ctrlQubit: int, theta: float) -> None:
-        """Apply conditional beam splitter CBS(θ) controlled by qubit.
-
-        |0⟩ gets BS(θ), |1⟩ gets BS(-θ).
-
-        Args:
-            reg1: First register index
-            reg2: Second register index
-            ctrlReg: Control register index
-            ctrlQubit: Qubit index within control register
-            theta: Beam splitter angle in radians
-        """
-        lib.cvdvConditionalBeamSplitter(self.ctx, reg1, reg2, ctrlReg, ctrlQubit, c_double(theta))
+        """Apply conditional beam splitter CBS(θ) controlled by qubit."""
+        if self.backend == 'cuda':
+            _get_lib().cvdvConditionalBeamSplitter(self.ctx, reg1, reg2, ctrlReg, ctrlQubit, c_double(theta))
+        else:
+            ratio = theta / pi
+            theta0 = int(np.floor(ratio + 0.5)) * pi
+            remainder = theta - theta0
+            half_turns = (int(np.floor(ratio + 0.5)) % 4 + 4) % 4
+            if half_turns == 1:
+                self.ftQ2P(reg1); self.ftQ2P(reg2)
+                self.cp(reg1, ctrlReg, ctrlQubit); self.cp(reg2, ctrlReg, ctrlQubit)
+                self.swap(reg1, reg2)
+            elif half_turns == 2:
+                self.p(reg1); self.p(reg2)
+            elif half_turns == 3:
+                self.ftP2Q(reg1); self.ftP2Q(reg2)
+                self.cp(reg1, ctrlReg, ctrlQubit); self.cp(reg2, ctrlReg, ctrlQubit)
+                self.swap(reg1, reg2)
+            if abs(remainder) > 1e-15:
+                tq = np.tan(remainder / 4); sh = np.sin(remainder / 2)
+                self._tApplyCondQ1Q2(reg1, reg2, ctrlReg, ctrlQubit, -tq)
+                self.ftQ2P(reg1); self.ftQ2P(reg2)
+                self._tApplyCondQ1Q2(reg1, reg2, ctrlReg, ctrlQubit, -sh)
+                self.ftP2Q(reg1); self.ftP2Q(reg2)
+                self._tApplyCondQ1Q2(reg1, reg2, ctrlReg, ctrlQubit, -tq)
 
     def q1q2(self, reg1: int, reg2: int, coeff: float) -> None:
-        """Apply Q1Q2 interaction gate between two registers.
-
-        Implements: exp(i*coeff*q1*q2) where q1 and q2 are position operators.
-
-        Args:
-            reg1: First register index
-            reg2: Second register index
-            coeff: Interaction coefficient
-        """
-        lib.cvdvQ1Q2Gate(self.ctx, reg1, reg2, coeff)
+        """Apply Q1Q2 interaction gate: exp(i*coeff*q1*q2)."""
+        if self.backend == 'cuda':
+            _get_lib().cvdvQ1Q2Gate(self.ctx, reg1, reg2, coeff)
+        else:
+            
+            q1 = self._tPositionGrid(reg1)
+            q2 = self._tPositionGrid(reg2)
+            phase_matrix = torch.exp(1j * coeff * q1[:, None] * q2[None, :]).to(torch.cdouble)
+            shape = [1] * self.num_registers
+            shape[reg1] = self.register_dims[reg1]
+            shape[reg2] = self.register_dims[reg2]
+            self.state = self.state * phase_matrix.reshape(shape)
 
     def ftQ2P(self, regIdx: int) -> None:
         """Apply Fourier transform: position to momentum representation."""
-        lib.cvdvFtQ2P(self.ctx, regIdx)
-    
+        if self.backend == 'cuda':
+            _get_lib().cvdvFtQ2P(self.ctx, regIdx)
+        else:
+            
+            dx = self.grid_steps[regIdx]; dim = self.register_dims[regIdx]
+            phaseCoeff = pi * (dim - 1.0) / (dim * dx)
+            x = self._tPositionGrid(regIdx)
+            self._tApplyPhase(regIdx, torch.exp(1j * phaseCoeff * x).to(torch.cdouble))
+            self.state = torch.fft.fft(self.state, dim=regIdx)
+            p = self._tPositionGrid(regIdx)
+            self._tApplyPhase(regIdx, torch.exp(1j * phaseCoeff * p).to(torch.cdouble))
+            self.state = self.state / sqrt(dim)
+
     def ftP2Q(self, regIdx: int) -> None:
         """Apply inverse Fourier transform: momentum to position representation."""
-        lib.cvdvFtP2Q(self.ctx, regIdx)
-    
-    def getWignerSingleSlice(self, regIdx: int, slice_indices: Sequence[int], wignerN: int = 101, 
+        if self.backend == 'cuda':
+            _get_lib().cvdvFtP2Q(self.ctx, regIdx)
+        else:
+            
+            dx = self.grid_steps[regIdx]; dim = self.register_dims[regIdx]
+            phaseCoeff = -pi * (dim - 1.0) / (dim * dx)
+            p = self._tPositionGrid(regIdx)
+            self._tApplyPhase(regIdx, torch.exp(1j * phaseCoeff * p).to(torch.cdouble))
+            self.state = torch.fft.ifft(self.state, dim=regIdx, norm='forward')
+            x = self._tPositionGrid(regIdx)
+            self._tApplyPhase(regIdx, torch.exp(1j * phaseCoeff * x).to(torch.cdouble))
+            self.state = self.state / sqrt(dim)
+
+    # ==================== Measurements & Observables ====================
+
+    def getState(self) -> npt.NDArray[np.complex128]:
+        """Get full state vector as complex array."""
+        if self.backend == 'cuda':
+            real_arr = np.zeros(self.total_size, dtype=np.float64)
+            imag_arr = np.zeros(self.total_size, dtype=np.float64)
+            _get_lib().cvdvGetState(self.ctx,
+                real_arr.ctypes.data_as(POINTER(c_double)),
+                imag_arr.ctypes.data_as(POINTER(c_double))
+            )
+            return real_arr + 1j * imag_arr
+        else:
+            return self.state.flatten().cpu().numpy()
+
+    def getXGrid(self, regIdx: int) -> npt.NDArray[np.float64]:
+        """Get position grid points for register."""
+        dim = self.register_dims[regIdx]
+        dx = self.grid_steps[regIdx]
+        return (np.arange(dim) - (dim - 1) * 0.5) * dx
+
+    def m(self, regIdx: int) -> npt.NDArray[np.float64]:
+        """Compute measurement probabilities for all basis states of a register."""
+        if self.backend == 'cuda':
+            dim = self.register_dims[regIdx]
+            probs = np.zeros(dim, dtype=np.float64)
+            _get_lib().cvdvMeasure(self.ctx, regIdx, probs.ctypes.data_as(POINTER(c_double)))
+            return probs
+        else:
+            
+            probs = torch.abs(self.state) ** 2
+            dims_to_sum = [i for i in range(self.num_registers) if i != regIdx]
+            for d in sorted(dims_to_sum, reverse=True):
+                probs = torch.sum(probs, dim=d)
+            return probs.cpu().numpy()
+
+    def jointMeasure(self, reg1Idx: int, reg2Idx: int) -> npt.NDArray[np.float64]:
+        """Compute joint measurement probabilities for two registers."""
+        if self.backend == 'cuda':
+            dim1 = self.register_dims[reg1Idx]; dim2 = self.register_dims[reg2Idx]
+            jointProbs = np.zeros(dim1 * dim2, dtype=np.float64)
+            _get_lib().cvdvJointMeasure(self.ctx, reg1Idx, reg2Idx,
+                jointProbs.ctypes.data_as(POINTER(c_double))
+            )
+            return jointProbs.reshape((dim1, dim2))
+        else:
+            
+            probs = torch.abs(self.state) ** 2
+            dims_to_sum = [i for i in range(self.num_registers) if i not in [reg1Idx, reg2Idx]]
+            for d in sorted(dims_to_sum, reverse=True):
+                probs = torch.sum(probs, dim=d)
+            if reg1Idx > reg2Idx:
+                probs = probs.transpose(0, 1)
+            return probs.cpu().numpy()
+
+    def getFidelity(self, sep: 'SeparableState') -> float:
+        """Compute |⟨sep|ψ⟩|² between the current state and a SeparableState."""
+        sep.validate()
+        if self.backend == 'cuda':
+            ptr_arr = (ctypes.c_void_p * self.num_registers)(
+                *[ctypes.c_void_p(arr.data_ptr()) for arr in sep.register_arrays]  # type: ignore[union-attr]
+            )
+            fid_out = c_double(0.0)
+            _get_lib().cvdvGetFidelity(self.ctx, ptr_arr, c_int(self.num_registers),
+                                       ctypes.byref(fid_out))
+            return float(fid_out.value)
+        else:
+            arrays = [arr.to(self.device) for arr in sep.register_arrays]  # type: ignore[union-attr]
+            if self.num_registers == 1:
+                ref = arrays[0]
+            else:
+                ref = torch.outer(arrays[0], arrays[1])
+                for i in range(2, self.num_registers):
+                    ref = ref.unsqueeze(-1) * arrays[i].reshape(*([1] * i), -1)
+            ref_flat = ref.reshape(-1)
+            inner = torch.sum(torch.conj(ref_flat) * self.state.reshape(-1))
+            return float(torch.abs(inner).item() ** 2)
+
+    def getNorm(self) -> float:
+        """Compute norm of the state vector."""
+        if self.backend == 'cuda':
+            return _get_lib().cvdvGetNorm(self.ctx)
+        else:
+            
+            return float(torch.sqrt(torch.sum(torch.abs(self.state) ** 2)).cpu().item())
+
+    # ==================== Phase Space Functions ====================
+
+    def getWignerSingleSlice(self, regIdx: int, slice_indices: Sequence[int], wignerN: int = 101,
                              wXMax: float = 5.0, wPMax: float = 5.0) -> npt.NDArray[np.float64]:
-        """Compute Wigner function for register at specific slice.
-        
-        Args:
-            regIdx: Register index to compute Wigner function for
-            slice_indices: List/array of basis states for each register.
-                          slice_indices[regIdx] is ignored (can be any value).
-                          For other registers, specifies which basis state to condition on.
-        
-        Example:
-            For 2 registers, to get Wigner of register 1 when register 0 is in |0⟩:
-            getWignerSingleSlice(1, [0, -1])  # -1 is placeholder for register 1
-        """
+        """Compute Wigner function for register at specific slice."""
         if len(slice_indices) != self.num_registers:
             raise ValueError(f"slice_indices must have length {self.num_registers}")
-        
-        slice_indices_arr = np.array(slice_indices, dtype=np.int32)
-        wigner = np.zeros(wignerN * wignerN, dtype=np.float64)
-        lib.cvdvGetWignerSingleSlice(self.ctx, regIdx,
-            slice_indices_arr.ctypes.data_as(POINTER(c_int)),
-            wigner.ctypes.data_as(POINTER(c_double)),
-            wignerN, wXMax, wPMax
-        )
-        return wigner.reshape((wignerN, wignerN))
-    
-    def getWignerFullMode(self, regIdx: int, wignerN: int = 101, wXMax: float = 5.0, wPMax: float = 5.0) -> npt.NDArray[np.float64]:
-        """Compute reduced Wigner function for register by tracing out all other registers.
-        
-        This efficiently sums over all possible states of other registers to compute
-        the reduced density matrix's Wigner function.
-        
-        Args:
-            regIdx: Register index to compute Wigner function for
-            wignerN: Grid size for Wigner function (default: 101)
-            wXMax: Maximum position value (default: 5.0)
-            wPMax: Maximum momentum value (default: 5.0)
-        
-        Returns:
-            2D numpy array of shape (wignerN, wignerN) containing Wigner function W(q,p)
-        """
-        wigner = np.zeros(wignerN * wignerN, dtype=np.float64)
-        lib.cvdvGetWignerFullMode(self.ctx, regIdx,
-            wigner.ctypes.data_as(POINTER(c_double)),
-            wignerN, wXMax, wPMax
-        )
-        return wigner.reshape((wignerN, wignerN))
-    
-    def getHusimiQFullMode(self, regIdx: int, qN: int = 101, qMax: float = 5.0, pMax: float = 5.0) -> npt.NDArray[np.float64]:
-        """Compute Husimi Q function for register by tracing out all other registers.
-        
-        The Husimi Q function is defined as Q(q,p) = (1/π) ⟨α|ρ|α⟩ where α = (q + ip)/√2.
-        It represents the probability density for the state to be in coherent state |α⟩.
-        
-        Args:
-            regIdx: Register index to compute Q function for
-            qN: Grid size for Q function (default: 101)
-            qMax: Maximum position value (default: 5.0)
-            pMax: Maximum momentum value (default: 5.0)
-        
-        Returns:
-            2D numpy array of shape (qN, qN) containing Husimi Q function Q(q,p)
-        """
-        husimiQ = np.zeros(qN * qN, dtype=np.float64)
-        lib.cvdvGetHusimiQFullMode(self.ctx, regIdx,
-            husimiQ.ctypes.data_as(POINTER(c_double)),
-            qN, qMax, pMax
-        )
-        return husimiQ.reshape((qN, qN))
-    
-    def getWigner(self, regIdx: int, bound: float) -> npt.NDArray[np.float64]:
-        """Compute Wigner function on the native grids, cropped to [-bound,+bound]^2.
+        if self.backend == 'cuda':
+            slice_indices_arr = np.array(slice_indices, dtype=np.int32)
+            wigner = np.zeros(wignerN * wignerN, dtype=np.float64)
+            _get_lib().cvdvGetWignerSingleSlice(self.ctx, regIdx,
+                slice_indices_arr.ctypes.data_as(POINTER(c_int)),
+                wigner.ctypes.data_as(POINTER(c_double)),
+                wignerN, wXMax, wPMax
+            )
+            return wigner.reshape((wignerN, wignerN))
+        else:
+            
+            perm = list(range(self.num_registers))
+            perm[0], perm[regIdx] = perm[regIdx], perm[0]
+            state = self.state.permute(*perm)
+            for i in range(1, self.num_registers):
+                actual_reg = perm[i]
+                state = state.select(i, slice_indices[actual_reg])
+            psi = state.cpu().numpy()
+            dim = self.register_dims[regIdx]; dx = self.grid_steps[regIdx]
+            x_grid = np.linspace(-wXMax, wXMax, wignerN)
+            p_grid = np.linspace(-wPMax, wPMax, wignerN)
+            fft_results = np.zeros((wignerN, dim), dtype=np.complex128)
+            for i, x in enumerate(x_grid):
+                integrand = np.zeros(dim, dtype=np.complex128)
+                for j in range(dim):
+                    y = (j - (dim - 1) / 2) * dx
+                    ip = int(round((x + y) / dx)) + dim // 2
+                    im = int(round((x - y) / dx)) + dim // 2
+                    if 0 <= ip < dim and 0 <= im < dim:
+                        integrand[j] = np.conj(psi[ip]) * psi[im]
+                fft_results[i, :] = np.fft.ifft(integrand) * dim
+            wigner = np.zeros((wignerN, wignerN), dtype=np.float64)
+            dp = pi / (dim * dx)
+            for k, p in enumerate(p_grid):
+                k_s = int(round(p / dp + dim / 2))
+                k_s = max(0, min(dim - 1, k_s))
+                k_fft = (k_s + dim // 2) % dim
+                p_act = (k_s - dim / 2) * dp
+                phase_corr = np.exp(-1j * p_act * (dim - 1) * dx)
+                for i in range(wignerN):
+                    wigner[k, i] = np.real(phase_corr * fft_results[i, k_fft]) * dx / pi
+            return wigner
 
-        The x-axis is snapped so wx = k*dx exactly (no rounding error in state lookups).
-        The p-axis is snapped to the nearest FFT bin boundary.
-        Returns shape (N, N) where N = number of on-grid x-points in [-bound, +bound].
-        """
+    def getWignerFullMode(self, regIdx: int, wignerN: int = 101, wXMax: float = 5.0, wPMax: float = 5.0) -> npt.NDArray[np.float64]:
+        """Compute reduced Wigner function by tracing out all other registers."""
+        if self.backend == 'cuda':
+            wigner = np.zeros(wignerN * wignerN, dtype=np.float64)
+            _get_lib().cvdvGetWignerFullMode(self.ctx, regIdx,
+                wigner.ctypes.data_as(POINTER(c_double)),
+                wignerN, wXMax, wPMax
+            )
+            return wigner.reshape((wignerN, wignerN))
+        else:
+            
+            perm = list(range(self.num_registers))
+            perm[0], perm[regIdx] = perm[regIdx], perm[0]
+            state = self.state.permute(*perm)
+            dim = self.register_dims[regIdx]; other_size = self.total_size // dim
+            psi = state.reshape(dim, other_size).cpu().numpy()
+            dx = self.grid_steps[regIdx]
+            x_grid = np.linspace(-wXMax, wXMax, wignerN)
+            p_grid = np.linspace(-wPMax, wPMax, wignerN)
+            fft_results = np.zeros((wignerN, dim), dtype=np.complex128)
+            for i, x in enumerate(x_grid):
+                integrand = np.zeros(dim, dtype=np.complex128)
+                for j in range(dim):
+                    y = (j - (dim - 1) / 2) * dx
+                    ip = int(round((x + y) / dx)) + dim // 2
+                    im = int(round((x - y) / dx)) + dim // 2
+                    if 0 <= ip < dim and 0 <= im < dim:
+                        integrand[j] = np.dot(np.conj(psi[ip, :]), psi[im, :])
+                fft_results[i, :] = np.fft.ifft(integrand) * dim
+            wigner = np.zeros((wignerN, wignerN), dtype=np.float64)
+            dp = pi / (dim * dx)
+            for k, p in enumerate(p_grid):
+                k_s = int(round(p / dp + dim / 2))
+                k_s = max(0, min(dim - 1, k_s))
+                k_fft = (k_s + dim // 2) % dim
+                p_act = (k_s - dim / 2) * dp
+                phase_corr = np.exp(-1j * p_act * (dim - 1) * dx)
+                for i in range(wignerN):
+                    wigner[k, i] = np.real(phase_corr * fft_results[i, k_fft]) * dx / pi
+            return wigner
+
+    def getHusimiQFullMode(self, regIdx: int, qN: int = 101, qMax: float = 5.0, pMax: float = 5.0) -> npt.NDArray[np.float64]:
+        """Compute Husimi Q function by tracing out all other registers."""
+        if self.backend == 'cuda':
+            husimiQ = np.zeros(qN * qN, dtype=np.float64)
+            _get_lib().cvdvGetHusimiQFullMode(self.ctx, regIdx,
+                husimiQ.ctypes.data_as(POINTER(c_double)),
+                qN, qMax, pMax
+            )
+            return husimiQ.reshape((qN, qN))
+        else:
+            
+            perm = list(range(self.num_registers))
+            perm[0], perm[regIdx] = perm[regIdx], perm[0]
+            state = self.state.permute(*perm)
+            target_dim = self.register_dims[regIdx]; other_size = self.total_size // target_dim
+            psi = state.reshape(target_dim, other_size).cpu().numpy()
+            dx = self.grid_steps[regIdx]
+            x_values = np.array([(j - (target_dim - 1) / 2) * dx for j in range(target_dim)])
+            husimiQ = np.zeros((qN, qN), dtype=np.float64)
+            q_grid = np.linspace(-qMax, qMax, qN)
+            p_grid = np.linspace(-pMax, pMax, qN)
+            PI_POW_NEG_QUARTER = pi ** (-0.25)
+            windowed_signals = np.zeros((qN, target_dim), dtype=np.float64)
+            for i, q in enumerate(q_grid):
+                window = np.exp(-0.5 * (x_values - q) ** 2) * PI_POW_NEG_QUARTER * np.sqrt(dx)
+                for slice_idx in range(other_size):
+                    windowed = window * psi[:, slice_idx]
+                    fft_result = np.fft.fft(windowed)
+                    windowed_signals[i, :] += np.abs(fft_result) ** 2
+            dp = 2.0 * pi / (target_dim * dx)
+            for j, p_val in enumerate(p_grid):
+                for i in range(qN):
+                    k_s = int(round(p_val / dp + target_dim / 2))
+                    k_s = max(0, min(target_dim - 1, k_s))
+                    k_fft = (k_s + target_dim // 2) % target_dim
+                    husimiQ[j, i] = windowed_signals[i, k_fft] / pi
+            return husimiQ
+
+    def getWigner(self, regIdx: int, bound: float) -> npt.NDArray[np.float64]:
+        """Compute Wigner function on the native grids, cropped to [-bound,+bound]^2."""
         dx = self.grid_steps[regIdx]
         dp = np.pi / (self.register_dims[regIdx] * dx)
-        # x: snap bound to nearest grid point → wXMax is exact multiple of dx
         N = int(round(2 * bound / dx)) + 1
         wXMax = (N - 1) / 2 * dx
-        # p: snap wPMax to nearest dp bin so p-lookup is also exact
         n_p_bins = int(round(bound / dp))
         wPMax = n_p_bins * dp
         return self.getWignerFullMode(regIdx, wignerN=N, wXMax=wXMax, wPMax=wPMax)
 
     def getHusimiQ(self, regIdx: int, bound: float) -> npt.NDArray[np.float64]:
-        """Compute Husimi Q function on the native grids, cropped to [-bound,+bound]^2.
-
-        Returns shape (N, N) where N = number of on-grid q-points in [-bound, +bound].
-        """
+        """Compute Husimi Q function on the native grids, cropped to [-bound,+bound]^2."""
         dx = self.grid_steps[regIdx]
         dp = 2 * np.pi / (self.register_dims[regIdx] * dx)
         N = int(round(2 * bound / dx)) + 1
@@ -642,154 +774,156 @@ class CVDV:
         pMax = n_p_bins * dp
         return self.getHusimiQFullMode(regIdx, qN=N, qMax=qMax, pMax=pMax)
 
-    def jointMeasure(self, reg1Idx: int, reg2Idx: int) -> npt.NDArray[np.float64]:
-        """Compute joint measurement probabilities for two DV registers.
-        
-        This computes the joint probability distribution P(i,j) for measuring
-        state |i⟩ in reg1 and state |j⟩ in reg2, tracing out all other registers.
-        
-        Args:
-            reg1Idx: First register index
-            reg2Idx: Second register index
-        
-        Returns:
-            2D numpy array of shape (dim1, dim2) where dim1 and dim2 are the
-            dimensions of reg1 and reg2 respectively. Element [i,j] is P(i,j).
-        """
-        dim1 = self.register_dims[reg1Idx]
-        dim2 = self.register_dims[reg2Idx]
-        jointProbs = np.zeros(dim1 * dim2, dtype=np.float64)
-        lib.cvdvJointMeasure(self.ctx, reg1Idx, reg2Idx,
-            jointProbs.ctypes.data_as(POINTER(c_double))
-        )
-        return jointProbs.reshape((dim1, dim2))
-    
-    def getState(self) -> npt.NDArray[np.complex128]:
-        """Get full state vector as complex array."""
-        real_arr = np.zeros(self.total_size, dtype=np.float64)
-        imag_arr = np.zeros(self.total_size, dtype=np.float64)
-        lib.cvdvGetState(self.ctx,
-            real_arr.ctypes.data_as(POINTER(c_double)),
-            imag_arr.ctypes.data_as(POINTER(c_double))
-        )
-        return real_arr + 1j * imag_arr
-    
-    def getXGrid(self, regIdx: int) -> npt.NDArray[np.float64]:
-        """Get position grid points for register."""
-        dim = self.register_dims[regIdx]
-        dx = self.grid_steps[regIdx]
-        return (np.arange(dim) - (dim - 1) * 0.5) * dx
-    
-    def m(self, regIdx: int) -> npt.NDArray[np.float64]:
-        """Compute measurement probabilities for all basis states of a register.
-        
-        Args:
-            regIdx: Register index
-        
-        Returns:
-            numpy array of probabilities for all basis states (dimension 2^numQubits)
-        """
-        dim = self.register_dims[regIdx]
-        probs = np.zeros(dim, dtype=np.float64)
-        lib.cvdvMeasure(self.ctx, regIdx, probs.ctypes.data_as(POINTER(c_double)))
-        return probs
-    
-    def innerProduct(self) -> complex:
-        """Compute inner product between current state and register tensor product.
-
-        Computes <current_state | register_tensor_product> where register_tensor_product
-        is the tensor product of all register arrays (the state that would be created by
-        calling initStateVector with the current register contents).
-
-        Useful for:
-        - Verifying state initialization (should return 1.0 right after initStateVector)
-        - Computing overlap between evolved state and initial state
-        - Debugging and validation
-
-        Returns:
-            complex: Inner product value
-        """
-        real_out = c_double(0.0)
-        imag_out = c_double(0.0)
-        lib.cvdvInnerProduct(self.ctx, ctypes.byref(real_out), ctypes.byref(imag_out))
-        return complex(real_out.value, imag_out.value)
-
-    def getNorm(self) -> float:
-        """Compute norm of the state vector (sum of |state[i]|^2).
-
-        Returns:
-            float: Norm value (should be 1.0 for normalized states)
-        """
-        return lib.cvdvGetNorm(self.ctx)
+    # ==================== Info & Plotting ====================
 
     def info(self) -> None:
         """Print system information."""
-        # Calculate VRAM usage (complex double = 16 bytes per element)
         vram_gb = (self.total_size * 16) / (1024 * 1024 * 1024)
+        print(f"Backend: {self.backend}")
         print(f"Number of registers: {self.num_registers}")
-        print(f"Total state size: {self.total_size} elements ({vram_gb:.3f} GB in VRAM)")
+        print(f"Total state size: {self.total_size} elements ({vram_gb:.3f} GB)")
         for i in range(self.num_registers):
-            dim = self.register_dims[i]
-            dx = self.grid_steps[i]
+            dim = self.register_dims[i]; dx = self.grid_steps[i]
             x_bound = sqrt(2 * pi * dim)
-            print(f"  Register {i}: dim={dim}, "
-                  f"qubits={self.qubit_counts[i]}, dx={dx:.6f}, x_bound={x_bound:.6f}")
-    
-    def plotWigner(self, regIdx: int, slice_indices: Optional[Sequence[int]] = None, wignerN: int = 201, wignerMax: float = 5.0, 
+            print(f"  Register {i}: dim={dim}, qubits={self.qubit_counts[i]}, dx={dx:.6f}, x_bound={x_bound:.6f}")
+
+    def plotWigner(self, regIdx: int, slice_indices: Optional[Sequence[int]] = None, wignerN: int = 201, wignerMax: float = 5.0,
                     cmap: str = 'RdBu', figsize: Tuple[int, int] = (7, 6), show: bool = True) -> Tuple[Any, Any]:
         """Plot Wigner function for a register."""
-        # Get Wigner function
         if slice_indices is not None:
-            wigner = self.getWignerSingleSlice(regIdx, slice_indices, 
+            wigner = self.getWignerSingleSlice(regIdx, slice_indices,
                                               wignerN=wignerN, wXMax=wignerMax, wPMax=wignerMax)
         else:
-            wigner = self.getWignerFullMode(regIdx, wignerN=wignerN, 
+            wigner = self.getWignerFullMode(regIdx, wignerN=wignerN,
                                            wXMax=wignerMax, wPMax=wignerMax)
-        
-        # Create plot
         fig, ax = plt.subplots(figsize=figsize)
         vmax = np.max(np.abs(wigner))
         im = ax.imshow(wigner, extent=(-wignerMax, wignerMax, -wignerMax, wignerMax),
                       origin='lower', cmap=cmap, vmin=-vmax, vmax=vmax, aspect='equal')
-        ax.set_xlabel(r'$q$')
-        ax.set_ylabel(r'$p$')
-        plt.colorbar(im, ax=ax)
-        plt.tight_layout()
-        
+        ax.set_xlabel(r'$q$'); ax.set_ylabel(r'$p$')
+        plt.colorbar(im, ax=ax); plt.tight_layout()
         if show:
             plt.show()
-        
         return fig, ax
 
+    # ==================== Torch-backend helpers (private) ====================
 
-# ==================== Backend Selection ====================
-
-# Import PyTorch backend
-from .torchCvdv import CVDVTorch
-
-# Export both backends and factory function
-__all__ = ['CVDV', 'CVDVTorch', 'create_cvdv']
-
-def create_cvdv(numQubits_list: List[int], backend: str = 'cuda') -> Union['CVDV', 'CVDVTorch']:
-    """Factory function to create CVDV instance with specified backend.
-    
-    Args:
-        numQubits_list: List of qubit counts for each register
-        backend: Backend to use ('cuda' or 'torch', default: 'cuda')
-    
-    Returns:
-        CVDV or CVDVTorch instance
-    
-    Example:
-        # Use CUDA backend (default)
-        sim = create_cvdv([10, 12])
+    def _tPositionGrid(self, regIdx: int):
         
-        # Use PyTorch backend
-        sim = create_cvdv([10, 12], backend='torch')
-    """
-    if backend == 'cuda':
-        return CVDV(numQubits_list)
-    elif backend == 'torch':
-        return CVDVTorch(numQubits_list, device='cuda')
-    else:
-        raise ValueError(f"Unknown backend: {backend}. Use 'cuda' or 'torch'.")
+        dim = self.register_dims[regIdx]; dx = self.grid_steps[regIdx]
+        idx = torch.arange(dim, device=self.device, dtype=torch.float64)
+        return (idx - (dim - 1) * 0.5) * dx
+
+    def _tApplyPhase(self, regIdx: int, phase) -> None:
+        shape = [1] * self.num_registers
+        shape[regIdx] = -1
+        self.state = self.state * phase.reshape(shape)
+
+    def _tApplyQubitGate(self, regIdx: int, targetQubit: int, gate_matrix) -> None:
+        
+        dim = self.register_dims[regIdx]; n_q = self.qubit_counts[regIdx]
+        perm = list(range(self.num_registers))
+        perm[0], perm[regIdx] = perm[regIdx], perm[0]
+        state = self.state.permute(*perm)
+        other_dims = list(state.shape[1:])
+        state = state.reshape([2] * n_q + other_dims)
+        qperm = list(range(n_q))
+        qperm[0], qperm[targetQubit] = qperm[targetQubit], qperm[0]
+        state = state.permute(*qperm + list(range(n_q, len(state.shape))))
+        orig_shape = state.shape
+        state = gate_matrix @ state.reshape(2, -1)
+        state = state.reshape(orig_shape)
+        state = state.permute(*[qperm.index(i) for i in range(n_q)] + list(range(n_q, len(state.shape))))
+        state = state.reshape([dim] + other_dims)
+        state = state.permute(*[perm.index(i) for i in range(self.num_registers)])
+        self.state = state
+
+    def _tApplyCondPhaseQ(self, targetReg: int, ctrlReg: int, ctrlQubit: int, coeff: float) -> None:
+        """exp(i*coeff*Z*q) where Z on control qubit, q on target register."""
+        
+        q = self._tPositionGrid(targetReg)
+        phase_p = torch.exp(1j * coeff * q).to(torch.cdouble)
+        phase_m = torch.exp(-1j * coeff * q).to(torch.cdouble)
+        ctrl_dim = self.register_dims[ctrlReg]; n_ctrl = self.qubit_counts[ctrlReg]
+        perm = list(range(self.num_registers))
+        perm[0], perm[ctrlReg] = perm[ctrlReg], perm[0]
+        actual_target = targetReg if targetReg != 0 else ctrlReg
+        perm[1], perm[actual_target] = perm[actual_target], perm[1]
+        state = self.state.permute(*perm)
+        new_shape = [2] * n_ctrl + list(state.shape[1:])
+        state = state.reshape(new_shape)
+        qperm = list(range(n_ctrl))
+        qperm[0], qperm[ctrlQubit] = qperm[ctrlQubit], qperm[0]
+        state = state.permute(*qperm + list(range(n_ctrl, len(new_shape))))
+        pshape = [1] * (len(state.shape) - len(state.shape[n_ctrl:]) + 1)
+        pshape[n_ctrl] = -1
+        state[0] = state[0] * phase_p.reshape(pshape)[0]
+        state[1] = state[1] * phase_m.reshape(pshape)[0]
+        state = state.permute(*[qperm.index(i) for i in range(n_ctrl)] + list(range(n_ctrl, len(state.shape))))
+        state = state.reshape([ctrl_dim] + list(state.shape[n_ctrl:]))
+        state = state.permute(*[perm.index(i) for i in range(self.num_registers)])
+        self.state = state
+
+    def _tApplyCondPhaseQ2(self, targetReg: int, ctrlReg: int, ctrlQubit: int, t: float) -> None:
+        """exp(i*t*Z*q^2) where Z on control qubit, q on target register."""
+        
+        q = self._tPositionGrid(targetReg)
+        phase_p = torch.exp(1j * t * q ** 2).to(torch.cdouble)
+        phase_m = torch.exp(-1j * t * q ** 2).to(torch.cdouble)
+        ctrl_dim = self.register_dims[ctrlReg]; n_ctrl = self.qubit_counts[ctrlReg]
+        perm = list(range(self.num_registers))
+        perm[0], perm[ctrlReg] = perm[ctrlReg], perm[0]
+        actual_target = targetReg if targetReg != 0 else ctrlReg
+        perm[1], perm[actual_target] = perm[actual_target], perm[1]
+        state = self.state.permute(*perm)
+        new_shape = [2] * n_ctrl + list(state.shape[1:])
+        state = state.reshape(new_shape)
+        qperm = list(range(n_ctrl))
+        qperm[0], qperm[ctrlQubit] = qperm[ctrlQubit], qperm[0]
+        state = state.permute(*qperm + list(range(n_ctrl, len(new_shape))))
+        pshape = [1] * (len(state.shape) - len(state.shape[n_ctrl:]) + 1)
+        pshape[n_ctrl] = -1
+        state[0] = state[0] * phase_p.reshape(pshape)[0]
+        state[1] = state[1] * phase_m.reshape(pshape)[0]
+        state = state.permute(*[qperm.index(i) for i in range(n_ctrl)] + list(range(n_ctrl, len(state.shape))))
+        state = state.reshape([ctrl_dim] + list(state.shape[n_ctrl:]))
+        state = state.permute(*[perm.index(i) for i in range(self.num_registers)])
+        self.state = state
+
+    def _tApplyCondQ1Q2(self, reg1: int, reg2: int, ctrlReg: int, ctrlQubit: int, coeff: float) -> None:
+        """exp(i*coeff*Z*q1*q2) where Z on control qubit."""
+        
+        q1 = self._tPositionGrid(reg1); q2 = self._tPositionGrid(reg2)
+        pm_p = torch.exp(1j * coeff * q1[:, None] * q2[None, :]).to(torch.cdouble)
+        pm_m = torch.exp(-1j * coeff * q1[:, None] * q2[None, :]).to(torch.cdouble)
+        ctrl_dim = self.register_dims[ctrlReg]; n_ctrl = self.qubit_counts[ctrlReg]
+        perm = list(range(self.num_registers))
+        perm[0], perm[ctrlReg] = perm[ctrlReg], perm[0]
+        actual_reg1 = reg1 if reg1 != 0 else ctrlReg
+        perm[1], perm[actual_reg1] = perm[actual_reg1], perm[1]
+        actual_reg2_idx = perm.index(reg2)
+        perm[2], perm[actual_reg2_idx] = perm[actual_reg2_idx], perm[2]
+        state = self.state.permute(*perm)
+        new_shape = [2] * n_ctrl + list(state.shape[1:])
+        state = state.reshape(new_shape)
+        qperm = list(range(n_ctrl))
+        qperm[0], qperm[ctrlQubit] = qperm[ctrlQubit], qperm[0]
+        state = state.permute(*qperm + list(range(n_ctrl, len(new_shape))))
+        shape_p = [1] * len(state.shape)
+        shape_p[n_ctrl] = self.register_dims[reg1]
+        shape_p[n_ctrl + 1] = self.register_dims[reg2]
+        state[0] = state[0] * pm_p.reshape(shape_p)[0]
+        state[1] = state[1] * pm_m.reshape(shape_p)[0]
+        state = state.permute(*[qperm.index(i) for i in range(n_ctrl)] + list(range(n_ctrl, len(state.shape))))
+        state = state.reshape([ctrl_dim] + list(state.shape[n_ctrl:]))
+        state = state.permute(*[perm.index(i) for i in range(self.num_registers)])
+        self.state = state
+
+
+# CVDVTorch kept as a backward-compatible alias
+def CVDVTorch(numQubits_list: List[int], device: str = 'cuda') -> CVDV:
+    """Backward-compatible alias: CVDVTorch([...], device='cuda') → CVDV([...], backend='torch-cuda')."""
+    return CVDV(numQubits_list, backend=f'torch-{device}')
+
+
+__all__ = ['CVDV', 'CVDVTorch', 'SeparableState']

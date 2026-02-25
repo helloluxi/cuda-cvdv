@@ -14,7 +14,7 @@ from numpy import pi, sqrt
 
 # Add parent directory to path to import src package
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from src import CVDV
+from src import CVDV, SeparableState
 
 
 def run_cvdv_transfer_experiment(n_dv_qubits=4, cv_qubits=12, lam=0.29, return_plots=False):
@@ -46,18 +46,19 @@ def run_cvdv_transfer_experiment(n_dv_qubits=4, cv_qubits=12, lam=0.29, return_p
     # Capture initial state if plots are requested
     if return_plots:
         sim_initial = CVDV([n_dv_qubits, cv_qubits])
-        sim_initial.setUniform(0)
-        sim_initial.setCat(1, cat_states)
-        sim_initial.initStateVector()
+        sep_initial = SeparableState([n_dv_qubits, cv_qubits])
+        sep_initial.setUniform(0)
+        sep_initial.setCat(1, cat_states)
+        sim_initial.initStateVector(sep_initial)
         probs_dv_initial = sim_initial.m(0)
         wigner_cv_initial = sim_initial.getWignerFullMode(1, wignerN=201, wXMax=5, wPMax=5)
 
     # Initialize system
     sim = CVDV([n_dv_qubits, cv_qubits])
-    sim.setUniform(0)
-    sim.setCat(1, cat_states)
-    
-    sim.initStateVector()
+    sep = SeparableState([n_dv_qubits, cv_qubits])
+    sep.setUniform(0)
+    sep.setCat(1, cat_states)
+    sim.initStateVector(sep)
     
     # Apply encoding circuit
     dvReg = 0

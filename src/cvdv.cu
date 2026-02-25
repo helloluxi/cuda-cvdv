@@ -73,8 +73,14 @@ typedef struct {
     double* gGridSteps;        // Managed memory: grid step (dx) for each register
     int gNumReg;               // Total number of registers
     int gTotalQbt;             // Total number of qubits across all registers
-    cuDoubleComplex** dRegisterArrays;  // Device arrays for each register's coefficients
 } CVDVContext;
+
+// Lightweight struct for passing separable-state device pointers into CUDA functions.
+// Python fills this from SeparableState.register_arrays[i].data_ptr().
+typedef struct {
+    cuDoubleComplex** ptrs;  // host-side array of numReg device pointers
+    int numReg;
+} SeparableRegArrays;
 
 #pragma endregion
 
@@ -1030,8 +1036,7 @@ CVDVContext* cvdvCreate(int numReg, int* numQubits) {
     ctx->gGridSteps = nullptr;
     ctx->gNumReg = 0;
     ctx->gTotalQbt = 0;
-    ctx->dRegisterArrays = nullptr;
-    
+
     // If no registers specified, return empty context
     if (numReg == 0 || numQubits == nullptr) {
         logInfo(ctx, "Created empty context");
@@ -1046,25 +1051,18 @@ CVDVContext* cvdvCreate(int numReg, int* numQubits) {
     checkCudaErrors(ctx, cudaMallocManaged(&ctx->gFlwQbts, numReg * sizeof(int)));
     checkCudaErrors(ctx, cudaMallocManaged(&ctx->gGridSteps, numReg * sizeof(double)));
 
-    // Allocate device register arrays
-    ctx->dRegisterArrays = new cuDoubleComplex*[numReg];
-
-    // Initialize metadata and allocate space for each register
+    // Initialize metadata for each register
     ctx->gTotalQbt = 0;
     for (int i = 0; i < numReg; i++) {
         ctx->gQbts[i] = numQubits[i];
         ctx->gTotalQbt += numQubits[i];
-        
+
         // Calculate grid step using formula: dx = sqrt(2 * pi / regDim)
         size_t registerDim = 1 << numQubits[i];
         ctx->gGridSteps[i] = sqrt(2.0 * PI / registerDim);
-        
-        // Allocate device array for this register
-        checkCudaErrors(ctx, cudaMalloc(&ctx->dRegisterArrays[i], registerDim * sizeof(cuDoubleComplex)));
-        checkCudaErrors(ctx, cudaMemset(ctx->dRegisterArrays[i], 0, registerDim * sizeof(cuDoubleComplex)));
 
-        logDebug(ctx, "Register %d: qubits=%d, dx=%.6f, dim=%zu, x_bound=%.6f", 
-                  i, numQubits[i], ctx->gGridSteps[i], registerDim, 
+        logDebug(ctx, "Register %d: qubits=%d, dx=%.6f, dim=%zu, x_bound=%.6f",
+                  i, numQubits[i], ctx->gGridSteps[i], registerDim,
                   sqrt(2.0 * PI * registerDim));
     }
     
@@ -1103,18 +1101,7 @@ void cvdvDestroy(CVDVContext* ctx) {
         checkCudaErrors(ctx, cudaFree(ctx->gGridSteps));
         ctx->gGridSteps = nullptr;
     }
-    
-    // Free device register arrays
-    if (ctx->dRegisterArrays != nullptr) {
-        for (int i = 0; i < ctx->gNumReg; i++) {
-            if (ctx->dRegisterArrays[i] != nullptr) {
-                checkCudaErrors(ctx, cudaFree(ctx->dRegisterArrays[i]));
-            }
-        }
-        delete[] ctx->dRegisterArrays;
-        ctx->dRegisterArrays = nullptr;
-    }
-    
+
     // Close global log file (if this was the last instance using it)
     if (gLogFile != nullptr) {
         time_t now = time(nullptr);
@@ -1130,85 +1117,72 @@ void cvdvDestroy(CVDVContext* ctx) {
 
 #pragma region C API - Initialization and Cleanup
 
-void cvdvInitStateVector(CVDVContext* ctx) {
+// Build the full tensor-product state from per-register device pointers.
+// devicePtrs[i] must point to cuDoubleComplex device memory of size (1 << gQbts[i]).
+// This replaces the old cvdvInitStateVector + cvdvSetRegisterFromDevicePtr pattern.
+void cvdvInitFromSeparable(CVDVContext* ctx, void** devicePtrs, int numReg) {
     if (!ctx) return;
-    if (ctx->gNumReg == 0 || ctx->dRegisterArrays == nullptr) {
-        logError(ctx, "Must call cvdvCreate with registers before cvdvInitStateVector");
+    if (ctx->gNumReg == 0) {
+        logError(ctx, "Must call cvdvCreate with registers before cvdvInitFromSeparable");
+        return;
+    }
+    if (numReg != ctx->gNumReg) {
+        logError(ctx, "numReg mismatch: context has %d, got %d", ctx->gNumReg, numReg);
         return;
     }
 
-    logInfo(ctx, "Initializing state vector from register data");
+    logInfo(ctx, "Initializing state vector from %d device pointers", numReg);
 
-    // Compute total state size from qubit counts
     size_t totalSize = 1 << ctx->gTotalQbt;
-
     logDebug(ctx, "Total state size: %zu", totalSize);
 
-    // Allocate host memory for full state and download register arrays
-    cuDoubleComplex* hState = new cuDoubleComplex[totalSize];
-    cuDoubleComplex** hTempRegs = new cuDoubleComplex*[ctx->gNumReg];
-    
-    for (int i = 0; i < ctx->gNumReg; i++) {
+    // Download each register to host
+    cuDoubleComplex** hTempRegs = new cuDoubleComplex*[numReg];
+    for (int i = 0; i < numReg; i++) {
         size_t regDim = 1 << ctx->gQbts[i];
         hTempRegs[i] = new cuDoubleComplex[regDim];
-        checkCudaErrors(ctx, cudaMemcpy(hTempRegs[i], ctx->dRegisterArrays[i], 
-                                   regDim * sizeof(cuDoubleComplex), 
-                                   cudaMemcpyDeviceToHost));
+        checkCudaErrors(ctx, cudaMemcpy(hTempRegs[i],
+                                        reinterpret_cast<cuDoubleComplex*>(devicePtrs[i]),
+                                        regDim * sizeof(cuDoubleComplex),
+                                        cudaMemcpyDeviceToHost));
     }
 
-    // Compute tensor product
-    // New layout: last register varies fastest
-    // globalIdx = localIdx_R0 * (D1*...*D_{n-1}) + localIdx_R1 * (D2*...*D_{n-1}) + ... + localIdx_R_{n-1}
+    // Compute tensor product on host (last register varies fastest)
+    cuDoubleComplex* hState = new cuDoubleComplex[totalSize];
     for (size_t globalIdx = 0; globalIdx < totalSize; globalIdx++) {
         cuDoubleComplex product = make_cuDoubleComplex(1.0, 0.0);
-
         size_t idx = globalIdx;
-        // Iterate from last register to first (last varies fastest)
-        for (int reg = ctx->gNumReg - 1; reg >= 0; reg--) {
+        for (int reg = numReg - 1; reg >= 0; reg--) {
             size_t regDim = 1 << ctx->gQbts[reg];
             size_t localIdx = idx % regDim;
             idx /= regDim;
-
-            cuDoubleComplex regVal = hTempRegs[reg][localIdx];
-            product = cuCmul(product, regVal);
+            product = cuCmul(product, hTempRegs[reg][localIdx]);
         }
-
         hState[globalIdx] = product;
     }
-    
-    // Free temporary host arrays
-    for (int i = 0; i < ctx->gNumReg; i++) {
-        delete[] hTempRegs[i];
-    }
+
+    for (int i = 0; i < numReg; i++) delete[] hTempRegs[i];
     delete[] hTempRegs;
 
-    // Free old device state if it exists
-    if (ctx->dState != nullptr) {
-        cudaFree(ctx->dState);
-    }
+    if (ctx->dState != nullptr) cudaFree(ctx->dState);
 
-    // Allocate and copy device state
-    logDebug(ctx, "Allocating device memory: %.3f GB", totalSize * sizeof(cuDoubleComplex) / (1024.0 * 1024.0 * 1024.0));
+    logDebug(ctx, "Allocating device memory: %.3f GB",
+             totalSize * sizeof(cuDoubleComplex) / (1024.0 * 1024.0 * 1024.0));
     checkCudaErrors(ctx, cudaMalloc(&ctx->dState, totalSize * sizeof(cuDoubleComplex)));
-    checkCudaErrors(ctx, cudaMemcpy(ctx->dState, hState, totalSize * sizeof(cuDoubleComplex),
-                               cudaMemcpyHostToDevice));
-
-    // Cleanup
+    checkCudaErrors(ctx, cudaMemcpy(ctx->dState, hState,
+                                    totalSize * sizeof(cuDoubleComplex),
+                                    cudaMemcpyHostToDevice));
     delete[] hState;
 
-    logInfo(ctx, "State vector initialized: %d registers, total size: %zu", ctx->gNumReg, totalSize);
-    // printf("Initialized state with %d registers, total size: %zu\n", ctx->gNumReg, totalSize);
+    logInfo(ctx, "State vector initialized: %d registers, total size: %zu", numReg, totalSize);
 }
 
 void cvdvFree(CVDVContext* ctx) {
     if (!ctx) return;
-    // Free device memory
     if (ctx->dState != nullptr) {
         cudaFree(ctx->dState);
         ctx->dState = nullptr;
     }
-    
-    // Free managed memory for register metadata
     if (ctx->gQbts != nullptr) {
         cudaFree(ctx->gQbts);
         ctx->gQbts = nullptr;
@@ -1221,283 +1195,8 @@ void cvdvFree(CVDVContext* ctx) {
         cudaFree(ctx->gGridSteps);
         ctx->gGridSteps = nullptr;
     }
-
-    // Free device register arrays
-    if (ctx->dRegisterArrays != nullptr) {
-        for (int i = 0; i < ctx->gNumReg; i++) {
-            if (ctx->dRegisterArrays[i] != nullptr) {
-                checkCudaErrors(ctx, cudaFree(ctx->dRegisterArrays[i]));
-            }
-        }
-        delete[] ctx->dRegisterArrays;
-        ctx->dRegisterArrays = nullptr;
-    }
-
     ctx->gNumReg = 0;
     ctx->gTotalQbt = 0;
-}
-
-#pragma endregion
-
-#pragma region C API - State Initialization
-
-void cvdvSetZero(CVDVContext* ctx, int regIdx) {
-    if (!ctx) return;
-    if (regIdx < 0 || regIdx >= ctx->gNumReg) {
-        logError(ctx, "Invalid register index: %d", regIdx);
-        return;
-    }
-
-    logInfo(ctx, "Setting register %d to |0> state", regIdx);
-
-    size_t dim = 1 << ctx->gQbts[regIdx];
-
-    // Set to zero first
-    checkCudaErrors(ctx, cudaMemset(ctx->dRegisterArrays[regIdx], 0, dim * sizeof(cuDoubleComplex)));
-    
-    // Set first element to 1
-    cuDoubleComplex one = make_cuDoubleComplex(1.0, 0.0);
-    checkCudaErrors(ctx, cudaMemcpy(ctx->dRegisterArrays[regIdx], &one, sizeof(cuDoubleComplex), cudaMemcpyHostToDevice));
-
-    logDebug(ctx, "Register %d set to |0> state", regIdx);
-}
-
-void cvdvSetCoherent(CVDVContext* ctx, int regIdx, double alphaRe, double alphaIm) {
-    if (!ctx) return;
-    if (regIdx < 0 || regIdx >= ctx->gNumReg) {
-        logError(ctx, "Invalid register index: %d", regIdx);
-        return;
-    }
-
-    logInfo(ctx, "Setting register %d to coherent state |(%.3f, %.3f)>",
-             regIdx, alphaRe, alphaIm);
-
-    size_t cvDim = 1 << ctx->gQbts[regIdx];
-    double dx = ctx->gGridSteps[regIdx];
-
-    if (fabs(dx) < 1e-15) {
-        logError(ctx, "Coherent state requires CV mode (dx > 0)");
-        return;
-    }
-
-    // Compute coherent state directly in dRegisterArrays
-    int grid = (cvDim + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
-    kernelSetCoherent<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dRegisterArrays[regIdx], cvDim, dx, alphaRe, alphaIm);
-    checkCudaErrors(ctx, cudaGetLastError());
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
-
-    logDebug(ctx, "Register %d set to coherent state", regIdx);
-}
-
-void cvdvSetFock(CVDVContext* ctx, int regIdx, int n) {
-    if (!ctx) return;
-    if (regIdx < 0 || regIdx >= ctx->gNumReg) {
-        logError(ctx, "Invalid register index: %d", regIdx);
-        return;
-    }
-
-    logInfo(ctx, "Setting register %d to Fock state |%d>", regIdx, n);
-
-    size_t cvDim = 1 << ctx->gQbts[regIdx];
-    double dx = ctx->gGridSteps[regIdx];
-
-    if (fabs(dx) < 1e-15) {
-        logError(ctx, "Fock state requires CV mode (dx > 0)");
-        return;
-    }
-
-    // Compute Fock state directly in dRegisterArrays
-    int grid = (cvDim + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
-    kernelSetFock<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dRegisterArrays[regIdx], cvDim, dx, n);
-    checkCudaErrors(ctx, cudaGetLastError());
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
-
-    logDebug(ctx, "Register %d set to Fock state |%d>", regIdx, n);
-}
-
-void cvdvSetUniform(CVDVContext* ctx, int regIdx) {
-    if (!ctx) return;
-    if (regIdx < 0 || regIdx >= ctx->gNumReg) {
-        logError(ctx, "Invalid register index: %d", regIdx);
-        return;
-    }
-
-    size_t cvDim = 1 << ctx->gQbts[regIdx];
-    
-    logInfo(ctx, "Setting register %d to uniform superposition (dim=%zu)", regIdx, cvDim);
-
-    // Create uniform state: all elements = 1/sqrt(N)
-    double amplitude = 1.0 / sqrt(cvDim);
-    
-    cuDoubleComplex* hTemp = new cuDoubleComplex[cvDim];
-    for (int i = 0; i < cvDim; i++) {
-        hTemp[i] = make_cuDoubleComplex(amplitude, 0.0);
-    }
-    
-    checkCudaErrors(ctx, cudaMemcpy(ctx->dRegisterArrays[regIdx], hTemp, 
-                               cvDim * sizeof(cuDoubleComplex), cudaMemcpyHostToDevice));
-    delete[] hTemp;
-
-    logDebug(ctx, "Register %d set to uniform superposition", regIdx);
-}
-
-void cvdvSetFocks(CVDVContext* ctx, int regIdx, double* coeffs, int length) {
-    if (!ctx) return;
-    if (regIdx < 0 || regIdx >= ctx->gNumReg) {
-        logError(ctx, "Invalid register index: %d", regIdx);
-        return;
-    }
-
-    logInfo(ctx, "Setting register %d to Fock superposition with %d terms", regIdx, length);
-
-    size_t cvDim = 1 << ctx->gQbts[regIdx];
-    double dx = ctx->gGridSteps[regIdx];
-
-    if (fabs(dx) < 1e-15) {
-        logError(ctx, "Fock superposition requires CV mode (dx > 0)");
-        return;
-    }
-
-    // Copy coefficients to device (interleaved: Re,Im,Re,Im,...)
-    cuDoubleComplex* hCoeffs = new cuDoubleComplex[length];
-    for (int i = 0; i < length; i++) {
-        hCoeffs[i] = make_cuDoubleComplex(coeffs[2*i], coeffs[2*i+1]);
-    }
-
-    cuDoubleComplex* dCoeffs;
-    checkCudaErrors(ctx, cudaMalloc(&dCoeffs, length * sizeof(cuDoubleComplex)));
-    checkCudaErrors(ctx, cudaMemcpy(dCoeffs, hCoeffs, length * sizeof(cuDoubleComplex),
-                               cudaMemcpyHostToDevice));
-
-    // Compute Fock superposition directly in dRegisterArrays
-    int grid = (cvDim + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
-    kernelSetFocks<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dRegisterArrays[regIdx], cvDim, dx, dCoeffs, length);
-    checkCudaErrors(ctx, cudaGetLastError());
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
-
-    cudaFree(dCoeffs);
-    delete[] hCoeffs;
-
-    logDebug(ctx, "Register %d set to Fock superposition", regIdx);
-}
-
-void cvdvSetCoeffs(CVDVContext* ctx, int regIdx, double* coeffs, int length) {
-    if (!ctx) return;
-    if (regIdx < 0 || regIdx >= ctx->gNumReg) {
-        logError(ctx, "Invalid register index: %d", regIdx);
-        return;
-    }
-
-    logInfo(ctx, "Setting register %d to custom coefficients with %d terms", regIdx, length);
-
-    size_t cvDim = 1 << ctx->gQbts[regIdx];
-
-    if (length != cvDim) {
-        logError(ctx, "Coefficient array length (%d) must match register dimension (%zu)", length, cvDim);
-        return;
-    }
-
-    // Copy coefficients to device (interleaved: Re,Im,Re,Im,...)
-    cuDoubleComplex* hCoeffs = new cuDoubleComplex[length];
-    for (int i = 0; i < length; i++) {
-        hCoeffs[i] = make_cuDoubleComplex(coeffs[2*i], coeffs[2*i+1]);
-    }
-
-    checkCudaErrors(ctx, cudaMemcpy(ctx->dRegisterArrays[regIdx], hCoeffs,
-                               length * sizeof(cuDoubleComplex), cudaMemcpyHostToDevice));
-
-    delete[] hCoeffs;
-
-    logDebug(ctx, "Register %d set to custom coefficients", regIdx);
-}
-
-void cvdvSetCat(CVDVContext* ctx, int regIdx, double* data, int length) {
-    if (!ctx) return;
-    if (regIdx < 0 || regIdx >= ctx->gNumReg) {
-        logError(ctx, "Invalid register index: %d", regIdx);
-        return;
-    }
-
-    logInfo(ctx, "Setting register %d to cat state with %d coherent states", regIdx, length);
-
-    size_t cvDim = 1 << ctx->gQbts[regIdx];
-    double dx = ctx->gGridSteps[regIdx];
-
-    if (fabs(dx) < 1e-15) {
-        logError(ctx, "Cat state requires CV mode (dx > 0)");
-        return;
-    }
-
-    // Parse data array: [alphaRe, alphaIm, coeffRe, coeffIm, ...] for each coherent state
-    cuDoubleComplex* hAlphas = new cuDoubleComplex[length];
-    cuDoubleComplex* hCoeffs = new cuDoubleComplex[length];
-
-    for (int i = 0; i < length; i++) {
-        hAlphas[i] = make_cuDoubleComplex(data[4*i], data[4*i+1]);
-        hCoeffs[i] = make_cuDoubleComplex(data[4*i+2], data[4*i+3]);
-    }
-
-    // Copy to device
-    cuDoubleComplex* dAlphas;
-    cuDoubleComplex* dCoeffs;
-    checkCudaErrors(ctx, cudaMalloc(&dAlphas, length * sizeof(cuDoubleComplex)));
-    checkCudaErrors(ctx, cudaMalloc(&dCoeffs, length * sizeof(cuDoubleComplex)));
-    checkCudaErrors(ctx, cudaMemcpy(dAlphas, hAlphas, length * sizeof(cuDoubleComplex),
-                               cudaMemcpyHostToDevice));
-    checkCudaErrors(ctx, cudaMemcpy(dCoeffs, hCoeffs, length * sizeof(cuDoubleComplex),
-                               cudaMemcpyHostToDevice));
-
-    // Compute cat state (unnormalized)
-    int grid = (cvDim + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
-    kernelSetCat<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dRegisterArrays[regIdx], cvDim, dx,
-                                             dAlphas, dCoeffs, length);
-    checkCudaErrors(ctx, cudaGetLastError());
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
-
-    // Compute norm using reduction
-    int numBlocks = min(grid, 1024);
-    double* dPartialSums;
-    checkCudaErrors(ctx, cudaMalloc(&dPartialSums, numBlocks * sizeof(double)));
-
-    size_t sharedMemSize = CUDA_BLOCK_SIZE * sizeof(double);
-    kernelComputeRegisterNorm<<<numBlocks, CUDA_BLOCK_SIZE, sharedMemSize>>>(
-        dPartialSums, ctx->dRegisterArrays[regIdx], cvDim);
-    checkCudaErrors(ctx, cudaGetLastError());
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
-
-    // Download partial sums and reduce on host
-    double* hPartialSums = new double[numBlocks];
-    checkCudaErrors(ctx, cudaMemcpy(hPartialSums, dPartialSums,
-                               numBlocks * sizeof(double), cudaMemcpyDeviceToHost));
-
-    double norm2 = 0.0;
-    for (int i = 0; i < numBlocks; i++) {
-        norm2 += hPartialSums[i];
-    }
-    double norm = sqrt(norm2);
-
-    logDebug(ctx, "Cat state norm before normalization: %.10f", norm);
-
-    // Normalize the state
-    if (norm > 1e-15) {
-        double invNorm = 1.0 / norm;
-        kernelNormalizeRegister<<<grid, CUDA_BLOCK_SIZE>>>(
-            ctx->dRegisterArrays[regIdx], cvDim, invNorm);
-        checkCudaErrors(ctx, cudaGetLastError());
-        checkCudaErrors(ctx, cudaDeviceSynchronize());
-    } else {
-        logError(ctx, "Cat state has near-zero norm, cannot normalize");
-    }
-
-    // Cleanup
-    delete[] hAlphas;
-    delete[] hCoeffs;
-    delete[] hPartialSums;
-    cudaFree(dAlphas);
-    cudaFree(dCoeffs);
-    cudaFree(dPartialSums);
-
-    logDebug(ctx, "Register %d set to normalized cat state", regIdx);
 }
 
 #pragma endregion
@@ -2501,6 +2200,21 @@ void cvdvJointMeasure(CVDVContext* ctx, int reg1Idx, int reg2Idx, double* jointP
     cudaFree(dJointProb);
 }
 
+// Copy a full flat state from an existing CUDA device pointer (e.g. a torch tensor).
+// d_src must be cuDoubleComplex* on the GPU with totalSize elements.
+// Allocates dState if not yet allocated.
+void cvdvSetStateFromDevicePtr(CVDVContext* ctx, void* d_src) {
+    if (!ctx || !d_src) return;
+    size_t totalSize = 1 << ctx->gTotalQbt;
+    if (ctx->dState == nullptr) {
+        checkCudaErrors(ctx, cudaMalloc(&ctx->dState, totalSize * sizeof(cuDoubleComplex)));
+    }
+    checkCudaErrors(ctx, cudaMemcpy(ctx->dState, d_src,
+                               totalSize * sizeof(cuDoubleComplex),
+                               cudaMemcpyDeviceToDevice));
+    logInfo(ctx, "State loaded from device pointer (%zu elements)", totalSize);
+}
+
 void cvdvGetState(CVDVContext* ctx, double* realOut, double* imagOut) {
     if (!ctx) return;
     size_t totalSize = 1 << ctx->gTotalQbt;
@@ -2646,57 +2360,66 @@ void cvdvMeasure(CVDVContext* ctx, int regIdx, double* probabilitiesOut) {
     checkCudaErrors(ctx, cudaFree(dProbs));
 }
 
-void cvdvInnerProduct(CVDVContext* ctx, double* realOut, double* imagOut) {
-    if (!ctx) return;
-    if (ctx->dState == nullptr || ctx->dRegisterArrays == nullptr || ctx->gNumReg == 0) {
-        logError(ctx, "State or register arrays not initialized");
-        *realOut = 0.0;
-        *imagOut = 0.0;
-        return;
-    }
-
-    logInfo(ctx, "Computing inner product between state and register tensor product");
-
-    // Prepare device array of register array pointers
+// Helper: build device pointer-of-pointers from a host array of numReg device ptrs,
+// run kernelComputeInnerProduct, reduce, free, and return the complex sum.
+static cuDoubleComplex runInnerProductKernel(CVDVContext* ctx,
+                                             void** devicePtrs, int numReg) {
+    // Upload pointer array to device
     cuDoubleComplex** dRegArrayPtrs;
-    checkCudaErrors(ctx, cudaMalloc(&dRegArrayPtrs, ctx->gNumReg * sizeof(cuDoubleComplex*)));
-    checkCudaErrors(ctx, cudaMemcpy(dRegArrayPtrs, ctx->dRegisterArrays, 
-                               ctx->gNumReg * sizeof(cuDoubleComplex*), cudaMemcpyHostToDevice));
+    checkCudaErrors(ctx, cudaMalloc(&dRegArrayPtrs, numReg * sizeof(cuDoubleComplex*)));
+    // Copy host-side pointer values (each is a device ptr) to device memory
+    checkCudaErrors(ctx, cudaMemcpy(dRegArrayPtrs, devicePtrs,
+                                    numReg * sizeof(cuDoubleComplex*),
+                                    cudaMemcpyHostToDevice));
 
-    // Allocate partial sums for reduction
     size_t totalSize = 1 << ctx->gTotalQbt;
-    int numBlocks = (totalSize + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
-    numBlocks = min(numBlocks, 1024);  // Cap at 1024 blocks
-    
+    int numBlocks = (int)((totalSize + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE);
+    numBlocks = min(numBlocks, 1024);
+
     cuDoubleComplex* dPartialSums;
     checkCudaErrors(ctx, cudaMalloc(&dPartialSums, numBlocks * sizeof(cuDoubleComplex)));
 
-    // Launch kernel with shared memory for reduction
     size_t sharedMemSize = CUDA_BLOCK_SIZE * sizeof(cuDoubleComplex);
     kernelComputeInnerProduct<<<numBlocks, CUDA_BLOCK_SIZE, sharedMemSize>>>(
-        dPartialSums, ctx->dState, dRegArrayPtrs, ctx->gNumReg, ctx->gQbts, ctx->gFlwQbts, totalSize);
+        dPartialSums, ctx->dState,
+        dRegArrayPtrs, numReg,
+        ctx->gQbts, ctx->gFlwQbts, totalSize);
     checkCudaErrors(ctx, cudaGetLastError());
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 
-    // Download partial sums and reduce on host
     cuDoubleComplex* hPartialSums = new cuDoubleComplex[numBlocks];
-    checkCudaErrors(ctx, cudaMemcpy(hPartialSums, dPartialSums, 
-                               numBlocks * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost));
-
+    checkCudaErrors(ctx, cudaMemcpy(hPartialSums, dPartialSums,
+                                    numBlocks * sizeof(cuDoubleComplex),
+                                    cudaMemcpyDeviceToHost));
     cuDoubleComplex result = make_cuDoubleComplex(0.0, 0.0);
-    for (int i = 0; i < numBlocks; i++) {
-        result = cuCadd(result, hPartialSums[i]);
-    }
+    for (int i = 0; i < numBlocks; i++) result = cuCadd(result, hPartialSums[i]);
 
-    *realOut = cuCreal(result);
-    *imagOut = cuCimag(result);
-
-    // Cleanup
     delete[] hPartialSums;
     checkCudaErrors(ctx, cudaFree(dPartialSums));
     checkCudaErrors(ctx, cudaFree(dRegArrayPtrs));
+    return result;
+}
 
-    logInfo(ctx, "Inner product: (%.10f, %.10f)", *realOut, *imagOut);
+// Compute fidelity |⟨sep|ψ⟩|² where sep is a SeparableState passed as device pointers.
+// devicePtrs[i] points to cuDoubleComplex device memory of size (1 << gQbts[i]).
+void cvdvGetFidelity(CVDVContext* ctx, void** devicePtrs, int numReg, double* fidOut) {
+    if (!ctx) return;
+    if (ctx->dState == nullptr || ctx->gNumReg == 0) {
+        logError(ctx, "State not initialized");
+        *fidOut = 0.0;
+        return;
+    }
+    if (numReg != ctx->gNumReg) {
+        logError(ctx, "numReg mismatch: context has %d, got %d", ctx->gNumReg, numReg);
+        *fidOut = 0.0;
+        return;
+    }
+
+    logInfo(ctx, "Computing fidelity |<sep|psi>|^2");
+    cuDoubleComplex ip = runInnerProductKernel(ctx, devicePtrs, numReg);
+    double re = cuCreal(ip), im = cuCimag(ip);
+    *fidOut = re * re + im * im;
+    logInfo(ctx, "Fidelity: %.10f", *fidOut);
 }
 
 double cvdvGetNorm(CVDVContext* ctx) {

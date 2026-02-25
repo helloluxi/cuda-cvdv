@@ -10,7 +10,9 @@ help:
 
 build:
 	@echo "Building CUDA library..."
-	bash run.sh
+	@mkdir -p build
+	@cd build && cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_COMPILER=/usr/local/cuda-13.1/bin/nvcc && make -j$$(nproc)
+	@echo "Build successful: $$(pwd)/build/libcvdv.so"
 
 test: build
 	@echo "Running tests..."

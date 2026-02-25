@@ -169,7 +169,6 @@ benchmarks/
     run.sh             #   Entry point
 CMakeLists.txt         # Build configuration
 Makefile               # Build & test commands
-run.sh                 # Build script (creates build/libcvdv.so)
 .pre-commit-config.yaml # Pre-commit hook configuration
 ```
 
