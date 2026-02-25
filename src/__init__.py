@@ -612,6 +612,36 @@ class CVDV:
         )
         return husimiQ.reshape((qN, qN))
     
+    def getWigner(self, regIdx: int, bound: float) -> npt.NDArray[np.float64]:
+        """Compute Wigner function on the native grids, cropped to [-bound,+bound]^2.
+
+        The x-axis is snapped so wx = k*dx exactly (no rounding error in state lookups).
+        The p-axis is snapped to the nearest FFT bin boundary.
+        Returns shape (N, N) where N = number of on-grid x-points in [-bound, +bound].
+        """
+        dx = self.grid_steps[regIdx]
+        dp = np.pi / (self.register_dims[regIdx] * dx)
+        # x: snap bound to nearest grid point → wXMax is exact multiple of dx
+        N = int(round(2 * bound / dx)) + 1
+        wXMax = (N - 1) / 2 * dx
+        # p: snap wPMax to nearest dp bin so p-lookup is also exact
+        n_p_bins = int(round(bound / dp))
+        wPMax = n_p_bins * dp
+        return self.getWignerFullMode(regIdx, wignerN=N, wXMax=wXMax, wPMax=wPMax)
+
+    def getHusimiQ(self, regIdx: int, bound: float) -> npt.NDArray[np.float64]:
+        """Compute Husimi Q function on the native grids, cropped to [-bound,+bound]^2.
+
+        Returns shape (N, N) where N = number of on-grid q-points in [-bound, +bound].
+        """
+        dx = self.grid_steps[regIdx]
+        dp = 2 * np.pi / (self.register_dims[regIdx] * dx)
+        N = int(round(2 * bound / dx)) + 1
+        qMax = (N - 1) / 2 * dx
+        n_p_bins = int(round(bound / dp))
+        pMax = n_p_bins * dp
+        return self.getHusimiQFullMode(regIdx, qN=N, qMax=qMax, pMax=pMax)
+
     def jointMeasure(self, reg1Idx: int, reg2Idx: int) -> npt.NDArray[np.float64]:
         """Compute joint measurement probabilities for two DV registers.
         

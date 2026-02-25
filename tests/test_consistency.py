@@ -851,6 +851,47 @@ class TestPhaseSpaceFunctions:
         
         del cuda_sim, torch_sim
 
+    def test_wigner_on_grid_coherent(self):
+        """CUDA vs Torch getWigner on-grid API for a coherent state."""
+        alpha = 1.0 + 0.5j
+        cuda_sim = CVDV([8])
+        torch_sim = CVDVTorch([8], device='cuda')
+
+        cuda_sim.setCoherent(0, alpha)
+        cuda_sim.initStateVector()
+        torch_sim.setCoherent(0, alpha)
+        torch_sim.initStateVector()
+
+        cuda_W = cuda_sim.getWigner(0, bound=3.0)
+        torch_W = torch_sim.getWigner(0, bound=3.0)
+
+        assert cuda_W.shape == torch_W.shape
+        # Wigner tails can differ slightly between backends due to floating-point ordering
+        np.testing.assert_allclose(cuda_W, torch_W, atol=VERY_LOOSE_ATOL, rtol=VERY_LOOSE_RTOL)
+
+        del cuda_sim, torch_sim
+
+    def test_husimi_on_grid_coherent(self):
+        """CUDA vs Torch getHusimiQ on-grid API for a coherent state."""
+        alpha = 1.0 + 0.5j
+        cuda_sim = CVDV([8])
+        torch_sim = CVDVTorch([8], device='cuda')
+
+        cuda_sim.setCoherent(0, alpha)
+        cuda_sim.initStateVector()
+        torch_sim.setCoherent(0, alpha)
+        torch_sim.initStateVector()
+
+        cuda_Q = cuda_sim.getHusimiQ(0, bound=3.0)
+        torch_Q = torch_sim.getHusimiQ(0, bound=3.0)
+
+        assert cuda_Q.shape == torch_Q.shape
+        np.testing.assert_allclose(cuda_Q, torch_Q, atol=LOOSE_ATOL, rtol=LOOSE_RTOL)
+        assert np.min(cuda_Q) >= 0.0
+        assert np.min(torch_Q) >= 0.0
+
+        del cuda_sim, torch_sim
+
 
 class TestMeasurementExtensions:
     """Test additional measurement and utility functions."""

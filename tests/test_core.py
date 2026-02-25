@@ -239,5 +239,109 @@ class TestCoreOperations:
         overlap = np.abs(sim.innerProduct())
         assert np.abs(overlap - 1.0) < 1e-10, f"CBS({theta}$) on |+⟩|{nFock}⟩|0⟩ overlap: {overlap}"
 
+class TestPhaseSpaceClosedForm:
+    """Compare computed Wigner and Husimi Q against exact closed-form solutions for coherent states.
+
+    Conventions (matching the simulator's discrete representation):
+      The state is stored with norm sum_k |psi[k]|^2 = 1 (discrete), so
+      psi_cont(x) = psi_stored[k] / sqrt(dx).  This introduces a factor of dx
+      into the Wigner function relative to the continuous formula.
+
+      Coherent state |β⟩: q₀ = √2 Re β, p₀ = √2 Im β  (quadrature units).
+
+      Simulator Wigner (discrete-normalised, peak = dx/π):
+        W_β(x, p) = (dx/π) exp(-(x - q₀)² - (p - p₀)²)
+
+      Continuous-physics Wigner (peak = 2/π):
+        W_β(x, p) = (2/π) exp(-2|α - β|²),  α = (x + ip)/√2
+                  = (2/π) exp(-(x - q₀)² - (p - p₀)²)
+
+      The simulator output equals (dx/2) × the continuous Wigner.
+
+      Simulator Husimi Q (discrete-normalised):
+        Q_β(x, p) = (dx / (2π)) exp(-½(x - q₀)² - ½(p - p₀)²)
+
+      Continuous Husimi Q (peak = 1/π):
+        Q_β(α) = (1/π) exp(-|α - β|²)   (α = (x + ip)/√2)
+    """
+
+    # 8 qubits → dim=256, dx≈0.157.  Use bound=3.0 so the coherent state peak
+    # (at q₀=√2≈1.41, p₀=√2·0.5≈0.71) is well away from the boundary.
+    NQUBITS = 8
+    ALPHA = 1.0 + 0.5j
+    BOUND = 3.0
+    WIGNER_ATOL = 1e-2   # Wigner can go negative; tails have O(dx²) discretization noise
+    HUSIMI_ATOL = 5e-3   # Husimi is non-negative and smoother
+
+    @staticmethod
+    def _wigner_exact(x_grid, p_grid, alpha, dx):
+        """Simulator Wigner: (dx/π) exp(-(x-q₀)²-(p-p₀)²), peak = dx/π."""
+        q0 = sqrt(2) * alpha.real
+        p0 = sqrt(2) * alpha.imag
+        X, P = np.meshgrid(x_grid, p_grid)   # shape (N_p, N_x)
+        return (dx / pi) * np.exp(-(X - q0) ** 2 - (P - p0) ** 2)
+
+    @staticmethod
+    def _husimi_exact(x_grid, p_grid, alpha):
+        """Continuous Husimi Q: (1/π) exp(-½(x-q₀)²-½(p-p₀)²), peak = 1/π."""
+        q0 = sqrt(2) * alpha.real
+        p0 = sqrt(2) * alpha.imag
+        X, P = np.meshgrid(x_grid, p_grid)   # shape (N_p, N_q)
+        return (1 / pi) * np.exp(-0.5 * (X - q0) ** 2 - 0.5 * (P - p0) ** 2)
+
+    def _make_sim(self):
+        sim = CVDV([self.NQUBITS])
+        sim.setCoherent(0, self.ALPHA)
+        sim.initStateVector()
+        return sim
+
+    @staticmethod
+    def _wigner_grids(sim, regIdx, bound):
+        """Return (x_grid, p_grid) matching exactly what getWigner passes to the backend."""
+        dx = sim.grid_steps[regIdx]
+        dp = pi / (sim.register_dims[regIdx] * dx)
+        N = int(round(2 * bound / dx)) + 1
+        wXMax = (N - 1) / 2 * dx
+        n_p_bins = int(round(bound / dp))
+        wPMax = n_p_bins * dp
+        # Backend uses linspace(-wXMax, wXMax, N) and linspace(-wPMax, wPMax, N)
+        x_grid = np.linspace(-wXMax, wXMax, N)
+        p_grid = np.linspace(-wPMax, wPMax, N)
+        return x_grid, p_grid
+
+    @staticmethod
+    def _husimi_grids(sim, regIdx, bound):
+        """Return (q_grid, p_grid) matching exactly what getHusimiQ passes to the backend."""
+        dx = sim.grid_steps[regIdx]
+        dp = 2 * pi / (sim.register_dims[regIdx] * dx)
+        N = int(round(2 * bound / dx)) + 1
+        qMax = (N - 1) / 2 * dx
+        n_p_bins = int(round(bound / dp))
+        pMax = n_p_bins * dp
+        q_grid = np.linspace(-qMax, qMax, N)
+        p_grid = np.linspace(-pMax, pMax, N)
+        return q_grid, p_grid
+
+    def test_wigner_coherent_closed_form(self):
+        """W for coherent state matches (dx/π) exp(-(x-q₀)²-(p-p₀)²) to WIGNER_ATOL."""
+        sim = self._make_sim()
+        W = sim.getWigner(0, self.BOUND)
+        x_grid, p_grid = self._wigner_grids(sim, 0, self.BOUND)
+        W_exact = self._wigner_exact(x_grid, p_grid, self.ALPHA, sim.grid_steps[0])
+        np.testing.assert_allclose(W, W_exact, atol=self.WIGNER_ATOL,
+                                   err_msg="Wigner vs closed form failed")
+        del sim
+
+    def test_husimi_coherent_closed_form(self):
+        """Q for coherent state matches (1/π) exp(-½(x-q₀)²-½(p-p₀)²) to HUSIMI_ATOL."""
+        sim = self._make_sim()
+        Q = sim.getHusimiQ(0, self.BOUND)
+        q_grid, p_grid = self._husimi_grids(sim, 0, self.BOUND)
+        Q_exact = self._husimi_exact(q_grid, p_grid, self.ALPHA)
+        np.testing.assert_allclose(Q, Q_exact, atol=self.HUSIMI_ATOL,
+                                   err_msg="Husimi Q vs closed form failed")
+        del sim
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

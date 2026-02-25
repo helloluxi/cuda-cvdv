@@ -1029,7 +1029,51 @@ class CVDVTorch:
                 wigner[k, i] = np.real(phase_corr * fft_results[i, k_fft]) * dx / pi
         
         return wigner
-    
+
+    def getWignerFullMode(self, regIdx: int, wignerN: int = 101,
+                          wXMax: float = 5.0, wPMax: float = 5.0) -> np.ndarray:
+        """Compute reduced Wigner function by tracing out all other registers."""
+        assert self.state is not None, "State not initialized"
+
+        perm = list(range(self.num_registers))
+        perm[0], perm[regIdx] = perm[regIdx], perm[0]
+        state = self.state.permute(*perm)
+
+        dim = self.register_dims[regIdx]
+        other_size = self.total_size // dim
+        # shape: (dim, other_size)
+        psi = state.reshape(dim, other_size).cpu().numpy()
+
+        dx = self.grid_steps[regIdx]
+        x_grid = np.linspace(-wXMax, wXMax, wignerN)
+        p_grid = np.linspace(-wPMax, wPMax, wignerN)
+
+        # Accumulate integrand over all slices
+        fft_results = np.zeros((wignerN, dim), dtype=np.complex128)
+        for i, x in enumerate(x_grid):
+            integrand = np.zeros(dim, dtype=np.complex128)
+            for j in range(dim):
+                y = (j - (dim - 1) / 2) * dx
+                idx_plus  = int(round((x + y) / dx)) + dim // 2
+                idx_minus = int(round((x - y) / dx)) + dim // 2
+                if 0 <= idx_plus < dim and 0 <= idx_minus < dim:
+                    # sum conj(psi[x+y, :]) * psi[x-y, :] over all slices
+                    integrand[j] = np.dot(np.conj(psi[idx_plus, :]), psi[idx_minus, :])
+            fft_results[i, :] = np.fft.ifft(integrand) * dim
+
+        wigner = np.zeros((wignerN, wignerN), dtype=np.float64)
+        dp = pi / (dim * dx)
+        for k, p in enumerate(p_grid):
+            k_shifted = int(round(p / dp + dim / 2))
+            k_shifted = max(0, min(dim - 1, k_shifted))
+            k_fft = (k_shifted + dim // 2) % dim
+            p_actual = (k_shifted - dim / 2) * dp
+            phase_corr = np.exp(-1j * p_actual * (dim - 1) * dx)
+            for i in range(wignerN):
+                wigner[k, i] = np.real(phase_corr * fft_results[i, k_fft]) * dx / pi
+
+        return wigner
+
     def getHusimiQFullMode(self, regIdx: int, qN: int = 101, qMax: float = 5.0, pMax: float = 5.0) -> np.ndarray:
         """Compute Husimi Q function for register by tracing out all others.
         
@@ -1101,7 +1145,34 @@ class CVDVTorch:
                 husimiQ[j, i] = windowed_signals[i, k_fft] / pi
         
         return husimiQ
-    
+
+    def getWigner(self, regIdx: int, bound: float) -> np.ndarray:
+        """Compute Wigner function on the native grids, cropped to [-bound,+bound]^2.
+
+        x-axis snapped to exact grid (wx = k*dx); p-axis snapped to nearest FFT bin.
+        Returns shape (N, N).
+        """
+        dx = self.grid_steps[regIdx]
+        dp = pi / (self.register_dims[regIdx] * dx)
+        N = int(round(2 * bound / dx)) + 1
+        wXMax = (N - 1) / 2 * dx
+        n_p_bins = int(round(bound / dp))
+        wPMax = n_p_bins * dp
+        return self.getWignerFullMode(regIdx, wignerN=N, wXMax=wXMax, wPMax=wPMax)
+
+    def getHusimiQ(self, regIdx: int, bound: float) -> np.ndarray:
+        """Compute Husimi Q function on the native grids, cropped to [-bound,+bound]^2.
+
+        Returns shape (N, N).
+        """
+        dx = self.grid_steps[regIdx]
+        dp = 2 * pi / (self.register_dims[regIdx] * dx)
+        N = int(round(2 * bound / dx)) + 1
+        qMax = (N - 1) / 2 * dx
+        n_p_bins = int(round(bound / dp))
+        pMax = n_p_bins * dp
+        return self.getHusimiQFullMode(regIdx, qN=N, qMax=qMax, pMax=pMax)
+
     # ==================== Utilities ====================
     
     def info(self) -> None:
