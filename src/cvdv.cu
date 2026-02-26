@@ -669,6 +669,13 @@ __global__ void kernelApplyScalarRegister(cuDoubleComplex* data, size_t totalSiz
                                       cuCimag(data[idx]) * scalar);
 }
 
+// Apply global complex phase exp(i*phase) to all elements of the state
+__global__ void kernelApplyGlobalPhase(cuDoubleComplex* data, size_t totalSize, double phase) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= totalSize) return;
+    data[idx] = cmulPhase(data[idx], phase);
+}
+
 #pragma endregion
 
 #pragma region Utility Kernels
@@ -1318,6 +1325,12 @@ void cvdvFtQ2P(CVDVContext* ctx, int regIdx) {
                                                    ctx->gQbts, norm);
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 
+    // Step 5: Global phase correction: exp(i*π*(N-1)²/(2N))
+    // Matches dvsim-code convention: dvsim_QFT = CVDV_QFT * exp(i*π*(N-1)²/(2N))
+    double globalPhase = PI * (double)(regDim - 1) * (double)(regDim - 1) / (2.0 * (double)regDim);
+    kernelApplyGlobalPhase<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, totalSize, globalPhase);
+    checkCudaErrors(ctx, cudaDeviceSynchronize());
+
     logDebug(ctx, "ftQ2P completed for register %d", regIdx);
 }
 
@@ -1415,6 +1428,11 @@ void cvdvFtP2Q(CVDVContext* ctx, int regIdx) {
     kernelApplyScalarRegister<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
                                                    regIdx,
                                                    ctx->gQbts, norm);
+    checkCudaErrors(ctx, cudaDeviceSynchronize());
+
+    // Step 5: Global phase correction (conjugate of ftQ2P): exp(-i*π*(N-1)²/(2N))
+    double globalPhase = -PI * (double)(regDim - 1) * (double)(regDim - 1) / (2.0 * (double)regDim);
+    kernelApplyGlobalPhase<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), globalPhase);
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 }
 

@@ -4,7 +4,7 @@ SeparableState — per-register state initialization, backend-agnostic.
 Stores each register's 1-D wavefunction as a torch.cdouble CUDA tensor so that
 the CUDA backend can consume the raw device pointer without a CPU round-trip.
 """
-import math
+
 from typing import List, Optional, Sequence, Tuple, Union
 
 import torch
@@ -28,7 +28,7 @@ class SeparableState:
         self.num_registers = len(numQubits_list)
         self.qubit_counts = list(numQubits_list)
         self.register_dims = [1 << n for n in numQubits_list]
-        self.grid_steps = [math.sqrt(2 * math.pi / d) for d in self.register_dims]
+        self.grid_steps = [(2 * torch.pi / d) ** 0.5 for d in self.register_dims]
         self.register_arrays: List[Optional[torch.Tensor]] = [None] * self.num_registers
 
     # ------------------------------------------------------------------ helpers
@@ -53,11 +53,11 @@ class SeparableState:
             alpha = complex(alpha, 0.0)
         dx = self.grid_steps[regIdx]
         x = self._x(regIdx)
-        q = math.sqrt(2) * alpha.real
-        p = math.sqrt(2) * alpha.imag
+        q = 2 ** 0.5 * alpha.real
+        p = 2 ** 0.5 * alpha.imag
         gauss = torch.exp(-0.5 * (x - q) ** 2)
         phase = torch.exp(1j * (p * x - p * q / 2.0)).to(torch.cdouble)
-        psi = (math.pi ** (-0.25)) * math.sqrt(dx) * gauss * phase
+        psi = (torch.pi ** (-0.25)) * (dx ** 0.5) * gauss * phase
         self.register_arrays[regIdx] = psi
 
     def setFock(self, regIdx: int, n: int) -> None:
@@ -65,9 +65,9 @@ class SeparableState:
         dx = self.grid_steps[regIdx]
         x = self._x(regIdx)
         psi_prev = torch.zeros_like(x)
-        psi_curr = torch.exp(-0.5 * x * x) * (math.pi ** (-0.25)) * math.sqrt(dx)
+        psi_curr = torch.exp(-0.5 * x * x) * (torch.pi ** (-0.25)) * (dx ** 0.5)
         for k in range(1, n + 1):
-            psi_next = math.sqrt(2.0 / k) * x * psi_curr - math.sqrt((k - 1.0) / k) * psi_prev
+            psi_next = (2.0 / k) ** 0.5 * x * psi_curr - ((k - 1.0) / k) ** 0.5 * psi_prev
             psi_prev = psi_curr
             psi_curr = psi_next
         self.register_arrays[regIdx] = psi_curr.to(torch.cdouble)
@@ -75,7 +75,7 @@ class SeparableState:
     def setUniform(self, regIdx: int) -> None:
         """Set register to uniform superposition 1/√N Σ|k⟩."""
         dim = self.register_dims[regIdx]
-        arr = torch.ones(dim, dtype=torch.cdouble, device=self.device) / math.sqrt(dim)
+        arr = torch.ones(dim, dtype=torch.cdouble, device=self.device) / (dim ** 0.5)
         self.register_arrays[regIdx] = arr
 
     def setFocks(self, regIdx: int, coeffs: Union[Sequence[complex], torch.Tensor]) -> None:
@@ -92,12 +92,12 @@ class SeparableState:
         x = self._x(regIdx)
         max_n = len(coeffs_t)
         fock_states = torch.zeros((max_n, dim), dtype=torch.float64, device=self.device)
-        fock_states[0] = torch.exp(-0.5 * x * x) * (math.pi ** (-0.25)) * math.sqrt(dx)
+        fock_states[0] = torch.exp(-0.5 * x * x) * (torch.pi ** (-0.25)) * (dx ** 0.5)
         if max_n > 1:
-            fock_states[1] = math.sqrt(2.0) * x * fock_states[0]
+            fock_states[1] = (2.0 ** 0.5) * x * fock_states[0]
             for k in range(2, max_n):
-                fock_states[k] = (math.sqrt(2.0 / k) * x * fock_states[k - 1]
-                                  - math.sqrt((k - 1.0) / k) * fock_states[k - 2])
+                fock_states[k] = ((2.0 / k) ** 0.5 * x * fock_states[k - 1]
+                                  - ((k - 1.0) / k) ** 0.5 * fock_states[k - 2])
         state = torch.sum(coeffs_t.unsqueeze(1) * fock_states.to(torch.cdouble), dim=0)
         self.register_arrays[regIdx] = state
 
@@ -118,13 +118,13 @@ class SeparableState:
         alphas = [complex(a) for a, _ in cat_states]
         coeffs = [complex(c) for _, c in cat_states]
         q_vals = torch.tensor(
-            [math.sqrt(2) * a.real for a in alphas], device=self.device, dtype=torch.float64)
+            [2 ** 0.5 * a.real for a in alphas], device=self.device, dtype=torch.float64)
         p_vals = torch.tensor(
-            [math.sqrt(2) * a.imag for a in alphas], device=self.device, dtype=torch.float64)
+            [2 ** 0.5 * a.imag for a in alphas], device=self.device, dtype=torch.float64)
         coeffs_t = torch.tensor(coeffs, dtype=torch.cdouble, device=self.device)
         gauss = torch.exp(-0.5 * (x[None, :] - q_vals[:, None]) ** 2)
         phase = p_vals[:, None] * x[None, :] - (p_vals * q_vals)[:, None] / 2.0
-        coh = (math.pi ** (-0.25)) * math.sqrt(dx) * gauss * torch.exp(1j * phase).to(torch.cdouble)
+        coh = (torch.pi ** (-0.25)) * (dx ** 0.5) * gauss * torch.exp(1j * phase).to(torch.cdouble)
         state = torch.sum(coeffs_t[:, None] * coh, dim=0)
         norm = torch.sqrt(torch.sum(torch.abs(state) ** 2))
         self.register_arrays[regIdx] = state / norm

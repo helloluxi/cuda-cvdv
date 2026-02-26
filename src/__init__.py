@@ -514,7 +514,7 @@ class CVDV:
         if self.backend == 'cuda':
             _get_lib().cvdvFtQ2P(self.ctx, regIdx)
         else:
-            
+
             dx = self.grid_steps[regIdx]; dim = self.register_dims[regIdx]
             phaseCoeff = pi * (dim - 1.0) / (dim * dx)
             x = self._tPositionGrid(regIdx)
@@ -523,13 +523,16 @@ class CVDV:
             p = self._tPositionGrid(regIdx)
             self._tApplyPhase(regIdx, torch.exp(1j * phaseCoeff * p).to(torch.cdouble))
             self.state = self.state / sqrt(dim)
+            # Global phase correction: exp(-i*π*(N-1)²/(2N)) to match dvsim-code convention
+            global_phase = torch.exp(torch.tensor(1j * pi * (dim - 1)**2 / (2 * dim), dtype=torch.cdouble, device=self.device))
+            self.state = self.state * global_phase
 
     def ftP2Q(self, regIdx: int) -> None:
         """Apply inverse Fourier transform: momentum to position representation."""
         if self.backend == 'cuda':
             _get_lib().cvdvFtP2Q(self.ctx, regIdx)
         else:
-            
+
             dx = self.grid_steps[regIdx]; dim = self.register_dims[regIdx]
             phaseCoeff = -pi * (dim - 1.0) / (dim * dx)
             p = self._tPositionGrid(regIdx)
@@ -538,6 +541,9 @@ class CVDV:
             x = self._tPositionGrid(regIdx)
             self._tApplyPhase(regIdx, torch.exp(1j * phaseCoeff * x).to(torch.cdouble))
             self.state = self.state / sqrt(dim)
+            # Global phase correction: conjugate of ftQ2P: exp(+i*π*(N-1)²/(2N))
+            global_phase = torch.exp(torch.tensor(-1j * pi * (dim - 1)**2 / (2 * dim), dtype=torch.cdouble, device=self.device))
+            self.state = self.state * global_phase
 
     # ==================== Measurements & Observables ====================
 
