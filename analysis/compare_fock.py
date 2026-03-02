@@ -135,7 +135,7 @@ def apply_qiskit_circuit_to_fock(transpiled_circuit, n_qubits):
     
     # Convert to torch
     dim = 1 << n_qubits
-    U_compiled = torch.tensor(unitary_np[:dim, :dim], 
+    U_compiled = torch.tensor(unitary_np[:dim, :dim],  # type: ignore
                               dtype=torch.complex128, 
                               device='cuda')
     
@@ -276,29 +276,34 @@ def run(fig_dir: str) -> dict:
     # Plot results
     fig, ax = plt.subplots(figsize=(12, 8))
 
-    colors_wf = ['#1f77b4', '#2b7bb9', '#4a90d9', '#74a9de', '#9fc2e3', '#c4d7e8']
-    colors_fock = ['#cc0000', '#e63900', '#ff6b6b']
-
     ax.set_xlabel(r'$\Gamma$')
     ax.set_ylabel(r'$\varepsilon$')
     ax.set_yscale('log')
 
+    # Blue-purple series for WF encoding
+    wf_ns = sorted(df_wf['n'].unique())
+    wf_colors = plt.get_cmap('cool')(np.linspace(0.15, 0.75, len(wf_ns)))
+
+    # Red-yellow series for Fock encoding
+    fock_ns = sorted(df_fock['n'].unique())
+    fock_colors = plt.get_cmap('autumn')(np.linspace(0.1, 0.75, len(fock_ns)))
+
     # Plot WF - error vs Gamma with CNOT count in legend
-    for i, n in enumerate(sorted(df_wf['n'].unique())):
+    for color, n in zip(wf_colors, wf_ns):
         df_sub = df_wf[df_wf['n'] == n].sort_values('Gamma')
-        cnot = df_sub['CNOT'].iloc[0]  # CNOT count is fixed for this n
+        cnot = df_sub['CNOT'].iloc[0]
         ax.plot(df_sub['Gamma'], df_sub['error'], marker='o', linewidth=2, markersize=8,
-                color=colors_wf[i], label=f'Ours, $n={n}$, CNOT={cnot}', alpha=0.8)
+                color=color, label=f'Ours, $n={n}$, CNOT={cnot}', alpha=0.85)
 
     # Plot Fock (Qiskit) - error vs Gamma with CNOT count in legend
-    for i, n in enumerate(sorted(df_fock['n'].unique())):
+    for color, n in zip(fock_colors, fock_ns):
         df_sub = df_fock[df_fock['n'] == n].sort_values('Gamma')
-        cnot = df_sub['CNOT'].iloc[0]  # CNOT count is fixed for this n
+        cnot = df_sub['CNOT'].iloc[0]
         ax.plot(df_sub['Gamma'], df_sub['error'], marker='s', linewidth=2, markersize=7,
-                color=colors_fock[i], label=f'Fock, $n={n}$, CNOT={cnot}', linestyle='--', alpha=0.8)
+                color=color, label=f'Fock, $n={n}$, $N_{{CNOT}}={cnot}$', linestyle='--', alpha=0.85)
 
     ax.grid(True, alpha=0.3, which='major')
-    ax.legend(loc=(0.14, 0.05), frameon=True, framealpha=0.5)
+    ax.legend(loc=(0.14, 0.05), frameon=True, framealpha=0.5, fontsize=16)
     fig.tight_layout()
     _save_fig(fig, 'compare_fock', fig_dir)
     plt.close(fig)

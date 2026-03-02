@@ -2,7 +2,7 @@
 CVDV Library - Python wrapper for CUDA quantum simulator
 """
 
-from typing import List, Tuple, Optional, Union, Sequence, Any
+from typing import List, Tuple, Optional, Sequence, Any
 import numpy as np
 import numpy.typing as npt
 import ctypes
@@ -209,7 +209,7 @@ class CVDV:
     # ==================== Gate Operations ====================
     # All gates dispatch on self.backend.
 
-    def d(self, regIdx: int, beta: Union[complex, float, int]) -> None:
+    def d(self, regIdx: int, beta) -> None:
         """Apply displacement operator D(β) to register."""
         if isinstance(beta, (int, float)):
             beta = complex(beta, 0.0)
@@ -229,7 +229,7 @@ class CVDV:
                 self._tApplyPhase(regIdx, phase)
                 self.ftP2Q(regIdx)
 
-    def cd(self, targetReg: int, ctrlReg: int, ctrlQubit: int, alpha: Union[complex, float, int]) -> None:
+    def cd(self, targetReg: int, ctrlReg: int, ctrlQubit: int, alpha) -> None:
         """Apply conditional displacement CD(α) controlled by qubit."""
         if isinstance(alpha, (int, float)):
             alpha = complex(alpha)
@@ -244,7 +244,7 @@ class CVDV:
                 self._tApplyCondPhaseQ(targetReg, ctrlReg, ctrlQubit, -sqrt(2) * alpha.real)
                 self.ftP2Q(targetReg)
 
-    def cr(self, targetReg: int, ctrlReg: int, ctrlQubit: int, theta: float) -> None:
+    def cr(self, targetReg: int, ctrlReg: int, ctrlQubit: int, theta) -> None:
         """Apply conditional rotation CR(θ) controlled by qubit."""
         if self.backend == 'cuda':
             _get_lib().cvdvConditionalRotation(self.ctx, targetReg, ctrlReg, ctrlQubit, c_double(theta))
@@ -291,7 +291,7 @@ class CVDV:
         else:
             self.rz(regIdx, targetQubit, pi)
 
-    def rx(self, regIdx: int, targetQubit: int, theta: float) -> None:
+    def rx(self, regIdx: int, targetQubit: int, theta) -> None:
         if self.backend == 'cuda':
             _get_lib().cvdvPauliRotation(self.ctx, regIdx, targetQubit, 0, theta)
         else:
@@ -300,7 +300,7 @@ class CVDV:
             mat = torch.tensor([[c, -1j*s], [-1j*s, c]], dtype=torch.cdouble, device=self.device)
             self._tApplyQubitGate(regIdx, targetQubit, mat)
 
-    def ry(self, regIdx: int, targetQubit: int, theta: float) -> None:
+    def ry(self, regIdx: int, targetQubit: int, theta) -> None:
         if self.backend == 'cuda':
             _get_lib().cvdvPauliRotation(self.ctx, regIdx, targetQubit, 1, theta)
         else:
@@ -309,7 +309,7 @@ class CVDV:
             mat = torch.tensor([[c, -s], [s, c]], dtype=torch.cdouble, device=self.device)
             self._tApplyQubitGate(regIdx, targetQubit, mat)
 
-    def rz(self, regIdx: int, targetQubit: int, theta: float) -> None:
+    def rz(self, regIdx: int, targetQubit: int, theta) -> None:
         if self.backend == 'cuda':
             _get_lib().cvdvPauliRotation(self.ctx, regIdx, targetQubit, 2, theta)
         else:
@@ -369,7 +369,7 @@ class CVDV:
             perm[reg1], perm[reg2] = perm[reg2], perm[reg1]
             self.state = self.state.permute(*perm)
 
-    def sheer(self, regIdx: int, t: float) -> None:
+    def sheer(self, regIdx: int, t) -> None:
         """Apply phase square gate: exp(i*t*q^2) in position space."""
         if self.backend == 'cuda':
             _get_lib().cvdvPhaseSquare(self.ctx, regIdx, t)
@@ -378,7 +378,7 @@ class CVDV:
             x = self._tPositionGrid(regIdx)
             self._tApplyPhase(regIdx, torch.exp(1j * t * x ** 2).to(torch.cdouble))
 
-    def phaseCubic(self, regIdx: int, t: float) -> None:
+    def phaseCubic(self, regIdx: int, t) -> None:
         """Apply cubic phase gate: exp(i*t*q^3) in position space."""
         if self.backend == 'cuda':
             _get_lib().cvdvPhaseCubic(self.ctx, regIdx, t)
@@ -387,21 +387,24 @@ class CVDV:
             x = self._tPositionGrid(regIdx)
             self._tApplyPhase(regIdx, torch.exp(1j * t * x ** 3).to(torch.cdouble))
 
-    def r(self, regIdx: int, theta: float) -> None:
+    def r(self, regIdx: int, theta) -> None:
         """Apply rotation gate R(θ) in phase space."""
         if self.backend == 'cuda':
             _get_lib().cvdvRotation(self.ctx, regIdx, theta)
         else:
             ratio = theta / (pi / 2)
-            theta0 = int(np.floor(ratio + 0.5)) * (pi / 2)
+            theta0 = int(np.round(ratio)) * (pi / 2)
             remainder = theta - theta0
-            quarter_turns = (int(np.floor(ratio + 0.5)) % 4 + 4) % 4
+            quarter_turns = (int(np.round(ratio)) % 4 + 4) % 4
             if quarter_turns == 1:
                 self.ftQ2P(regIdx)
+                # self.state = self.state * torch.exp(torch.tensor(-0.25j * pi))
             elif quarter_turns == 2:
                 self.p(regIdx)
+                # self.state = self.state * torch.exp(torch.tensor(-0.50j * pi))
             elif quarter_turns == 3:
                 self.ftP2Q(regIdx)
+                # self.state = self.state * torch.exp(torch.tensor(-0.75j * pi))
             if abs(remainder) > 1e-15:
                 self.sheer(regIdx, -0.5 * np.tan(remainder / 2))
                 self.ftQ2P(regIdx)
@@ -409,24 +412,33 @@ class CVDV:
                 self.ftP2Q(regIdx)
                 self.sheer(regIdx, -0.5 * np.tan(remainder / 2))
 
-    def s(self, regIdx: int, r: float) -> None:
+    def s(self, regIdx: int, r) -> None:
         """Apply squeezing gate S(r)."""
         if self.backend == 'cuda':
             _get_lib().cvdvSqueeze(self.ctx, regIdx, r)
         else:
-            exp_r = np.exp(r)
-            exp_mr = np.exp(-r)
-            t = np.exp(-r / 2.0) * np.sqrt(abs(1.0 - exp_mr))
-            self.sheer(regIdx, 0.5 * t)
+            exp_half_r = np.exp(0.5 * r)
+            exp_minus_half_r = np.exp(-0.5 * r)
+            sqrt_exp_r_minus_1 = np.sqrt(abs(np.exp(r) - 1.0))
+            sign = 1 if r >= 0 else -1
+            
+            # First
             self.ftQ2P(regIdx)
-            self.sheer(regIdx, (1.0 - exp_mr) / (2.0 * t))
+            self.sheer(regIdx, -0.5 * exp_half_r * sqrt_exp_r_minus_1)
             self.ftP2Q(regIdx)
-            self.sheer(regIdx, -0.5 * t * exp_r)
+            
+            # Second
+            self.sheer(regIdx, 0.5 * sign * exp_minus_half_r * sqrt_exp_r_minus_1)
+            
+            # Third
             self.ftQ2P(regIdx)
-            self.sheer(regIdx, (exp_mr - 1.0) / (2.0 * t * exp_r))
+            self.sheer(regIdx, 0.5 * exp_minus_half_r * sqrt_exp_r_minus_1)
             self.ftP2Q(regIdx)
+            
+            # Fourth
+            self.sheer(regIdx, -0.5 * sign * exp_half_r * sqrt_exp_r_minus_1)
 
-    def cs(self, targetReg: int, ctrlReg: int, ctrlQubit: int, r: float) -> None:
+    def cs(self, targetReg: int, ctrlReg: int, ctrlQubit: int, r) -> None:
         """Apply conditional squeezing gate CS(r) controlled by qubit."""
         if self.backend == 'cuda':
             _get_lib().cvdvConditionalSqueeze(self.ctx, targetReg, ctrlReg, ctrlQubit, c_double(r))
@@ -445,7 +457,7 @@ class CVDV:
             self._tApplyCondPhaseQ2(targetReg, ctrlReg, ctrlQubit, -0.5 * sh_r / sv)
             self.ftP2Q(targetReg)
 
-    def bs(self, reg1: int, reg2: int, theta: float) -> None:
+    def bs(self, reg1: int, reg2: int, theta) -> None:
         """Apply beam splitter gate BS(θ) between two registers."""
         if self.backend == 'cuda':
             _get_lib().cvdvBeamSplitter(self.ctx, reg1, reg2, theta)
@@ -468,7 +480,7 @@ class CVDV:
                 self.ftP2Q(reg1); self.ftP2Q(reg2)
                 self.q1q2(reg1, reg2, -tq)
 
-    def cbs(self, reg1: int, reg2: int, ctrlReg: int, ctrlQubit: int, theta: float) -> None:
+    def cbs(self, reg1: int, reg2: int, ctrlReg: int, ctrlQubit: int, theta) -> None:
         """Apply conditional beam splitter CBS(θ) controlled by qubit."""
         if self.backend == 'cuda':
             _get_lib().cvdvConditionalBeamSplitter(self.ctx, reg1, reg2, ctrlReg, ctrlQubit, c_double(theta))
@@ -495,7 +507,7 @@ class CVDV:
                 self.ftP2Q(reg1); self.ftP2Q(reg2)
                 self._tApplyCondQ1Q2(reg1, reg2, ctrlReg, ctrlQubit, -tq)
 
-    def q1q2(self, reg1: int, reg2: int, coeff: float) -> None:
+    def q1q2(self, reg1: int, reg2: int, coeff) -> None:
         """Apply Q1Q2 interaction gate: exp(i*coeff*q1*q2)."""
         if self.backend == 'cuda':
             _get_lib().cvdvQ1Q2Gate(self.ctx, reg1, reg2, coeff)
@@ -681,7 +693,7 @@ class CVDV:
                     wigner[k, i] = np.real(phase_corr * fft_results[i, k_fft]) * dx / pi
             return wigner
 
-    def getWignerFullMode(self, regIdx: int, wignerN: int = 101, wXMax: float = 5.0, wPMax: float = 5.0) -> npt.NDArray[np.float64]:
+    def getWignerFullMode(self, regIdx: int, wignerN: int = 101, wXMax=5.0, wPMax=5.0) -> npt.NDArray[np.float64]:
         """Compute reduced Wigner function by tracing out all other registers."""
         if self.backend == 'cuda':
             wigner = np.zeros(wignerN * wignerN, dtype=np.float64)
@@ -722,7 +734,7 @@ class CVDV:
                     wigner[k, i] = np.real(phase_corr * fft_results[i, k_fft]) * dx / pi
             return wigner
 
-    def getHusimiQFullMode(self, regIdx: int, qN: int = 101, qMax: float = 5.0, pMax: float = 5.0) -> npt.NDArray[np.float64]:
+    def getHusimiQFullMode(self, regIdx: int, qN: int = 101, qMax=5.0, pMax=5.0) -> npt.NDArray[np.float64]:
         """Compute Husimi Q function by tracing out all other registers."""
         if self.backend == 'cuda':
             husimiQ = np.zeros(qN * qN, dtype=np.float64)
@@ -760,7 +772,7 @@ class CVDV:
                     husimiQ[j, i] = windowed_signals[i, k_fft] / pi
             return husimiQ
 
-    def getWigner(self, regIdx: int, bound: float) -> npt.NDArray[np.float64]:
+    def getWigner(self, regIdx: int, bound) -> npt.NDArray[np.float64]:
         """Compute Wigner function on the native grids, cropped to [-bound,+bound]^2."""
         dx = self.grid_steps[regIdx]
         dp = np.pi / (self.register_dims[regIdx] * dx)
@@ -770,7 +782,7 @@ class CVDV:
         wPMax = n_p_bins * dp
         return self.getWignerFullMode(regIdx, wignerN=N, wXMax=wXMax, wPMax=wPMax)
 
-    def getHusimiQ(self, regIdx: int, bound: float) -> npt.NDArray[np.float64]:
+    def getHusimiQ(self, regIdx: int, bound) -> npt.NDArray[np.float64]:
         """Compute Husimi Q function on the native grids, cropped to [-bound,+bound]^2."""
         dx = self.grid_steps[regIdx]
         dp = 2 * np.pi / (self.register_dims[regIdx] * dx)
@@ -793,7 +805,7 @@ class CVDV:
             x_bound = sqrt(2 * pi * dim)
             print(f"  Register {i}: dim={dim}, qubits={self.qubit_counts[i]}, dx={dx:.6f}, x_bound={x_bound:.6f}")
 
-    def plotWigner(self, regIdx: int, slice_indices: Optional[Sequence[int]] = None, wignerN: int = 201, wignerMax: float = 5.0,
+    def plotWigner(self, regIdx: int, slice_indices: Optional[Sequence[int]] = None, wignerN: int = 201, wignerMax=5.0,
                     cmap: str = 'RdBu', figsize: Tuple[int, int] = (7, 6), show: bool = True) -> Tuple[Any, Any]:
         """Plot Wigner function for a register."""
         if slice_indices is not None:
@@ -844,7 +856,7 @@ class CVDV:
         state = state.permute(*[perm.index(i) for i in range(self.num_registers)])
         self.state = state
 
-    def _tApplyCondPhaseQ(self, targetReg: int, ctrlReg: int, ctrlQubit: int, coeff: float) -> None:
+    def _tApplyCondPhaseQ(self, targetReg: int, ctrlReg: int, ctrlQubit: int, coeff) -> None:
         """exp(i*coeff*Z*q) where Z on control qubit, q on target register."""
         
         q = self._tPositionGrid(targetReg)
@@ -870,7 +882,7 @@ class CVDV:
         state = state.permute(*[perm.index(i) for i in range(self.num_registers)])
         self.state = state
 
-    def _tApplyCondPhaseQ2(self, targetReg: int, ctrlReg: int, ctrlQubit: int, t: float) -> None:
+    def _tApplyCondPhaseQ2(self, targetReg: int, ctrlReg: int, ctrlQubit: int, t) -> None:
         """exp(i*t*Z*q^2) where Z on control qubit, q on target register."""
         
         q = self._tPositionGrid(targetReg)
@@ -896,7 +908,7 @@ class CVDV:
         state = state.permute(*[perm.index(i) for i in range(self.num_registers)])
         self.state = state
 
-    def _tApplyCondQ1Q2(self, reg1: int, reg2: int, ctrlReg: int, ctrlQubit: int, coeff: float) -> None:
+    def _tApplyCondQ1Q2(self, reg1: int, reg2: int, ctrlReg: int, ctrlQubit: int, coeff) -> None:
         """exp(i*coeff*Z*q1*q2) where Z on control qubit."""
         
         q1 = self._tPositionGrid(reg1); q2 = self._tPositionGrid(reg2)

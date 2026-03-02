@@ -1671,13 +1671,13 @@ void cvdvRotation(CVDVContext* ctx, int regIdx, double theta) {
     // where θ₀ ∈ (π/2)Z is chosen so |θ-θ₀| ≤ π/4
     // R(π/2) = FT, R(π) = Parity, R(-π/2) = FT†
 
-    // Find nearest multiple of π/2
-    double theta0 = round(theta / (PI / 2.0)) * (PI / 2.0);
+    // Find nearest multiple of π/2 using round-half-to-even (matches Python's np.round)
+    double theta0 = rint(theta / (PI / 2.0)) * (PI / 2.0);
     double remainder = theta - theta0;
 
     // Apply R(θ₀) for the integer-multiple part
     // theta0 / (π/2) gives the number of quarter-turns
-    int quarterTurns = (int)round(theta0 / (PI / 2.0));
+    int quarterTurns = (int)rint(theta0 / (PI / 2.0));
     // Normalize to [0,4) since R(2π) = identity
     quarterTurns = ((quarterTurns % 4) + 4) % 4;
 
@@ -1737,13 +1737,13 @@ void cvdvConditionalRotation(CVDVContext* ctx, int targetReg, int ctrlReg, int c
     // where θ₀ ∈ (π/2)Z is chosen so |θ-θ₀| ≤ π/4
     // R(π/2) = FT, R(π) = Parity, R(-π/2) = FT†
 
-    // Find nearest multiple of π/2
-    double theta0 = round(theta / (PI / 2.0)) * (PI / 2.0);
+    // Find nearest multiple of π/2 using round-half-to-even (matches Python's np.round)
+    double theta0 = rint(theta / (PI / 2.0)) * (PI / 2.0);
     double remainder = theta - theta0;
 
     // Apply R(θ₀) for the integer-multiple part
     // theta0 / (π/2) gives the number of quarter-turns
-    int quarterTurns = (int)round(theta0 / (PI / 2.0));
+    int quarterTurns = (int)rint(theta0 / (PI / 2.0));
     // Normalize to [0,4) since R(2π) = identity
     quarterTurns = ((quarterTurns % 4) + 4) % 4;
 
@@ -1765,27 +1765,26 @@ void cvdvSqueeze(CVDVContext* ctx, int regIdx, double r) {
         return;
     }
 
-    // S(r) = exp(i(e^{-r}-1)/(2te^r) p^2) exp(-i(te^r)/2 q^2) exp(i(1-e^{-r})/(2t) p^2) exp(i(t)/2 q^2)
-    // where t = e^{-r/2} * sqrt(|1-e^{-r}|) minimizes sum of coefficients
-    double expR = exp(r);
-    double expMinusR = exp(-r);
-    double t = exp(-r / 2.0) * sqrt(fabs(1.0 - expMinusR));
+    double expHalfR = exp(0.5 * r);
+    double expMinusHalfR = exp(-0.5 * r);
+    double sqrtExpRMinus1 = sqrt(fabs(exp(r) - 1.0));
+    double sign = (r >= 0) ? 1.0 : -1.0;
 
-    // First: exp(i(t)/2 q^2) in position space
-    cvdvPhaseSquare(ctx, regIdx, 0.5 * t);
-
-    // Second: exp(i(1-e^{-r})/(2t) p^2) in momentum space
+    // First
     cvdvFtQ2P(ctx, regIdx);
-    cvdvPhaseSquare(ctx, regIdx, (1.0 - expMinusR) / (2.0 * t));
+    cvdvPhaseSquare(ctx, regIdx, -0.5 * expHalfR * sqrtExpRMinus1);
     cvdvFtP2Q(ctx, regIdx);
 
-    // Third: exp(-i(te^r)/2 q^2) in position space
-    cvdvPhaseSquare(ctx, regIdx, -0.5 * t * expR);
+    // Second
+    cvdvPhaseSquare(ctx, regIdx, 0.5 * expMinusHalfR * sqrtExpRMinus1 * sign);
 
-    // Fourth: exp(i(e^{-r}-1)/(2te^r) p^2) in momentum space
+    // Third
     cvdvFtQ2P(ctx, regIdx);
-    cvdvPhaseSquare(ctx, regIdx, (expMinusR - 1.0) / (2.0 * t * expR));
+    cvdvPhaseSquare(ctx, regIdx, 0.5 * expMinusHalfR * sqrtExpRMinus1);
     cvdvFtP2Q(ctx, regIdx);
+
+    // Fourth
+    cvdvPhaseSquare(ctx, regIdx, -0.5 * expHalfR * sqrtExpRMinus1 * sign);
 }
 
 void cvdvConditionalSqueeze(CVDVContext* ctx, int targetReg, int ctrlReg, int ctrlQubit, double r) {

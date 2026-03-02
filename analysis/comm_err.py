@@ -25,7 +25,10 @@ def _make_sim(sim_class, q, psi_arr):
     sep.setZero(0)
     sim = sim_class([q], backend='torch-cuda')
     sim.initStateVector(sep)
-    sim.state = torch.tensor(psi_arr, dtype=torch.cdouble)
+    if isinstance(psi_arr, torch.Tensor):
+        sim.state = psi_arr.detach().clone().to(dtype=torch.cdouble)
+    else:
+        sim.state = torch.tensor(psi_arr, dtype=torch.cdouble)
     return sim
 
 

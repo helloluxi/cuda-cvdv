@@ -54,6 +54,7 @@ Makefile.generated
 # Personal Notes (keep project docs)
 CLAUDE.md
 *.pdf
+dvsim-paper/
 
 # Benchmark results (keep reference plots/data, exclude temporary runs)
 benchmarks/results/*_temp.*

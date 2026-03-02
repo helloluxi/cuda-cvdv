@@ -1,16 +1,17 @@
-"""Rotation R(θ=π/4) error analysis.
+"""Rotation R(theta=pi/4) error analysis.
 
-R(θ) = exp(-i·tan(θ/2)/2·q²) · exp(-i·sin(θ)/2·p²) · exp(-i·tan(θ/2)/2·q²)
-Analytic: ψ_n(x) * exp(-i·(n+0.5)·θ)
+R(theta) = exp(-i*tan(theta/2)/2*q^2) * exp(-i*sin(theta)/2*p^2) * exp(-i*tan(theta/2)/2*q^2)
+Analytic: psi_n(x) * exp(-i*(n+0.5)*theta)
 Produces: figures/rot_err.pdf
-Returns: {'fit_params': [...], 'scaling': {...}}
+Returns: {'fit_params': [], 'scaling': {}}
 """
 
 import torch
+import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from ._common import fock_recurrence, plot_err_vs_gamma, plot_coeff_scaling
+from ._common import fock_recurrence, plot_err_vs_fock, bound_rot, plot_eps_vs_param
 
 from src import CVDV, SeparableState  # type: ignore
 
@@ -19,45 +20,57 @@ THETA = float(torch.pi / 4)
 PRECISION_CUTOFF = 1e-9
 STOP_ERR = 0.1
 
-
-def _apply_rotation(sim: CVDV, q: int, theta: float):
-    theta_t = torch.tensor(theta)
-    x = torch.tensor(sim.getXGrid(0), dtype=torch.cdouble)
-    # First q² shear
-    sim.state = sim.state * torch.exp(-1j * torch.tan(theta_t / 2) / 2 * x ** 2)
-    sim.ftQ2P(0)
-    p = torch.tensor(sim.getXGrid(0), dtype=torch.cdouble)
-    sim.state = sim.state * torch.exp(-1j * torch.sin(theta_t) / 2 * p ** 2)
-    sim.ftP2Q(0)
-    # Second q² shear
-    x2 = torch.tensor(sim.getXGrid(0), dtype=torch.cdouble)
-    sim.state = sim.state * torch.exp(-1j * torch.tan(theta_t / 2) / 2 * x2 ** 2)
+# Param sweep: fix N, vary theta
+SWEEP_N = 256
+SWEEP_NUM_GATE_PARAM = 101
+THETA_VALUES = (torch.arange(1, 1+SWEEP_NUM_GATE_PARAM) / SWEEP_NUM_GATE_PARAM * torch.pi / 4).tolist()
+SWEEP_LIST_GAMMA = [140, 150, 160, 170, 180]
 
 
 def _sweep(N: int, theta: float) -> list:
+    """Per-Fock errors (not cumulative). Returns list of individual errors per Fock index."""
     q = int(round(torch.log2(torch.tensor(float(N))).item()))
     pos_states, _, _ = fock_recurrence(N)
 
-    cumulative_errors = []
-    err_cum = 0.0
+    per_fock_errors = []
 
     for n, psi_pos in enumerate(pos_states):
         sep = SeparableState([q], device='cpu')
         sep.setFock(0, n)
         sim = CVDV([q], backend='torch-cuda')
         sim.initStateVector(sep)
-        _apply_rotation(sim, q, theta)
+        sim.r(0, theta)
         psi_discrete = torch.tensor(sim.getState(), dtype=torch.cdouble)
 
         phase = torch.exp(torch.tensor(-1j * (n + 0.5) * theta, dtype=torch.cdouble))
         psi_analytic = psi_pos.to(torch.cdouble) * phase
-        err_cum += float(torch.linalg.norm(psi_discrete - psi_analytic))
-        cumulative_errors.append(err_cum)
+        err = float(torch.linalg.norm(psi_discrete - psi_analytic))
+        per_fock_errors.append(err)
 
-        if err_cum >= STOP_ERR:
+        if err >= STOP_ERR:
             break
 
-    return cumulative_errors
+    return per_fock_errors
+
+
+def _run_param_sweep(fig_dir: str) -> list:
+    rows = []
+    with tqdm(total=len(THETA_VALUES), desc='rot param sweep') as pbar:
+        for theta in THETA_VALUES:
+            errors = _sweep(SWEEP_N, theta)
+            for gamma, eps in enumerate(errors):
+                if eps >= PRECISION_CUTOFF:
+                    rows.append({'param': theta, 'Gamma': gamma, 'err': eps})
+            pbar.update(1)
+    
+    # Plot eps vs theta for fixed Gamma values
+    plot_eps_vs_param(
+        rows, param_label=r'\theta', base_name='rot_eps_vs_theta',
+        fig_dir=fig_dir, gamma_values=SWEEP_LIST_GAMMA,
+        ylabel=r'$\varepsilon_{R(\theta)}$', N_fixed=SWEEP_N
+    )
+    
+    return []
 
 
 def run(fig_dir: str) -> dict:
@@ -65,20 +78,19 @@ def run(fig_dir: str) -> dict:
     with tqdm(total=len(N_TOTALS), desc='rot_err') as pbar:
         for N in N_TOTALS:
             errors = _sweep(N, THETA)
-            for gamma, eps in enumerate(errors):
+            for k, eps in enumerate(errors):
                 if eps >= PRECISION_CUTOFF:
-                    rows.append({'N': N, 'Gamma': gamma, 'err': eps})
-            pbar.set_postfix({'N': N, 'n_max': len(errors) - 1, 'eps': f'{errors[-1]:.2e}'})
+                    rows.append({'N': N, 'k': k, 'err': eps})
+            pbar.set_postfix({'N': N, 'k_max': len(errors) - 1, 'eps': f'{errors[-1]:.2e}'})
             pbar.update(1)
 
     df = pd.DataFrame(rows)
-    fit_params = plot_err_vs_gamma(
-        df, 'Gamma', 'err', 'N',
-        ylabel=r'Bounds of $\epsilon_{R(\pi/4)}$',
+    plot_err_vs_fock(
+        df, 'k', 'err', 'N',
+        ylabel=r'$\varepsilon_{R(\pi/4)}(|k\rangle)$',
         base_name='rot_err',
         fig_dir=fig_dir,
+        bound_fn=lambda k, n_q: bound_rot(k, n_q, theta=THETA),
     )
-    scaling = {}
-    if len(fit_params) >= 2:
-        scaling = plot_coeff_scaling(fit_params, 'rot_coeff_scaling', fig_dir)
-    return {'fit_params': fit_params, 'scaling': scaling, 'df': df}
+    _run_param_sweep(fig_dir)
+    return {'fit_params': [], 'scaling': {}, 'df': df}
