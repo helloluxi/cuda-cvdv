@@ -304,7 +304,7 @@ def run(fig_dir: str) -> dict:
                 color=color, label=f'Fock, $n={n}$, $N_{{CNOT}}={cnot}$', linestyle='--', alpha=0.85)
 
     ax.grid(True, alpha=0.3, which='major')
-    ax.legend(loc=(0.14, 0.05), frameon=True, framealpha=0.5, fontsize=16)
+    ax.legend(loc=(0.14, 0.05), frameon=True, framealpha=0.5)
     fig.tight_layout()
     _save_fig(fig, 'compare_fock', fig_dir)
     plt.close(fig)

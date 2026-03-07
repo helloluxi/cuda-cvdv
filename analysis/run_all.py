@@ -42,32 +42,29 @@ FIGURES = {
     'qft_err':                     ['qft_err_per_fock.png', 'qft_per_fock_coeff_scaling.png'],
     'comm_err':                    ['comm_err.png', 'comm_coeff_scaling.png'],
     'disp_err':                    ['disp_err.png', 'disp_coeff_scaling.png'],
-    'disp_err_param_sweep':        ['disp_eps_vs_alpha.png'],
     'rot_err':                     ['rot_err.png', 'rot_coeff_scaling.png'],
-    'rot_err_param_sweep':         ['rot_eps_vs_theta.png'],
     'squeeze_err':                 ['squeeze_err.png', 'squeeze_coeff_scaling.png'],
-    'squeeze_err_param_sweep':     ['squeeze_eps_vs_r.png'],
     'beam_splitter_err':           ['beam_splitter_err.png', 'bs_coeff_scaling.png'],
-    'beam_splitter_err_param_sweep': ['bs_eps_vs_theta.png'],
     'compare_fock':                ['compare_fock.png'],
     'plot_advantage':              ['advantage.png'],
 }
 
 
-def _fmt_latex_formula(fit_params: list, scaling: dict) -> str:
-    """Render combined fit as a LaTeX display equation."""
-    if not fit_params or not scaling:
+def _pm(v): return f'+ {v:.4f}' if v >= 0 else f'- {abs(v):.4f}'
+
+
+def _fmt_scaling_formula(scaling: dict) -> str:
+    """Render N-scaling fit formula with fitted parameters."""
+    if not scaling:
         return ''
-    ca = scaling['c_a']; da = scaling['d_a']
-    cb = scaling['c_b']; db = scaling['d_b']
-    def _pm(v): return f'+ {v:.4f}' if v >= 0 else f'- {abs(v):.4f}'
-    return (
-        '$$\n'
-        r'\log \varepsilon \;\approx\; '
-        rf'\Bigl({ca:.4f}\,N^{{-1/2}} {_pm(da)}\Bigr)\,\Bigl(\Gamma+\tfrac{{1}}{{2}}\Bigr)'
-        rf'\;+\; {cb:.4f}\,N^{{1/2}} {_pm(db)}'
-        '\n$$\n'
-    )
+    c_a = scaling['c_a']; d_a = scaling['d_a']
+    c_b = scaling['c_b']; d_b = scaling['d_b']
+    
+    x = scaling.get('x_var', '\\Gamma')
+    out = f'**N-scaling upper bound:** $\\log\\varepsilon(N,{x}) \\leq a(N)\\,{x} + b(N)$\n\n'
+    out += f'- $a(N) = {c_a:.4f}\\,N^{{-1/2}} {_pm(d_a)}$\n'
+    out += f'- $b(N) = {c_b:.4f}\\,N^{{1/2}} {_pm(d_b)}$\n\n'
+    return out
 
 
 def _section(title, key, result, elapsed) -> str:
@@ -80,21 +77,10 @@ def _section(title, key, result, elapsed) -> str:
     if fig_links:
         body += fig_links + '\n\n'
 
-    fp = result.get('fit_params')
     sc = result.get('scaling', {})
-    if fp is not None and sc:
-        latex = _fmt_latex_formula(fp, sc)
-        if latex:
-            body += '**Fitted formula** `log(eps) = a(N)*(Gamma+1/2) + b(N)`:\n\n' + latex
 
-    # param-sweep subsection
-    psw_figs = FIGURES.get(key + '_param_sweep', [])
-    if psw_figs:
-        body += '\n### Gate-parameter sweep (fixed N)\n\n'
-        for f in psw_figs:
-            if os.path.exists(os.path.join(FIG_DIR, f)):
-                body += f'![{f}](analysis/figures/{f})\n'
-        body += '\n'
+    if sc:
+        body += _fmt_scaling_formula(sc)
 
     return body + '\n'
 

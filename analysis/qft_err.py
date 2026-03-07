@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from tqdm import tqdm
 
-from ._common import fock_recurrence, fit_ab, _save_fig
+from ._common import fock_recurrence, fit_ab_upper, plot_coeff_scaling, _save_fig
 
 from src import CVDV, SeparableState  # type: ignore
 
@@ -67,18 +67,16 @@ def _plot_qft_err_with_fit(df, fig_dir):
         ax.semilogy(ks, Es, marker='o', linewidth=2, markersize=6,
                     color=color, label=f'$n={n_q}$', alpha=0.85)
 
-        ab = fit_ab(ks, Es)
+        ab = fit_ab_upper(ks, Es)
         if ab is not None:
             a, b = ab
             fit_params.append((N, a, b))
-            k_fine = np.arange(ks[0], ks[-1] + 1)
-            bnd = np.exp(a * (k_fine + 0.5) + b)
-            ax.semilogy(k_fine, bnd, '--', linewidth=2.5, color=color, alpha=0.85,
-                        label=f'$n={n_q}$ fit')
+            k_fit = np.linspace(ks[0], ks[-1], 200)
+            ax.semilogy(k_fit, np.exp(a * k_fit + b), '--', color=color, linewidth=1.5)
 
     ax.set_xlabel(r'Fock index $k$')
     ax.set_ylabel(r'$\varepsilon_{\mathrm{QFT}}(|k\rangle)$')
-    ax.legend(loc='lower right', fontsize=18, ncol=2)
+    ax.legend(loc='lower center', bbox_to_anchor=(0.7, 0.0), ncol=1)
     ax.grid(True, alpha=0.3, which='both')
     fig.tight_layout()
     _save_fig(fig, 'qft_err_per_fock', fig_dir)
@@ -100,5 +98,7 @@ def run(fig_dir: str) -> dict:
 
     df = pd.DataFrame(rows)
     fit_params = _plot_qft_err_with_fit(df, fig_dir)
+    scaling = plot_coeff_scaling(fit_params, 'qft_per_fock_coeff_scaling', fig_dir)
+    scaling['x_var'] = 'k'
 
-    return {'fit_params': fit_params, 'df': df}
+    return {'fit_params': fit_params, 'scaling': scaling, 'df': df}

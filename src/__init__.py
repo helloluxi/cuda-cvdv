@@ -15,7 +15,7 @@ import torch
 import matplotlib.pyplot as plt
 import scienceplots
 plt.style.use(['science'])
-plt.rcParams.update({'font.size': 18, 'text.usetex': True})
+plt.rcParams.update({'font.size': 24, 'text.usetex': True})
 
 from .separable import SeparableState
 
