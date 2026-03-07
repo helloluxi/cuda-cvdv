@@ -40,7 +40,7 @@ GAMMA_MAX = 127       # Maximum Fock state cutoff
 K_MAX = 256           # Maximum Fock state dimension
 N_VALUES_WF = [7, 8]  # Qubit numbers for WF encoding
 N_VALUES_FOCK = [6, 7]  # Qubit numbers for Fock/Qiskit
-OPTIMIZATION_LEVELS = [1]  # Qiskit transpiler optimization levels
+OPTIMIZATION_LEVELS = [3]  # Qiskit transpiler optimization levels
 SQ2 = np.sqrt(2)
 
 
@@ -249,8 +249,9 @@ def run(fig_dir: str) -> dict:
                 transpiled, cnot = compile_with_qiskit(circuit, optimization_level=opt_level)
                 U_qiskit = apply_qiskit_circuit_to_fock(transpiled, n)
                 
-                # Compute error for each Gamma value
-                for Gamma in range(GAMMA_MAX + 1):
+                # Compute error for each Gamma value (capped at dim-1)
+                dim = 1 << n
+                for Gamma in range(min(GAMMA_MAX, dim - 1) + 1):
                     error = cumulative_error(U_qiskit, D_exact, Gamma)
                     results_fock_qiskit.append({'n': n, 'CNOT': cnot, 'error': error, 'opt_level': opt_level, 'Gamma': Gamma})
             except Exception as e:
@@ -293,7 +294,7 @@ def run(fig_dir: str) -> dict:
         df_sub = df_wf[df_wf['n'] == n].sort_values('Gamma')
         cnot = df_sub['CNOT'].iloc[0]
         ax.plot(df_sub['Gamma'], df_sub['error'], marker='o', linewidth=2, markersize=8,
-                color=color, label=f'Ours, $n={n}$, CNOT={cnot}', alpha=0.85)
+                color=color, label=f'Ours, $n={n}$, $N_{{CNOT}}={cnot}$', alpha=0.85)
 
     # Plot Fock (Qiskit) - error vs Gamma with CNOT count in legend
     for color, n in zip(fock_colors, fock_ns):

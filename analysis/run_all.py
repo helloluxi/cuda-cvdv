@@ -27,8 +27,6 @@ os.makedirs(FIG_DIR, exist_ok=True)
 MODULES = [
     ('check_norm',        'check_norm',        'Fock State Norm Check'),
     ('qft_err',           'qft_err',           'QFT Error'),
-    ('qft_disp_err',      'qft_disp_err',      'QFT on Displaced Fock States'),
-    ('qft_squeeze_err',   'qft_squeeze_err',   'QFT on Squeezed Fock States'),
     ('comm_err',          'comm_err',          'Commutator Error'),
     ('disp_err',          'disp_err',          'Displacement D(2) Error'),
     ('rot_err',           'rot_err',           'Rotation R(pi/4) Error'),
@@ -42,10 +40,6 @@ MODULES = [
 FIGURES = {
     'check_norm':                  ['norm_check.png'],
     'qft_err':                     ['qft_err_per_fock.png', 'qft_per_fock_coeff_scaling.png'],
-    'qft_disp_err':                ['qft_disp_err.png', 'qft_disp_coeff_scaling.png'],
-    'qft_disp_err_param_sweep':    ['qft_disp_vs_gamma.png', 'qft_disp_eps_vs_alpha.png'],
-    'qft_squeeze_err':             ['qft_squeeze_err.png', 'qft_squeeze_coeff_scaling.png'],
-    'qft_squeeze_err_param_sweep': ['qft_squeeze_vs_gamma.png', 'qft_squeeze_eps_vs_r.png'],
     'comm_err':                    ['comm_err.png', 'comm_coeff_scaling.png'],
     'disp_err':                    ['disp_err.png', 'disp_coeff_scaling.png'],
     'disp_err_param_sweep':        ['disp_eps_vs_alpha.png'],

@@ -122,48 +122,56 @@ def bound_disp(k, n_qubits: int, Re_alpha: float = 2.0):
     return term1 + term2
 
 
-def bound_rot(k, n_qubits: int, theta: float = np.pi / 4):
-    """Per-Fock rotation R(theta) error upper bound."""
+def bound_rot(k, n_qubits: int, theta: float):
+    """Per-Fock rotation R(theta) error upper bound using exact max eigenvalue.
+
+    The quadratic form matrix at each QFT is
+      M = [[1+t^2, -t], [-t, 1]]  where t = |tan(theta/2)|
+    with max eigenvalue lambda = (2+t^2 + t*sqrt(4+t^2)) / 2
+    (from appendix, commented exact eigenvalue expression).
+    Both QFTs share the same coefficient, giving factor 2.
+    """
     a, b = _qft_ab(n_qubits)
     k = np.asarray(k)
     t = abs(np.tan(theta / 2))
-    c1 = (1 + t) ** 2
-    c2 = 1 + np.sin(theta) ** 2 * (1 + t) ** 2
-    term1 = np.exp(a * c1 * (k + 0.5) + b)
-    term2 = np.exp(a * c2 * (k + 0.5) + b)
-    return term1 + term2
+    lam = (2 + t ** 2 + t * np.sqrt(4 + t ** 2)) / 2
+    return 2 * np.exp(a * lam * (k + 0.5) + b)
 
 
 def bound_sq(k, n_qubits: int, r: float = 1.0):
-    """Per-Fock squeezing S(r) error upper bound."""
+    """Per-Fock squeezing S(r) error upper bound (eq:squeeze-full-err, accurate per-QFT).
+
+    Uses the individual effective photon number bound for each of the 4 QFTs,
+    rather than the uniform loose bound (2+2*exp(2r)) used in eq:sq-err-bound.
+    For r>0 the four coefficients are:
+      c1 = 1
+      c2 = 2 + exp(r)*(exp(r)-1)
+      c3 = 1 + (exp(r)+exp(-r))*(exp(r)-1) + exp(2r)
+      c4 = exp(-2r) + exp(2r) + exp(-r)*(exp(r)-1)
+    """
     a, b = _qft_ab(n_qubits)
-    k = np.asarray(k)
-    sq = np.sqrt(np.exp(r) - 1)
-    mu = [
-        -np.exp(r / 2) * sq,
-        np.exp(-r / 2) * sq,
-        -np.exp(-r / 2) * sq,
-        -np.exp(r / 2) * sq,
-    ]
-    s = [0, mu[0], mu[0] - mu[1], mu[0] - mu[1] - mu[2]]
-    total = np.zeros_like(k, dtype=float)
-    for sj in s:
-        c = (1 + abs(sj)) ** 2
-        total += np.exp(a * c * (k + 0.5) + b)
-    return total
+    k = np.asarray(k, dtype=float)
+    er = np.exp(abs(r))
+    c1 = 1.0
+    c2 = 2 + er * (er - 1)
+    c3 = 1 + (er + 1 / er) * (er - 1) + er ** 2
+    c4 = 1 / er ** 2 + er ** 2 + (er - 1) / er
+    return sum(np.exp(a * c * (k + 0.5) + b) for c in (c1, c2, c3, c4))
 
 
 def bound_bs(k, n_qubits: int, theta: float = np.pi / 2):
-    """Per-Fock beam-splitter BS(theta) error upper bound on input |k,0>."""
+    """Per-Fock beam-splitter BS(theta) error upper bound on input |k,0> using exact max eigenvalue.
+
+    The per-mode quadratic form acting on (q1, p1, q2) has 3x3 matrix with
+    eigenvalues 0, 1, 1+tau^2  where tau = tan(theta/4).
+    Max eigenvalue is (1+tau^2), giving n_{j,eff}+1/2 <= (1+tau^2)*(n1+n2+1).
+    All 4 QFTs share this bound by symmetry, giving factor 4.
+    """
     a, b = _qft_ab(n_qubits)
     k = np.asarray(k)
     tau2 = np.tan(theta / 4) ** 2
-    sig2 = np.sin(theta / 2) ** 2
-    c12 = 1 + tau2
-    c34 = 1 + tau2 + sig2
-    term1 = np.exp(a * c12 * (k + 1) + b)
-    term2 = np.exp(a * c34 * (k + 1) + b)
-    return 2 * term1 + 2 * term2
+    c = 1 + tau2
+    return 4 * np.exp(a * c * (k + 1) + b)
 
 
 def plot_err_vs_fock(df, x_col, y_col, group_col, ylabel, base_name, fig_dir,

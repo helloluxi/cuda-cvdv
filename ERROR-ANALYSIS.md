@@ -11,34 +11,6 @@
 ![qft_per_fock_coeff_scaling.png](analysis/figures/qft_per_fock_coeff_scaling.png)
 
 
-## QFT on Displaced Fock States
-
-![qft_disp_err.png](analysis/figures/qft_disp_err.png)
-
-
-### Gate-parameter sweep (fixed N)
-
-![qft_disp_vs_gamma.png](analysis/figures/qft_disp_vs_gamma.png)
-![qft_disp_eps_vs_alpha.png](analysis/figures/qft_disp_eps_vs_alpha.png)
-
-
-## QFT on Squeezed Fock States
-
-![qft_squeeze_err.png](analysis/figures/qft_squeeze_err.png)
-![qft_squeeze_coeff_scaling.png](analysis/figures/qft_squeeze_coeff_scaling.png)
-
-**Fitted formula** `log(eps) = a(N)*(Gamma+1/2) + b(N)`:
-
-$$
-\log \varepsilon \;\approx\; \Bigl(0.0729\,N^{-1/2} + 0.3877\Bigr)\,\Bigl(\Gamma+\tfrac{1}{2}\Bigr)\;+\; 0.0752\,N^{1/2} + 1.4076
-$$
-
-### Gate-parameter sweep (fixed N)
-
-![qft_squeeze_vs_gamma.png](analysis/figures/qft_squeeze_vs_gamma.png)
-![qft_squeeze_eps_vs_r.png](analysis/figures/qft_squeeze_eps_vs_r.png)
-
-
 ## Commutator Error
 
 ![comm_err.png](analysis/figures/comm_err.png)

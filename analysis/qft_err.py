@@ -2,15 +2,21 @@
 
 L2 error of ftQ2P on individual Fock states |n> vs analytic target (-i)^n * |n>.
 No accumulation: each Fock state is tested independently.
-Produces: figures/qft_err_per_fock.png, figures/qft_per_fock_coeff_scaling.png
-Returns: {'fit_params': [(N, a, b), ...], 'scaling': {...}}
+Fits log(eps) = a*(k+1/2) + b per qubit count from experimental data, then overlays
+the fitted exponential as the theoretical bound curve.
+Produces: figures/qft_err_per_fock.png
+Returns: {'fit_params': [(N, a, b), ...]}
 """
 
+import numpy as np
 import torch
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 import pandas as pd
 from tqdm import tqdm
 
-from ._common import fock_recurrence, plot_err_vs_fock, bound_qft
+from ._common import fock_recurrence, fit_ab, _save_fig
 
 from src import CVDV, SeparableState  # type: ignore
 
@@ -44,6 +50,42 @@ def _sweep(q: int) -> list:
     return per_fock_errors
 
 
+def _plot_qft_err_with_fit(df, fig_dir):
+    """Plot per-Fock QFT error with per-N exponential fit overlay."""
+    fig, ax = plt.subplots(figsize=(12, 8))
+
+    prop_cycle = plt.rcParams['axes.prop_cycle']
+    colors = [c['color'] for c in prop_cycle]
+
+    fit_params = []
+    for idx, (N, group) in enumerate(df.groupby('N')):
+        color = colors[idx % len(colors)]
+        ks = group['n'].values
+        Es = group['err'].values
+        n_q = int(round(np.log2(float(N))))
+
+        ax.semilogy(ks, Es, marker='o', linewidth=2, markersize=6,
+                    color=color, label=f'$n={n_q}$', alpha=0.85)
+
+        ab = fit_ab(ks, Es)
+        if ab is not None:
+            a, b = ab
+            fit_params.append((N, a, b))
+            k_fine = np.arange(ks[0], ks[-1] + 1)
+            bnd = np.exp(a * (k_fine + 0.5) + b)
+            ax.semilogy(k_fine, bnd, '--', linewidth=2.5, color=color, alpha=0.85,
+                        label=f'$n={n_q}$ fit')
+
+    ax.set_xlabel(r'Fock index $k$')
+    ax.set_ylabel(r'$\varepsilon_{\mathrm{QFT}}(|k\rangle)$')
+    ax.legend(loc='lower right', fontsize=18, ncol=2)
+    ax.grid(True, alpha=0.3, which='both')
+    fig.tight_layout()
+    _save_fig(fig, 'qft_err_per_fock', fig_dir)
+    plt.close(fig)
+    return fit_params
+
+
 def run(fig_dir: str) -> dict:
     rows = []
     with tqdm(total=len(QUBIT_COUNTS), desc='qft_err_per_fock') as pbar:
@@ -57,14 +99,6 @@ def run(fig_dir: str) -> dict:
             pbar.update(1)
 
     df = pd.DataFrame(rows)
+    fit_params = _plot_qft_err_with_fit(df, fig_dir)
 
-    plot_err_vs_fock(
-        df, 'n', 'err', 'N',
-        ylabel=r'$\varepsilon_{\mathrm{QFT}}(|k\rangle)$',
-        base_name='qft_err_per_fock',
-        fig_dir=fig_dir,
-        bound_fn=bound_qft,
-        legend_loc='lower right',
-    )
-
-    return {'fit_params': [], 'scaling': {}, 'df': df}
+    return {'fit_params': fit_params, 'df': df}
