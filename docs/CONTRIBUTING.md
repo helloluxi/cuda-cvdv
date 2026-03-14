@@ -24,19 +24,13 @@ cmake -B build -DCMAKE_CUDA_ARCHITECTURES=89 && cmake --build build
 
 ## Development Import
 
-On first import each session, `libcvdv.so` is rebuilt if needed:
-
-```python
-from src import CVDV    # triggers make build
-```
-
-Skip the rebuild check when iterating on Python-only code:
+Set `CVDV_DEV=1` to enable dev mode: rebuilds `libcvdv.so` on each import if needed:
 
 ```bash
-CVDV_NO_REBUILD=1 python script.py
+CVDV_DEV=1 python script.py
 ```
 
-If the `.so` is missing and `CVDV_NO_REBUILD=1`, a `RuntimeError` is raised immediately.
+Without the flag (default / production mode), no rebuild is attempted. If the `.so` is missing, a `RuntimeError` is raised immediately.
 
 ## Tests
 
@@ -73,7 +67,10 @@ tests/
   test_core.py         # CUDA backend correctness (inner product checks)
   test_consistency.py  # CUDA vs torch-cuda vs torch-cpu cross-validation
 analysis/              # Standalone error analysis scripts (not part of the library)
-benchmarks/            # Timing benchmarks vs bosonic-qiskit and per-gate
+benchmarks/            # Timing benchmarks vs bosonic-qiskit
+profiling/
+  run.sh               # ncu kernel profiling → report.md
+  compare.py           # diff two ncu CSV reports
 docs/
   api.md               # Full API reference
   CONTRIBUTING.md      # This file
@@ -81,20 +78,28 @@ docs/
 
 ## Profiling with Nsight
 
-Profile first — optimize second. Quick start:
+Profile first — optimize second. Scripts live in `profiles/`; output files (`.ncu-rep`, `.nsys-rep`, `.csv`) are git-ignored.
 
-```bash
-# Memory coalescing check on a specific kernel
-ncu --metrics l1tex__t_sectors_pipe_lsu_mem_global_op_ld,sm__warps_active.avg.pct_of_peak_sustained_active \
-    python -c "
-import os; os.environ['CVDV_NO_REBUILD'] = '1'
-from src import CVDV
-from src.separable import SeparableState
-sep = SeparableState([10]); sep.setCoherent(0, 2+1j)
-sim = CVDV([10]); sim.initStateVector(sep)
-for _ in range(100): sim.d(0, 1+0.5j)
-"
+### Workflow
+
 ```
+1. Profile + compare  →  ./profiling/run.sh          (prints speedup table to console)
+2. Inspect kernels    →  ncu-ui profiling/current/results.ncu-rep
+3. Make one change    →  edit src/cvdv.cu, make build
+4. Re-profile         →  ./profiling/run.sh
+5. If improved        →  ./profiling/save.sh          (then git add profiling/committed/results.csv)
+```
+
+`ncu` serialises kernels — do not use it for wall-clock comparisons.
+
+### Key metrics
+
+| Metric | Target |
+|--------|--------|
+| `gpu__time_duration.sum` | Primary: lower is better |
+| `l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum` | Coalescing indicator |
+| `sm__warps_active.avg.pct_of_peak_sustained_active` | Occupancy ≥ 50% |
+| `dram__bytes_read.sum / gpu__time_duration.sum` | Effective BW ≥ 130 GB/s |
 
 Roofline reference (RTX 4070 Laptop): **40 TFLOPS FP32 / 192 GB/s HBM**.
 Phase-multiplication kernels are memory-bound; target ≥ 70% bandwidth utilization.

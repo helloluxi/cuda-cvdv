@@ -6,18 +6,22 @@ A high-performance CUDA library for simulating hybrid continuous-variable (CV) a
 
 ## Todo List
 
-- [ ] **Kernel optimizations** — profile first with Nsight (`docs/CONTRIBUTING.md`)
+- **Kernel optimizations** — profile first with Nsight (`docs/CONTRIBUTING.md`)
   - [ ] Vectorized loads (`__ldg()` / `double2`) for phase-multiplication kernels
   - [ ] Coalescing audit on strided-register kernels (`kernelApplyOneModeQ` and variants)
   - [ ] Register-accumulator tiling for Wigner integrand kernel (`kernelBuildWignerIntegrand`)
+  - [ ] L2 cache set conflicts on strided accesses — register strides are powers of two (2^10 = 1024 elements), which can cause multiple streams to alias to the same L2 sets and thrash; fix via array padding or access reordering
 
-- [ ] **Packaging**
+- **Packaging**
   - [ ] Add example notebooks for Product Formula and QSP
+
+- **Autograd support**
+  - [ ] Implement automatic differentiation for quantum circuit parameters
 
 - [x] Wigner and Husimi Q CUDA kernels
 - [x] Unit test suite (core + CUDA/Torch consistency)
 - [x] Performance benchmarks vs bosonic-qiskit
-- [x] `CVDV_NO_REBUILD` production flag
+- [x] `CVDV_DEV` flag for dev mode (rebuild on import)
 - [x] CPU fallback via `torch-cpu` backend
 - [x] Optional-dep packaging (`pyproject.toml` extras)
 
@@ -86,7 +90,7 @@ examples/
   qcst.ipynb           # Quantum coherent state transform demo
 benchmarks/
   state_transfer/      # CV-to-DV state transfer vs bosonic-qiskit
-  ops_time/            # Per-gate timing across register configurations
+profiling/             # Nsight profiling scripts + CSV comparison tool
 analysis/              # Error analysis scripts (gate errors, Trotter bounds)
 CMakeLists.txt         # Build configuration
 Makefile               # Build & test commands
@@ -137,10 +141,10 @@ sim.cd(1, 0, 0, 1.5)
 wigner = sim.getWigner(1, bound=5.0)
 ```
 
-Set `CVDV_NO_REBUILD=1` to skip the automatic `make build` check on import (recommended once the `.so` is built):
+By default, no rebuild is attempted on import. Set `CVDV_DEV=1` to enable automatic `make build` on each import (useful during kernel development):
 
 ```bash
-CVDV_NO_REBUILD=1 python your_script.py
+CVDV_DEV=1 python your_script.py
 ```
 
 ### No GPU? Use the CPU backend

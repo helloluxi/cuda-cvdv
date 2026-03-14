@@ -34,8 +34,8 @@ def _get_lib() -> ctypes.CDLL:
 
 def _compile_and_load() -> ctypes.CDLL:
     lib_path = os.path.join(build_dir, 'libcvdv.so')
-    no_rebuild = os.environ.get('CVDV_NO_REBUILD', '0') not in ('0', '')
-    if not no_rebuild:
+    dev_mode = os.environ.get('CVDV_DEV', '0') not in ('0', '')
+    if dev_mode:
         result = subprocess.run(
             ['make', '-C', project_dir, 'build'],
             capture_output=True, text=True

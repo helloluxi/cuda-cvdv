@@ -1,0 +1,4 @@
+# Generated per-run (git-ignored)
+current/
+
+# committed/results.csv is intentionally git-tracked
