@@ -116,6 +116,8 @@ def _compile_and_load() -> ctypes.CDLL:
     lib.cvdvGetFidelity.restype = None
     lib.cvdvGetNorm.argtypes = [ctypes.c_void_p]
     lib.cvdvGetNorm.restype = c_double
+    lib.cvdvGetPhotonNumber.argtypes = [ctypes.c_void_p, c_int]
+    lib.cvdvGetPhotonNumber.restype = c_double
     lib.cvdvSetStateFromDevicePtr.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
     lib.cvdvSetStateFromDevicePtr.restype = None
 
@@ -639,8 +641,30 @@ class CVDV:
         if self.backend == 'cuda':
             return _get_lib().cvdvGetNorm(self.ctx)
         else:
-            
+
             return float(torch.sqrt(torch.sum(torch.abs(self.state) ** 2)).cpu().item())
+
+    def getPhotonNumber(self, regIdx: int) -> float:
+        """Compute mean photon number <n> = (<q²> + <p²> - 1) / 2 for a register.
+
+        <q²> is computed in the position basis; the state is temporarily transformed
+        to momentum via ftQ2P to compute <p²>, then restored with ftP2Q.
+        Since dp = dx in this simulator, the same grid helper applies in both bases.
+        """
+        if self.backend == 'cuda':
+            return float(_get_lib().cvdvGetPhotonNumber(self.ctx, c_int(regIdx)))
+        else:
+            x = self._tPositionGrid(regIdx)
+            shape = [1] * self.num_registers
+            shape[regIdx] = -1
+            q2 = float(torch.sum(torch.abs(self.state) ** 2 * x.reshape(shape) ** 2).real.cpu().item())
+
+            self.ftQ2P(regIdx)
+            p = self._tPositionGrid(regIdx)  # dp = dx, same grid values
+            p2 = float(torch.sum(torch.abs(self.state) ** 2 * p.reshape(shape) ** 2).real.cpu().item())
+            self.ftP2Q(regIdx)
+
+            return (q2 + p2 - 1.0) / 2.0
 
     # ==================== Phase Space Functions ====================
 

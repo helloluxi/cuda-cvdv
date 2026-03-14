@@ -941,6 +941,35 @@ __global__ void kernelComputeJointMeasure(double* outJointProb, const cuDoubleCo
     outJointProb[pairIdx] = prob;
 }
 
+// Kernel to compute <x²> expectation for a register: sum |state[i]|² * x_localIdx²
+__global__ void kernelExpectX2(double* partialSums, const cuDoubleComplex* state,
+                               size_t totalSize, int regIdx,
+                               const int* qbts, const double* gridSteps, const int* flwQbts) {
+    extern __shared__ double sdataX2[];
+
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    double localSum = 0.0;
+
+    int regDim = 1 << qbts[regIdx];
+    double dx = gridSteps[regIdx];
+
+    for (size_t globalIdx = idx; globalIdx < totalSize; globalIdx += blockDim.x * gridDim.x) {
+        size_t localIdx = getLocalIndex(globalIdx, flwQbts[regIdx], qbts[regIdx]);
+        double x = gridX(localIdx, regDim, dx);
+        localSum += absSquare(state[globalIdx]) * x * x;
+    }
+
+    sdataX2[threadIdx.x] = localSum;
+    __syncthreads();
+
+    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sdataX2[threadIdx.x] += sdataX2[threadIdx.x + s];
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0) partialSums[blockIdx.x] = sdataX2[0];
+}
+
 // Kernel to compute norm (sum of |state[i]|^2)
 __global__ void kernelComputeNorm(double* partialSums, const cuDoubleComplex* state, size_t totalSize) {
     // Shared memory for reduction within block
@@ -2437,6 +2466,47 @@ void cvdvGetFidelity(CVDVContext* ctx, void** devicePtrs, int numReg, double* fi
     double re = cuCreal(ip), im = cuCimag(ip);
     *fidOut = re * re + im * im;
     logInfo(ctx, "Fidelity: %.10f", *fidOut);
+}
+
+// Internal: compute <x²> for a register using parallel reduction
+static double computeExpectX2(CVDVContext* ctx, int regIdx) {
+    size_t totalSize = 1ULL << ctx->gTotalQbt;
+    int numBlocks = (int)((totalSize + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE);
+    numBlocks = min(numBlocks, 1024);
+
+    double* dPartialSums;
+    checkCudaErrors(ctx, cudaMalloc(&dPartialSums, numBlocks * sizeof(double)));
+
+    size_t sharedMemSize = CUDA_BLOCK_SIZE * sizeof(double);
+    kernelExpectX2<<<numBlocks, CUDA_BLOCK_SIZE, sharedMemSize>>>(
+        dPartialSums, ctx->dState, totalSize, regIdx,
+        ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts);
+    checkCudaErrors(ctx, cudaGetLastError());
+    checkCudaErrors(ctx, cudaDeviceSynchronize());
+
+    double* hPartialSums = new double[numBlocks];
+    checkCudaErrors(ctx, cudaMemcpy(hPartialSums, dPartialSums,
+                                    numBlocks * sizeof(double), cudaMemcpyDeviceToHost));
+    double result = 0.0;
+    for (int i = 0; i < numBlocks; i++) result += hPartialSums[i];
+    delete[] hPartialSums;
+    checkCudaErrors(ctx, cudaFree(dPartialSums));
+    return result;
+}
+
+// Compute mean photon number <n> = (<q²> + <p²> - 1) / 2 for register regIdx.
+// Temporarily applies ftQ2P / ftP2Q to measure <p²> in momentum basis (dp = dx).
+double cvdvGetPhotonNumber(CVDVContext* ctx, int regIdx) {
+    if (!ctx || ctx->dState == nullptr) return -1.0;
+    if (regIdx < 0 || regIdx >= ctx->gNumReg) return -1.0;
+
+    double q2 = computeExpectX2(ctx, regIdx);
+
+    cvdvFtQ2P(ctx, regIdx);
+    double p2 = computeExpectX2(ctx, regIdx);
+    cvdvFtP2Q(ctx, regIdx);
+
+    return (q2 + p2 - 1.0) / 2.0;
 }
 
 double cvdvGetNorm(CVDVContext* ctx) {

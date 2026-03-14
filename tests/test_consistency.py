@@ -652,5 +652,49 @@ class TestMeasurementExtensions:
         assert len(torch_grid) == torch_sim.register_dims[0]
 
 
+class TestPhotonNumber:
+    """Consistency of getPhotonNumber between CUDA and torch backends."""
+
+    NQUBITS = 8
+    ATOL = 1e-2
+
+    def _make_pair(self, nqubits=None):
+        nq = nqubits if nqubits is not None else self.NQUBITS
+        cuda_sim = CVDV([nq])
+        torch_sim = CVDVTorch([nq], device='cuda')
+        return cuda_sim, torch_sim
+
+    @pytest.mark.parametrize("alpha", [0.0, 1.0, 1.5 + 1.0j, -0.5 + 2.0j])
+    def test_coherent_state_consistency(self, alpha):
+        """CUDA and torch agree on <n> for coherent |α⟩; both equal |α|²."""
+        cuda_sim, torch_sim = self._make_pair()
+        sep = SeparableState([self.NQUBITS])
+        sep.setCoherent(0, alpha)
+        cuda_sim.initStateVector(sep)
+        torch_sim.initStateVector(sep)
+        cuda_n = cuda_sim.getPhotonNumber(0)
+        torch_n = torch_sim.getPhotonNumber(0)
+        n_exact = abs(alpha) ** 2
+        assert abs(cuda_n - n_exact) < self.ATOL, f"CUDA: <n>={cuda_n:.6f} vs {n_exact:.6f}"
+        assert abs(torch_n - n_exact) < self.ATOL, f"Torch: <n>={torch_n:.6f} vs {n_exact:.6f}"
+        np.testing.assert_allclose(cuda_n, torch_n, atol=self.ATOL)
+        del cuda_sim, torch_sim
+
+    @pytest.mark.parametrize("n_fock", [0, 1, 2, 4])
+    def test_fock_state_consistency(self, n_fock):
+        """CUDA and torch agree on <n> for Fock |n⟩; both equal n."""
+        cuda_sim, torch_sim = self._make_pair()
+        sep = SeparableState([self.NQUBITS])
+        sep.setFock(0, n_fock)
+        cuda_sim.initStateVector(sep)
+        torch_sim.initStateVector(sep)
+        cuda_n = cuda_sim.getPhotonNumber(0)
+        torch_n = torch_sim.getPhotonNumber(0)
+        assert abs(cuda_n - n_fock) < self.ATOL, f"CUDA: <n>={cuda_n:.6f} vs {n_fock}"
+        assert abs(torch_n - n_fock) < self.ATOL, f"Torch: <n>={torch_n:.6f} vs {n_fock}"
+        np.testing.assert_allclose(cuda_n, torch_n, atol=self.ATOL)
+        del cuda_sim, torch_sim
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])

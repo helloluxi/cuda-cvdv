@@ -343,5 +343,59 @@ class TestPhaseSpaceClosedForm:
         del sim
 
 
+class TestPhotonNumber:
+    """Test getPhotonNumber against exact analytic values.
+
+    Coherent state |α⟩: <n> = |α|²
+    Fock state |n⟩:     <n> = n
+    """
+
+    NQUBITS = 8
+    ATOL = 1e-2  # discretization noise comparable to Wigner tests
+
+    def _make_sim(self, nqubits=None):
+        nq = nqubits if nqubits is not None else self.NQUBITS
+        sim = CVDV([nq])
+        return sim
+
+    @pytest.mark.parametrize("alpha", [0.0, 1.0, 1.5 + 1.0j, -0.5 + 2.0j, 2.0])
+    def test_coherent_state(self, alpha):
+        """<n> = |α|² for coherent state |α⟩."""
+        sim = self._make_sim()
+        sep = SeparableState([self.NQUBITS])
+        sep.setCoherent(0, alpha)
+        sim.initStateVector(sep)
+        n_meas = sim.getPhotonNumber(0)
+        n_exact = abs(alpha) ** 2
+        assert abs(n_meas - n_exact) < self.ATOL, \
+            f"Coherent |α={alpha}⟩: <n>={n_meas:.6f}, expected {n_exact:.6f}"
+        del sim
+
+    @pytest.mark.parametrize("n_fock", [0, 1, 2, 3, 5])
+    def test_fock_state(self, n_fock):
+        """<n> = n for Fock state |n⟩."""
+        sim = self._make_sim()
+        sep = SeparableState([self.NQUBITS])
+        sep.setFock(0, n_fock)
+        sim.initStateVector(sep)
+        n_meas = sim.getPhotonNumber(0)
+        assert abs(n_meas - n_fock) < self.ATOL, \
+            f"Fock |{n_fock}⟩: <n>={n_meas:.6f}, expected {n_fock}"
+        del sim
+
+    def test_state_restored_after_call(self):
+        """getPhotonNumber must not modify the state (ftQ2P/ftP2Q are undone)."""
+        sim = self._make_sim()
+        sep = SeparableState([self.NQUBITS])
+        sep.setCoherent(0, 1.0 + 0.5j)
+        sim.initStateVector(sep)
+        state_before = sim.getState().copy()
+        sim.getPhotonNumber(0)
+        state_after = sim.getState()
+        np.testing.assert_allclose(state_before, state_after, atol=1e-6,
+                                   err_msg="State changed after getPhotonNumber")
+        del sim
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
