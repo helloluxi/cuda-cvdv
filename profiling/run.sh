@@ -58,7 +58,7 @@ sim.m(1)
 echo "[1/3] profiling  →  profiling/current/results.ncu-rep"
 ncu --metrics "$NCU_METRICS" --target-processes all -f \
     -o profiling/current/results \
-    python -c "$WORKLOAD" > profiling/current/ncu.log
+    python -c "$WORKLOAD"
 
 echo "[2/3] exporting  →  profiling/current/results.csv"
 ncu --import profiling/current/results.ncu-rep --csv > profiling/current/results.csv

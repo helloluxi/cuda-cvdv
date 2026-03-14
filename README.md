@@ -6,17 +6,16 @@ A high-performance CUDA library for simulating hybrid continuous-variable (CV) a
 
 ## Todo List
 
-- **Kernel optimizations** — profile first with Nsight (`docs/CONTRIBUTING.md`)
-  - [ ] Vectorized loads (`__ldg()` / `double2`) for phase-multiplication kernels
-  - [ ] Coalescing audit on strided-register kernels (`kernelPhaseX` and variants)
-  - [ ] Register-accumulator tiling for Wigner integrand kernel (`kernelBuildWignerIntegrand`)
-  - [ ] L2 cache set conflicts on strided accesses — register strides are powers of two (2^10 = 1024 elements), which can cause multiple streams to alias to the same L2 sets and thrash
+- **Kernel optimizations**
+  - [ ] `kernelBuildWignerIntegrand` / `kernelBuildWignerIntegrandSingleSlice` — shared-memory tiling for inner `otherIdx` reduction loop; scattered state reads → 3–5× kernel, ~1.5–2× end-to-end (cuFFT is also bottleneck)
+  - [ ] `kernelBuildHusimiWindowed` — bit-packed non-contiguous state reads; shared-memory staging → 2–4× kernel
+  - [ ] `kernelPauliRotation` / `kernelHadamard` — secondary pair access `state[idx1]` scatters when `regStride` in range 2–16 (mid-register target); worst case 1.3–2×
+  - [ ] `kernelMeasureGlobal` — global atomics on small registers cause contention; replace with two-pass reduction (already bypassed by `kernelMeasureShared` for most cases)
+  - [ ] `kernelComputeJointMeasure` — full multi-register index reconstruction in inner loop; scattered reads → 3–5× but low priority (not on critical path)
+  - [ ] L2 cache thrashing on strided accesses (general, covers parity/swap for small regStride)
 
 - **Packaging**
   - [ ] Add example notebooks for Product Formula and QSP
-
-- **Autograd support**
-  - [ ] Implement automatic differentiation for quantum circuit parameters for ML use cases
 
 - [x] Wigner and Husimi Q CUDA kernels
 - [x] Unit test suite (core + CUDA/Torch consistency)
