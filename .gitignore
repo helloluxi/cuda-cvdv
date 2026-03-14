@@ -41,8 +41,8 @@ Makefile.generated
 
 # AI Assistant Files
 .claude/
+.windsurf/
 .memory/
-.github/copilot-instructions.md
 .cache/
 
 # Logs and Temporary Files
