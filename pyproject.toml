@@ -10,8 +10,12 @@ readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
     "numpy",
-    "pytest",
 ]
+
+[project.optional-dependencies]
+torch = ["torch"]
+viz = ["matplotlib", "scienceplots"]
+dev = ["pytest", "pre-commit"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

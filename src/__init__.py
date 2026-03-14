@@ -11,11 +11,11 @@ import subprocess
 import os
 from numpy import pi, sqrt
 
-import torch
-import matplotlib.pyplot as plt
-import scienceplots
-plt.style.use(['science'])
-plt.rcParams.update({'font.size': 24, 'text.usetex': True})
+try:
+    import torch
+    _torch_available = True
+except ImportError:
+    _torch_available = False
 
 from .separable import SeparableState
 
@@ -33,17 +33,17 @@ def _get_lib() -> ctypes.CDLL:
     return _lib
 
 def _compile_and_load() -> ctypes.CDLL:
-    result = subprocess.run(
-        ['make', '-C', project_dir, 'build'],
-        capture_output=True, text=True
-    )
-    print(result.stdout)
-    if result.returncode != 0:
-        print(result.stderr)
-        raise RuntimeError('Build failed')
-    print("Library compiled successfully!")
-
     lib_path = os.path.join(build_dir, 'libcvdv.so')
+    no_rebuild = os.environ.get('CVDV_NO_REBUILD', '0') not in ('0', '')
+    if not no_rebuild:
+        result = subprocess.run(
+            ['make', '-C', project_dir, 'build'],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f'Build failed:\n{result.stderr}')
+    if not os.path.exists(lib_path):
+        raise RuntimeError(f'Library not found at {lib_path}. Run `make build` first.')
     lib = ctypes.CDLL(lib_path)
 
     lib.cvdvCreate.argtypes = [c_int, POINTER(c_int)]
@@ -119,9 +119,6 @@ def _compile_and_load() -> ctypes.CDLL:
     lib.cvdvSetStateFromDevicePtr.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
     lib.cvdvSetStateFromDevicePtr.restype = None
 
-    print(f"Library loaded successfully!")
-    print(f"Debug logs are written to: {os.path.join(project_dir, 'cuda.log')}")
-    print("NOTE: Log file is cleared each time CVDV() is instantiated")
     return lib
 
 
@@ -140,6 +137,8 @@ class CVDV:
                  backend: str = 'cuda') -> None:
         assert backend in ('cuda', 'torch-cuda', 'torch-cpu'), \
             f"backend must be 'cuda', 'torch-cuda', or 'torch-cpu', got {backend!r}"
+        if backend in ('torch-cuda', 'torch-cpu') and not _torch_available:
+            raise ImportError("PyTorch is required for torch backends: pip install torch")
         self.backend = backend
         self.num_registers = len(numQubits_list)
         self.register_dims = [1 << q for q in numQubits_list]
@@ -807,7 +806,14 @@ class CVDV:
 
     def plotWigner(self, regIdx: int, slice_indices: Optional[Sequence[int]] = None, wignerN: int = 201, wignerMax=5.0,
                     cmap: str = 'RdBu', figsize: Tuple[int, int] = (7, 6), show: bool = True) -> Tuple[Any, Any]:
-        """Plot Wigner function for a register."""
+        """Plot Wigner function for a register. Requires matplotlib and scienceplots."""
+        import matplotlib.pyplot as plt
+        try:
+            import scienceplots  # noqa: F401
+            plt.style.use(['science'])
+            plt.rcParams.update({'font.size': 24, 'text.usetex': True})
+        except ImportError:
+            pass
         if slice_indices is not None:
             wigner = self.getWignerSingleSlice(regIdx, slice_indices,
                                               wignerN=wignerN, wXMax=wignerMax, wPMax=wignerMax)

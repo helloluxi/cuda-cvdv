@@ -1,22 +1,25 @@
-# CUDA-CVDV - Development Requirements
-# Includes testing, benchmarking, and development tools
-
-# Base requirements
+# Development requirements
+# Equivalent to: pip install ".[torch,viz,dev]"
+# Preferred: use pyproject.toml extras instead of this file
 -r requirements.txt
+
+# PyTorch backend (torch-cuda / torch-cpu)
+torch
 
 # Testing
 pytest
 pytest-cov
+pre-commit
 
 # Code quality
 black
 ruff
 mypy
 
-# Jupyter notebooks
+# Notebooks
 jupyter
 ipykernel
 notebook
 
-# Benchmarking
+# Benchmarking comparison
 bosonic-qiskit

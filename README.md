@@ -6,79 +6,33 @@ A high-performance CUDA library for simulating hybrid continuous-variable (CV) a
 
 ## Todo List
 
-+ [ ] Add example notebooks for Product Formula and QSP
-+ [x] Implement more efficient CUDA kernels for Wigner function and Husimi Q function
-+ [x] Add visual examples to README (Wigner function plots, architecture diagram)
-+ [x] Create unit test suite with pytest for core operations
-+ [x] Add performance benchmarks (timing, memory usage, GPU vs CPU comparison) + comparison table vs existing bosonic simulators
+- [ ] **Kernel optimizations** — profile first with Nsight (`docs/CONTRIBUTING.md`)
+  - [ ] Vectorized loads (`__ldg()` / `double2`) for phase-multiplication kernels
+  - [ ] Coalescing audit on strided-register kernels (`kernelApplyOneModeQ` and variants)
+  - [ ] Register-accumulator tiling for Wigner integrand kernel (`kernelBuildWignerIntegrand`)
 
+- [ ] **Packaging**
+  - [ ] Add example notebooks for Product Formula and QSP
 
-## Benchmarks: CV-to-DV State Transfer
+- [x] Wigner and Husimi Q CUDA kernels
+- [x] Unit test suite (core + CUDA/Torch consistency)
+- [x] Performance benchmarks vs bosonic-qiskit
+- [x] `CVDV_NO_REBUILD` production flag
+- [x] CPU fallback via `torch-cpu` backend
+- [x] Optional-dep packaging (`pyproject.toml` extras)
 
-The position encoding approach naturally enables **universal transfer of CV modes into qubits**, where the position wave function coefficients $\psi(q_j)$ are directly encoded into the qubit register amplitudes. This capability is demonstrated through the **CV-to-DV state transfer protocol** [Phys. Rev. Lett. 128, 110503 (2022)](https://link.aps.org/doi/10.1103/PhysRevLett.128.110503).
+## Performance Summary
 
-**How it works**: The algorithm transfers a CV state's position-space representation into a discrete qubit register:
-$$|\psi\rangle_{\text{CV}} = \int \psi(q) |q\rangle dq \mapsto \sqrt{\lambda} \sum_{j=0}^{N-1} \psi(\lambda\tilde{j}) |j\rangle`_{\text{DV}}`,$$
+Tested on NVIDIA RTX 4070 Laptop GPU — **50× speedup** over bosonic-qiskit at CV dimension 128 (7 qubits), scaling efficiently to dimension 16384 (14 qubits).
 
-where $\lambda = \sqrt{2\pi/N}$ is the grid spacing and $\tilde{j} = j - (N-1)/2$ is the shifted index.
-
-### Performance Comparison (Tested on NVIDIA RTX 4070 Laptop GPU)
-
-The benchmark compares CUDA-CVDV (GPU, position encoding) against bosonic-qiskit (CPU, Fock basis) across varying CV dimensions:
-
-![Performance Comparison](benchmarks/state_transfer/results/comparison.png)
-
-*Performance scaling with CV dimension. CUDA-CVDV efficiently simulates up to dimension **16384** (14 qubits) on GPU with **50×** speedup over bosonic-qiskit at dimension **128** (7 qubits). Bosonic-qiskit's runtime scales up significantly beyond dimension 128 due to dense matrix operations.*
-
-### Run Benchmarks
-
-```bash
-./benchmarks/state_transfer/run.sh
-```
-
-Results saved to `benchmarks/state_transfer/results/` with timing data (`benchmark_results.json`) and visualization plots.
-
-### Visualization
-
-The benchmark demonstrates transferring a cat state from a CV mode to a 4-qubit register:
-
-**Initial State**
-
-![Initial State](benchmarks/state_transfer/results/cvdv_initial_state.png)
-
-**Final State**
-
-![Final State](benchmarks/state_transfer/results/cvdv_final_state.png)
-
-### Gate Operation Benchmarks
-
-Individual gate timing across different register configurations, tested on NVIDIA RTX 4070 Laptop GPU:
-
-![1 CV](benchmarks/ops_time/results/bench_1cv.png)
-
-![1 DV + 1 CV](benchmarks/ops_time/results/bench_1dv_1cv.png)
-
-![2 CV](benchmarks/ops_time/results/bench_2cv.png)
-
-![1 DV + 2 CV](benchmarks/ops_time/results/bench_1dv_2cv.png)
-
-- FT: Continuous Fourier Transform
-- C-{Displace, Squeeze, Rotate}: Conditional gates
-
-
-```bash
-./benchmarks/ops_time/run.sh
-```
-
-Results saved to `benchmarks/ops_time/results/` with per-gate timing plots and raw data (`bench_ops.json`).
-
+See [BENCHMARKS.md](BENCHMARKS.md) for full results, plots, and gate-level timing.
 
 
 ## Why Position Wave Function Encoding?
 
 ### The Problem with Fock Basis
 
-Traditional CV quantum simulators use **Fock basis** encoding $|\psi\rangle = \sum_n c_n |n\rangle$, which presents fundamental computational challenge that Gaussian operations (displacement, squeezing, beam splitters) have **dense, non-sparse matrix representations**
+Traditional CV simulators use **Fock basis** encoding $|\psi\rangle = \sum_n c_n |n\rangle$: Gaussian operations (displacement, squeezing, beam splitters) have **dense, non-sparse matrix representations**, making them expensive.
 
 ### Position Wave Function Advantages
 
@@ -90,10 +44,11 @@ where $\tilde{j} = j - (N-1)/2$ is the shifted index and $\lambda = \sqrt{2\pi/N
 
 This encoding offers:
 
-1. **Exact Position-Space Operations**: Operators of the form $e^{it\hat{q}}$ and $e^{it\hat{q}^2}$ are **diagonal** in position encoding—implemented as simple phase multiplications with zero error
-2. **Efficient Gaussian Gates**: Displacement, squeezing, rotation, and beam splitters decompose into elementary $e^{it\hat{q}_j\hat{q}_k}$ and $e^{it\hat{p}_j\hat{p}_k}$ operations, each requiring only $O(n^2)$ elementary gates
-3. **Controlled Error Source**: Errors arise **only** from QFT basis switching between position and momentum representations—not from Trotter or other approximations
+1. **Exact Position-Space Operations**: Operators $e^{it\hat{q}}$ and $e^{it\hat{q}^2}$ are **diagonal** — implemented as element-wise phase multiplications with zero error
+2. **Efficient Gaussian Gates**: Displacement, squeezing, rotation, and beam splitters decompose into elementary $e^{it\hat{q}_j\hat{q}_k}$ and $e^{it\hat{p}_j\hat{p}_k}$ operations
+3. **Controlled Error Source**: Errors arise **only** from QFT basis switching — not from Trotter or other approximations
 4. **CUDA-Friendly Parallelism**: Each grid point is processed independently, achieving near-optimal GPU utilization
+
 
 ## Architecture
 
@@ -115,155 +70,108 @@ graph TD
     end
 ```
 
-## Data Format
-
-### Register-Based Architecture
-
-CUDA-CVDV uses a unified **register abstraction** where all quantum systems are discrete registers with dimension $2^n$:
-
-```
-Register 0: 2^numQubits[0] levels
-Register 1: 2^numQubits[1] levels
-...
-```
-
-The full state vector is the tensor product of all registers:
-$$|\Psi\rangle = |\psi_0\rangle \otimes |\psi_1\rangle \otimes \cdots$$
-
-### Grid Discretization
-
-For CV operations, the position-space grid is automatically configured:
-- Grid dimension: $\text{N} = 2^n$
-- Grid step: $dx = \sqrt{2\pi / N}$
-- Position range: $x \in [-\sqrt{\pi N/2}, \sqrt{\pi N/2}]$
-
-## Installation
-
-### Requirements
-
-- CUDA Toolkit (tested with 13.1)
-- CMake >= 3.18
-- Python 3
-
-GPU architecture defaults to `89` (Ada Lovelace). Override with `-DCMAKE_CUDA_ARCHITECTURES=XX` if using a different GPU. The Python wrapper automatically rebuilds on import.
 
 ## Project Structure
 
 ```
 src/
-  cvdv.cu              # CUDA implementation (kernels + C API)
-interface.py           # Python ctypes wrapper (CVDV class)
+  cvdv.cu              # CUDA kernels + C API (~2500 lines, 30+ kernels)
+  __init__.py          # Python ctypes wrapper (CVDV class)
+  separable.py         # Separable state helpers
 tests/
-  test_core.py         # Automated test suite (pytest)
+  test_core.py         # Core operation tests (inner product checks)
+  test_consistency.py  # CUDA vs Torch consistency tests
 examples/
-  cvdv_transfer.ipynb  # CV-DV state transfer demo
+  state_transfer.ipynb # CV-DV state transfer demo
   qcst.ipynb           # Quantum coherent state transform demo
 benchmarks/
-  state_transfer/      # CV-to-DV state transfer benchmark
-    bench_cvdv.py      #   CUDA-CVDV benchmark
-    bench_bosonic.py   #   bosonic-qiskit comparison
-    run_benchmarks.py  #   Benchmark runner
-    run.sh             #   Entry point
-  ops_time/            # Individual gate operation benchmarks
-    bench_ops.py       #   Gate timing across configs
-    run.sh             #   Entry point
+  state_transfer/      # CV-to-DV state transfer vs bosonic-qiskit
+  ops_time/            # Per-gate timing across register configurations
+analysis/              # Error analysis scripts (gate errors, Trotter bounds)
 CMakeLists.txt         # Build configuration
 Makefile               # Build & test commands
-.pre-commit-config.yaml # Pre-commit hook configuration
 ```
 
-## Usage
 
-### Basic Example
+## Getting Started
+
+### 1. Clone and build
+
+```bash
+git clone https://github.com/your-org/cuda-cvdv.git
+cd cuda-cvdv
+make build          # compiles build/libcvdv.so against your GPU
+```
+
+**Requirements:** CUDA Toolkit ≥ 11, CMake ≥ 3.18, Python 3.8+.
+The build targets your GPU architecture automatically (`CMAKE_CUDA_ARCHITECTURES=native`). To cross-compile: `cmake -DCMAKE_CUDA_ARCHITECTURES=86 ..`.
+
+### 2. Install as a Python library
+
+```bash
+pip install .                  # core (numpy only)
+pip install ".[torch]"         # + torch-cuda / torch-cpu backends
+pip install ".[torch,viz]"     # + plotting (matplotlib, scienceplots)
+```
+
+### 3. Use in any Python project
 
 ```python
-from interface import CVDV
-
-# Create system with two registers: 1 qubit + 10-qubit CV mode
-sim = CVDV([1, 10])  # Register 0: 2 levels, Register 1: 1024 grid points
-
-# Initialize states
-sim.setZero(0)       # |0⟩ for qubit
-sim.setCoherent(1, 2+1j)  # Coherent state |α=2+i⟩
-
-# Build tensor product state (REQUIRED before operations)
-sim.initStateVector()
-
-# Apply operations
-sim.h(0, 0)           # Hadamard on qubit
-sim.cd(1, 0, 0, 1.5)         # Conditional displacement
-sim.d(1, -1+0.5j) # Unconditional displacement
-
-# Visualize
-wigner = sim.getWignerSingleSlice(1, [-1], wignerN=201, wXMax=5, wPMax=5)
+import sys
+sys.path.insert(0, "/path/to/cuda-cvdv")   # or add to PYTHONPATH
 ```
 
-### Initialization Pattern
+Or install into your project's virtualenv with `pip install /path/to/cuda-cvdv`.
 
-**Critical**: Follow this 3-step pattern:
+```python
+from src import CVDV
+from src.separable import SeparableState
 
-1. **Create** instance with register sizes
-2. **Initialize** each register (`setZero`, `setCoherent`, `setFock`, `setFocks`, `setCoeffs`, `setCat`, `setUniform`)
-3. **Build** tensor product with `initStateVector()`
+sep = SeparableState([1, 10])
+sep.setZero(0)
+sep.setCoherent(1, 2 + 1j)
 
-### Available Operations
+sim = CVDV([1, 10], backend='cuda')
+sim.initStateVector(sep)
+sim.cd(1, 0, 0, 1.5)
+wigner = sim.getWigner(1, bound=5.0)
+```
 
-| Category | Operations |
-|----------|------------|
-| **CV Gates** | `d(α)` ($e^{\alpha\hat{a}^\dagger - \alpha^*\hat{a}}$), `s(r)` ($e^{r(\hat{a}^2 - \hat{a}^{\dagger 2})/2}$), `r(θ)` ($e^{i\theta \hat{a}^\dagger \hat{a}}$), `sheer(t)` ($e^{it\hat{q}^2}$), `phaseCubic(t)` ($e^{it\hat{q}^3}$), `p()` (parity) |
-| **DV Gates** | `h()` ($H$), `x()`, `y()`, `z()` (Pauli), `rx(θ)` ($R_x(\theta)$), `ry(θ)` ($R_y(\theta)$), `rz(θ)` ($R_z(\theta)$) |
-| **Hybrid** | `cd(α)` ($e^{Z(\alpha\hat{a}^\dagger - \alpha^*\hat{a})}$), `cr(θ)` (conditional rotation), `cs(r)` (conditional squeezing), `cp()` (conditional parity) |
-| **Two-Mode** | `bs(θ)`, `cbs(θ)` (conditional beam splitter), `q1q2(coeff)` ($e^{i t \hat{q}_1 \hat{q}_2}$), `swap()` |
-| **Transforms** | `ftQ2P()`, `ftP2Q()` (Fourier transforms) |
-| **Measurement** | `m()`, `jointMeasure()`, `getState()`, `innerProduct()`, `getNorm()` |
-| **Visualization** | `getWignerSingleSlice()`, `getWignerFullMode()`, `getHusimiQFullMode()` |
+Set `CVDV_NO_REBUILD=1` to skip the automatic `make build` check on import (recommended once the `.so` is built):
+
+```bash
+CVDV_NO_REBUILD=1 python your_script.py
+```
+
+### No GPU? Use the CPU backend
+
+```bash
+pip install ".[torch]"
+```
+
+```python
+sim = CVDV([1, 10], backend='torch-cpu')   # no CUDA, no .so needed
+```
+
+See [docs/api.md](docs/api.md) for the full API reference and [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for the development workflow.
+
+
+## Docs
+
+| Document | Contents |
+|----------|----------|
+| [docs/api.md](docs/api.md) | Full API reference — all classes, methods, normalization conventions |
+| [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) | Dev setup, build flags, adding kernels, Nsight profiling |
+| [BENCHMARKS.md](BENCHMARKS.md) | Performance plots and gate-level timing |
 
 ## Example Notebooks
 
 | Notebook | Description |
 |----------|-------------|
-| [examples/cvdv_transfer.ipynb](examples/state_transfer.ipynb) | CV-to-DV state transfer protocol [Phys. Rev. Lett. 128, 110503 (2022)](https://link.aps.org/doi/10.1103/PhysRevLett.128.110503) |
-| [examples/qcst.ipynb](examples/qcst.ipynb) | Quantum coherent state transform [arXiv: 2412.12871](https://arxiv.org/abs/2412.12871) |
+| [examples/state_transfer.ipynb](examples/state_transfer.ipynb) | CV-DV state transfer [Phys. Rev. Lett. 128, 110503 (2022)](https://link.aps.org/doi/10.1103/PhysRevLett.128.110503) |
+| [examples/qcst.ipynb](examples/qcst.ipynb) | Quantum coherent state transform [arXiv:2412.12871](https://arxiv.org/abs/2412.12871) |
 
-## Testing
-
-This project uses **pytest** for automated testing. Tests require a CUDA-capable GPU.
-
-### Run Tests
-
-```bash
-make test
-```
-
-### Pre-commit Hooks
-
-Install pre-commit hooks to automatically run tests before each commit:
-
-```bash
-pip install pre-commit
-pre-commit install
-```
-
-Now tests run automatically on every `git commit`!
-
-### Test Suite
-
-The test suite (`tests/test_core.py`) validates correctness using **inner product checks** between computed and theoretical states:
-
-- State initialization (vacuum, coherent, Fock)
-- CV operations (displacement, rotation, squeezing)
-- DV operations (Hadamard, Pauli rotations)
-- Hybrid operations (conditional displacement)
-- Multi-register systems (beam splitter)
-- Fourier transform reversibility
-- State normalization preservation
-
-## Debugging
-
-Debug logs are written to `cuda.log` in the project root (cleared on each `CVDV()` instantiation).
 
 ## License
 
-MIT License
-
-Xi Lu
+MIT License — Xi Lu

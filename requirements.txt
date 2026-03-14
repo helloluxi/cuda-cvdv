@@ -1,6 +1,5 @@
-# CUDA-CVDV - Production Requirements
-# Minimal dependencies for running the simulator
-
+# Production requirements — CUDA backend + plotting
+# Equivalent to: pip install ".[viz]"
 numpy
 matplotlib
 scienceplots
