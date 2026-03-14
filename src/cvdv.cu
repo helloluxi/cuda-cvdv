@@ -284,7 +284,7 @@ __global__ void kernelNormalizeRegister(cuDoubleComplex* state, int cvDim, doubl
 #pragma region Gate Kernels
 
 // Apply phase factor to a specific register: exp(i*phaseCoeff*x)
-__global__ void kernelApplyOneModeQ(cuDoubleComplex* state, size_t totalSize,
+__global__ void kernelPhaseX(cuDoubleComplex* state, size_t totalSize,
                                              int regIdx,
                                              const int* qbts, const double* gridSteps,
                                              const int* flwQbts,
@@ -302,7 +302,7 @@ __global__ void kernelApplyOneModeQ(cuDoubleComplex* state, size_t totalSize,
 
 // Apply controlled phase to a specific register with control from another register
 // exp(i*phaseCoeff*Z*x) where Z acts on ctrlQubit in ctrlReg
-__global__ void kernelApplyConditionalOneModeQ(cuDoubleComplex* state, size_t totalSize,
+__global__ void kernelCPhaseX(cuDoubleComplex* state, size_t totalSize,
                                                          int targetReg, int ctrlReg, int ctrlQubit,
                                                          const int* qbts, const double* gridSteps,
                                                          const int* flwQbts,
@@ -331,7 +331,7 @@ __global__ void kernelApplyConditionalOneModeQ(cuDoubleComplex* state, size_t to
 
 // Apply controlled phase based on position squared: exp(i*t*Z*x^2)
 // where Z acts on ctrlQubit in ctrlReg
-__global__ void kernalApplyConditionalOneModeQ2(cuDoubleComplex* state, size_t totalSize,
+__global__ void kernelCPhaseX2(cuDoubleComplex* state, size_t totalSize,
                                                         int targetReg, int ctrlReg, int ctrlQubit,
                                                         const int* qbts, const double* gridSteps,
                                                         const int* flwQbts,
@@ -562,7 +562,7 @@ __global__ void kernelSwapRegisters(cuDoubleComplex* state, size_t totalSize,
 }
 
 // Apply phase based on position squared: exp(i*t*x^2)
-__global__ void kernelApplyOneModeQ2(cuDoubleComplex* state, size_t totalSize,
+__global__ void kernelPhaseX2(cuDoubleComplex* state, size_t totalSize,
                                                     int regIdx,
                                                     const int* qbts, const double* gridSteps,
                                                     const int* flwQbts,
@@ -579,7 +579,7 @@ __global__ void kernelApplyOneModeQ2(cuDoubleComplex* state, size_t totalSize,
 }
 
 // Apply phase factor to a specific register: exp(i*phaseCoeff*x)
-__global__ void kernelApplyOneModeQ3(cuDoubleComplex* state, size_t totalSize,
+__global__ void kernelPhaseX3(cuDoubleComplex* state, size_t totalSize,
                                              int regIdx,
                                              const int* qbts, const double* gridSteps,
                                              const int* flwQbts,
@@ -597,7 +597,7 @@ __global__ void kernelApplyOneModeQ3(cuDoubleComplex* state, size_t totalSize,
 
 // Apply two-mode position coupling: exp(i*coeff*q1*q2)
 // where q1 and q2 are position operators for two registers
-__global__ void kernelApplyTwoModeQQ(cuDoubleComplex* state, size_t totalSize,
+__global__ void kernelPhaseXX(cuDoubleComplex* state, size_t totalSize,
                                           int reg1Idx, int reg2Idx,
                                           const int* qbts, const double* gridSteps,
                                           const int* flwQbts,
@@ -621,7 +621,7 @@ __global__ void kernelApplyTwoModeQQ(cuDoubleComplex* state, size_t totalSize,
 
 // Apply controlled two-mode position coupling: exp(i*coeff*Z*q1*q2)
 // where Z acts on ctrlQubit in ctrlReg
-__global__ void kernelApplyConditionalTwoModeQQ(cuDoubleComplex* state, size_t totalSize,
+__global__ void kernelCPhaseXX(cuDoubleComplex* state, size_t totalSize,
                                           int reg1Idx, int reg2Idx,
                                           int ctrlReg, int ctrlQubit,
                                           const int* qbts, const double* gridSteps,
@@ -659,7 +659,7 @@ __global__ void kernelApplyConditionalTwoModeQQ(cuDoubleComplex* state, size_t t
 #pragma region FFT Helper Kernels
 
 // Apply scalar multiplication to register elements (not neccessarily normalized scalar)
-__global__ void kernelApplyScalarRegister(cuDoubleComplex* data, size_t totalSize,
+__global__ void kernelGlobalScalar(cuDoubleComplex* data, size_t totalSize,
                                               int regIdx,
                                               const int* qbts, double scalar) {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -670,7 +670,7 @@ __global__ void kernelApplyScalarRegister(cuDoubleComplex* data, size_t totalSiz
 }
 
 // Apply global complex phase exp(i*phase) to all elements of the state
-__global__ void kernelApplyGlobalPhase(cuDoubleComplex* data, size_t totalSize, double phase) {
+__global__ void kernelGlobalPhase(cuDoubleComplex* data, size_t totalSize, double phase) {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= totalSize) return;
     data[idx] = cmulPhase(data[idx], phase);
@@ -1235,7 +1235,7 @@ void cvdvFtQ2P(CVDVContext* ctx, int regIdx) {
     // In position representation: exp(i*π(N-1)/(N*dx) * x)
     double phaseCoeff = PI * (regDim - 1.0) / (regDim * dx);
     logDebug(ctx, "Applying pre-phase correction: phaseCoeff=%.6f", phaseCoeff);
-    kernelApplyOneModeQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, totalSize,
+    kernelPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, totalSize,
                                           regIdx,
                                           ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, phaseCoeff);
     checkCudaErrors(ctx, cudaDeviceSynchronize());
@@ -1312,7 +1312,7 @@ void cvdvFtQ2P(CVDVContext* ctx, int regIdx) {
     // Step 3: Post-phase correction: exp(i*π(N-1)/N * k)
     // In momentum representation: exp(i*π(N-1)/(N*dx) * p)
     logDebug(ctx, "Applying post-phase correction: phaseCoeff=%.6f", phaseCoeff);
-    kernelApplyOneModeQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, totalSize,
+    kernelPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, totalSize,
                                           regIdx,
                                           ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, phaseCoeff);
     checkCudaErrors(ctx, cudaDeviceSynchronize());
@@ -1320,7 +1320,7 @@ void cvdvFtQ2P(CVDVContext* ctx, int regIdx) {
     // Step 4: Normalization (1/√N for unitary transform)
     double norm = 1.0 / sqrt((double)regDim);
     logDebug(ctx, "Applying normalization: norm=%.6f", norm);
-    kernelApplyScalarRegister<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, totalSize,
+    kernelGlobalScalar<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, totalSize,
                                                    regIdx,
                                                    ctx->gQbts, norm);
     checkCudaErrors(ctx, cudaDeviceSynchronize());
@@ -1328,7 +1328,7 @@ void cvdvFtQ2P(CVDVContext* ctx, int regIdx) {
     // Step 5: Global phase correction: exp(i*π*(N-1)²/(2N))
     // Matches dvsim-code convention: dvsim_QFT = CVDV_QFT * exp(i*π*(N-1)²/(2N))
     double globalPhase = PI * (double)(regDim - 1) * (double)(regDim - 1) / (2.0 * (double)regDim);
-    kernelApplyGlobalPhase<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, totalSize, globalPhase);
+    kernelGlobalPhase<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, totalSize, globalPhase);
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 
     logDebug(ctx, "ftQ2P completed for register %d", regIdx);
@@ -1355,7 +1355,7 @@ void cvdvFtP2Q(CVDVContext* ctx, int regIdx) {
     // Step 1: Pre-phase correction (negative phase): exp(-i*π(N-1)/N * j)
     // In momentum representation: exp(-i*π(N-1)/(N*dx) * p)
     double phaseCoeff = -PI * (regDim - 1.0) / (regDim * dx);
-    kernelApplyOneModeQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+    kernelPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
                                           regIdx,
                                           ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, phaseCoeff);
     checkCudaErrors(ctx, cudaDeviceSynchronize());
@@ -1418,21 +1418,21 @@ void cvdvFtP2Q(CVDVContext* ctx, int regIdx) {
 
     // Step 3: Post-phase correction (negative phase): exp(-i*π(N-1)/N * k)
     // In position representation: exp(-i*π(N-1)/(N*dx) * x)
-    kernelApplyOneModeQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+    kernelPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
                                           regIdx,
                                           ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, phaseCoeff);
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 
     // Step 4: Normalization (1/√N for unitary transform)
     double norm = 1.0 / sqrt((double)regDim);
-    kernelApplyScalarRegister<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+    kernelGlobalScalar<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
                                                    regIdx,
                                                    ctx->gQbts, norm);
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 
     // Step 5: Global phase correction (conjugate of ftQ2P): exp(-i*π*(N-1)²/(2N))
     double globalPhase = -PI * (double)(regDim - 1) * (double)(regDim - 1) / (2.0 * (double)regDim);
-    kernelApplyGlobalPhase<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), globalPhase);
+    kernelGlobalPhase<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), globalPhase);
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 }
 
@@ -1455,7 +1455,7 @@ void cvdvDisplacement(CVDVContext* ctx, int regIdx, double betaRe, double betaIm
 
     // Step 1: Apply D(i*Im(α)) = exp(i*sqrt(2)*Im(α)*q) in position space
     if (fabs(betaIm) > 1e-12) {
-        kernelApplyOneModeQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+        kernelPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
                                                        regIdx,
                                                        ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
                                                        SQRT2 * betaIm);
@@ -1469,7 +1469,7 @@ void cvdvDisplacement(CVDVContext* ctx, int regIdx, double betaRe, double betaIm
         cvdvFtQ2P(ctx, regIdx);
 
         // Apply phase in momentum space
-        kernelApplyOneModeQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+        kernelPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
                                                        regIdx,
                                                        ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
                                                        -SQRT2 * betaRe);
@@ -1503,7 +1503,7 @@ void cvdvConditionalDisplacement(CVDVContext* ctx, int targetReg, int ctrlReg, i
 
     // Step 1: Apply CD(i*Im(α)) = exp(i√2 Im(α) Z q) in position space
     if (fabs(alphaIm) > 1e-12) {
-        kernelApplyConditionalOneModeQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+        kernelCPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
                                                 targetReg, ctrlReg, ctrlQubit,
                                                 ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
                                                 SQRT2 * alphaIm);
@@ -1517,7 +1517,7 @@ void cvdvConditionalDisplacement(CVDVContext* ctx, int targetReg, int ctrlReg, i
         cvdvFtQ2P(ctx, targetReg);
 
         // Apply exp(-i√2 Re(α) Z p) in momentum space
-        kernelApplyConditionalOneModeQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+        kernelCPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
                                                 targetReg, ctrlReg, ctrlQubit,
                                                 ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
                                                 -SQRT2 * alphaRe);
@@ -1626,7 +1626,7 @@ void cvdvPhaseSquare(CVDVContext* ctx, int regIdx, double t) {
 
     int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
 
-    kernelApplyOneModeQ2<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), regIdx, ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, t);
+    kernelPhaseX2<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), regIdx, ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, t);
     checkCudaErrors(ctx, cudaGetLastError());
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 }
@@ -1640,7 +1640,7 @@ void cvdvPhaseCubic(CVDVContext* ctx, int regIdx, double t) {
 
     int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
 
-    kernelApplyOneModeQ3<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), regIdx, ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, t);
+    kernelPhaseX3<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), regIdx, ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, t);
     checkCudaErrors(ctx, cudaGetLastError());
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 }
@@ -1696,7 +1696,7 @@ void cvdvRotation(CVDVContext* ctx, int regIdx, double theta) {
 static void cvdvControlledPhaseSquare(CVDVContext* ctx, int targetReg, int ctrlReg, int ctrlQubit, double t) {
     int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
 
-    kernalApplyConditionalOneModeQ2<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+    kernelCPhaseX2<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
                                                 targetReg, ctrlReg, ctrlQubit,
                                                 ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, t);
     checkCudaErrors(ctx, cudaGetLastError());
@@ -1833,7 +1833,7 @@ static void cvdvBeamSplitterSmall(CVDVContext* ctx, int reg1, int reg2, double t
 
     int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
 
-    kernelApplyTwoModeQQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+    kernelPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
                                         reg1, reg2,
                                         ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
                                         coeff_q);
@@ -1842,7 +1842,7 @@ static void cvdvBeamSplitterSmall(CVDVContext* ctx, int reg1, int reg2, double t
     cvdvFtQ2P(ctx, reg1);
     cvdvFtQ2P(ctx, reg2);
 
-    kernelApplyTwoModeQQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+    kernelPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
                                         reg1, reg2,
                                         ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
                                         coeff_p);
@@ -1851,7 +1851,7 @@ static void cvdvBeamSplitterSmall(CVDVContext* ctx, int reg1, int reg2, double t
     cvdvFtP2Q(ctx, reg1);
     cvdvFtP2Q(ctx, reg2);
 
-    kernelApplyTwoModeQQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+    kernelPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
                                         reg1, reg2,
                                         ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
                                         coeff_q);
@@ -1913,7 +1913,7 @@ static void cvdvConditionalBeamSplitterSmall(CVDVContext* ctx, int reg1, int reg
 
     int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
 
-    kernelApplyConditionalTwoModeQQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+    kernelCPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
                                         reg1, reg2,
                                         ctrlReg, ctrlQubit,
                                         ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
@@ -1923,7 +1923,7 @@ static void cvdvConditionalBeamSplitterSmall(CVDVContext* ctx, int reg1, int reg
     cvdvFtQ2P(ctx, reg1);
     cvdvFtQ2P(ctx, reg2);
 
-    kernelApplyConditionalTwoModeQQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+    kernelCPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
                                         reg1, reg2,
                                         ctrlReg, ctrlQubit,
                                         ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
@@ -1933,7 +1933,7 @@ static void cvdvConditionalBeamSplitterSmall(CVDVContext* ctx, int reg1, int reg
     cvdvFtP2Q(ctx, reg1);
     cvdvFtP2Q(ctx, reg2);
 
-    kernelApplyConditionalTwoModeQQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+    kernelCPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
                                         reg1, reg2,
                                         ctrlReg, ctrlQubit,
                                         ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
@@ -1999,7 +1999,7 @@ void cvdvQ1Q2Gate(CVDVContext* ctx, int reg1, int reg2, double coeff) {
     
     int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
     
-    kernelApplyTwoModeQQ<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
+    kernelPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
                                         reg1, reg2,
                                         ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
                                         coeff);
