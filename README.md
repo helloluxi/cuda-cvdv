@@ -10,13 +10,13 @@ A high-performance CUDA library for simulating hybrid continuous-variable (CV) a
   - [ ] Vectorized loads (`__ldg()` / `double2`) for phase-multiplication kernels
   - [ ] Coalescing audit on strided-register kernels (`kernelApplyOneModeQ` and variants)
   - [ ] Register-accumulator tiling for Wigner integrand kernel (`kernelBuildWignerIntegrand`)
-  - [ ] L2 cache set conflicts on strided accesses — register strides are powers of two (2^10 = 1024 elements), which can cause multiple streams to alias to the same L2 sets and thrash; fix via array padding or access reordering
+  - [ ] L2 cache set conflicts on strided accesses — register strides are powers of two (2^10 = 1024 elements), which can cause multiple streams to alias to the same L2 sets and thrash
 
 - **Packaging**
   - [ ] Add example notebooks for Product Formula and QSP
 
 - **Autograd support**
-  - [ ] Implement automatic differentiation for quantum circuit parameters
+  - [ ] Implement automatic differentiation for quantum circuit parameters for ML use cases
 
 - [x] Wigner and Husimi Q CUDA kernels
 - [x] Unit test suite (core + CUDA/Torch consistency)
@@ -27,7 +27,7 @@ A high-performance CUDA library for simulating hybrid continuous-variable (CV) a
 
 ## Performance Summary
 
-Tested on NVIDIA RTX 4070 Laptop GPU — **50× speedup** over bosonic-qiskit at CV dimension 128 (7 qubits), scaling efficiently to dimension 16384 (14 qubits).
+Tested on NVIDIA RTX 4070 Laptop GPU — 50× faster than bosonic-qiskit even when simulating a 128× larger system ($2^{14}$ vs $2^7$ CV dimension).
 
 See [BENCHMARKS.md](BENCHMARKS.md) for full results, plots, and gate-level timing.
 

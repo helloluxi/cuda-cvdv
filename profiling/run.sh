@@ -8,7 +8,7 @@ set -e
 REPO="$(dirname "$0")/.."
 pushd "$REPO" > /dev/null
 
-NCU_METRICS="gpu__time_duration.sum,dram__bytes_read.sum,sm__warps_active.avg.pct_of_peak_suspended_active,l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum,l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum,l2tex__t_sector_hit_rate.pct"
+NCU_METRICS="gpu__time_duration.sum,dram__bytes_read.sum"
 
 WORKLOAD="
 import os
@@ -27,10 +27,8 @@ sim.d(1, 1+0.5j)
 sim.r(1, 0.3)
 sim.s(1, 0.5)
 sim.sheer(1, 0.1)
-sim.phaseCubic(1, 0.05)
 sim.p(1)
 sim.ftQ2P(1)
-sim.ftP2Q(1)
 
 # --- two-mode CV ---
 sim.q1q2(1, 2, 0.3)
@@ -39,7 +37,7 @@ sim.swap(1, 2)
 
 # --- qubit (DV) ---
 sim.h(0, 0)
-sim.rx(0, 0, 0.5)   # cvdvPauliRotation — same kernel for ry/rz/x/y/z
+sim.rx(0, 0, 0.5)
 
 # --- hybrid ---
 sim.cd(1, 0, 0, 1+0.5j)
@@ -53,20 +51,19 @@ sim.getNorm()
 sim.getWignerFullMode(1, wignerN=51)
 sim.getHusimiQFullMode(1, qN=51)
 
-# --- measurement (destructive, last) ---
+# --- measurement ---
 sim.m(1)
 "
 
-echo "--- ncu profile → profiling/current/results.ncu-rep ---"
+echo "[1/3] profiling  →  profiling/current/results.ncu-rep"
 ncu --metrics "$NCU_METRICS" --target-processes all -f \
     -o profiling/current/results \
-    python -c "$WORKLOAD"
+    python -c "$WORKLOAD" > profiling/current/ncu.log
 
-echo "--- export CSV ---"
-ncu --import profiling/current/results.ncu-rep --csv \
-    > profiling/current/results.csv
+echo "[2/3] exporting  →  profiling/current/results.csv"
+ncu --import profiling/current/results.ncu-rep --csv > profiling/current/results.csv
 
-echo "--- compare ---"
+echo "[3/3] comparing"
 python profiling/compare.py | tee profiling/current/compare.log
 
 popd > /dev/null
