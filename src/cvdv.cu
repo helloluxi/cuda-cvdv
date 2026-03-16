@@ -114,14 +114,23 @@ __device__ __host__ inline cuDoubleComplex cuCmul(cuDoubleComplex a, double b) {
     return make_cuDoubleComplex(cuCreal(a) * b, cuCimag(a) * b);
 }
 
-#pragma endregion
-
-#pragma region Register-Based Indexing Helpers
-
 // Extract local index within a register from global index
 // Returns the index for register regIdx given the global flat index
 __device__ __host__ inline size_t getLocalIndex(size_t globalIdx, int flwQbtCount, int regQbtCount) {
     return (globalIdx >> flwQbtCount) & ((1 << regQbtCount) - 1);
+}
+
+// Expand a compressed pair-index into the two global state indices that differ
+// only at the target qubit bit. Standard state-vector simulator pair-indexing.
+//   pairIdx ∈ [0, totalSize/2)
+//   globalBit = bit position of the target qubit in the flat global index
+//             = flwQbts[r] + qbts[r] - 1 - qubitIdx  (qubit 0 is MSB of register)
+__device__ __forceinline__ void qubitPairIndices(
+        size_t pairIdx, size_t globalBit,
+        size_t& idx0, size_t& idx1) {
+    size_t mask = (size_t)1 << globalBit;
+    idx0 = ((pairIdx & ~(mask - 1)) << 1) | (pairIdx & (mask - 1));
+    idx1 = idx0 | mask;
 }
 
 #pragma endregion
@@ -321,12 +330,7 @@ __global__ void kernelCPhaseX(cuDoubleComplex* state, size_t totalSize,
     double x = gridX(targetLocalIdx, targetDim, dx);
     double phase = phaseCoeff * x;
 
-    // Z operator: |0⟩ gets +phase, |1⟩ gets -phase
-    if (ctrlLocalIdx & ctrlMask) {
-        state[idx] = cmulPhase(state[idx], -phase);
-    } else {
-        state[idx] = cmulPhase(state[idx], phase);
-    }
+    state[idx] = cmulPhase(state[idx], (ctrlLocalIdx & ctrlMask) ? -phase : phase);
 }
 
 // Apply controlled phase based on position squared: exp(i*t*Z*x^2)
@@ -350,141 +354,51 @@ __global__ void kernelCPhaseX2(cuDoubleComplex* state, size_t totalSize,
     double x = gridX(targetLocalIdx, targetDim, dx);
     double phase = t * x * x;
 
-    // Z operator: |0⟩ gets +phase, |1⟩ gets -phase
-    if (ctrlLocalIdx & ctrlMask) {
-        state[idx] = cmulPhase(state[idx], -phase);
-    } else {
-        state[idx] = cmulPhase(state[idx], phase);
-    }
+    state[idx] = cmulPhase(state[idx], (ctrlLocalIdx & ctrlMask) ? -phase : phase);
 }
 
-// Apply Pauli rotation to a specific qubit within a register
+// Pauli rotation Rn(θ) on a single qubit: exp(-i·θ/2·σn), axis 0=X 1=Y 2=Z
 __global__ void kernelPauliRotation(cuDoubleComplex* state, size_t totalSize,
-                                                int regIdx, int qubitIdx,
-                                                const int* qbts, const int* flwQbts,
-                                                int axis, double theta) {
+                                    int regIdx, int qubitIdx,
+                                    const int* qbts, const int* flwQbts,
+                                    int axis, double theta) {
     size_t pairIdx = blockIdx.x * blockDim.x + threadIdx.x;
     if (pairIdx >= totalSize / 2) return;
 
-    size_t regStride = 1 << flwQbts[regIdx];
-
-    // Target qubit mask within the register's local index space
-    // Qubit 0 is the most significant bit
-    size_t targetBit = 1 << (qbts[regIdx] - 1 - qubitIdx);
-
-    // Decompose pairIdx into compressed space
-    size_t regBlockSize = regStride << qbts[regIdx];
-    size_t regBlockSizeCompressed = regStride << (qbts[regIdx] - 1);
-    
-    size_t outerIdx = pairIdx / regBlockSizeCompressed;
-    size_t innerCompressed = pairIdx % regBlockSizeCompressed;
-    
-    size_t localCompressed = innerCompressed / regStride;
-    size_t strideOffset = innerCompressed % regStride;
-    
-    // Expand localCompressed by inserting the target bit
-    size_t lowerBits = localCompressed & (targetBit - 1);
-    size_t upperBits = localCompressed & ~(targetBit - 1);
-    
-    size_t local0 = (upperBits << 1) | lowerBits;
-    size_t local1 = local0 | targetBit;
-    
-    size_t idx0 = (outerIdx * regBlockSize) + (local0 << flwQbts[regIdx]) + strideOffset;
-    size_t idx1 = (outerIdx * regBlockSize) + (local1 << flwQbts[regIdx]) + strideOffset;
+    size_t idx0, idx1;
+    qubitPairIndices(pairIdx, flwQbts[regIdx] + qbts[regIdx] - 1 - qubitIdx, idx0, idx1);
 
     cuDoubleComplex a = state[idx0];
     cuDoubleComplex b = state[idx1];
+    double c = cos(theta / 2.0), s = sin(theta / 2.0);
 
-    double c = cos(theta / 2.0);
-    double s = sin(theta / 2.0);
-
-    cuDoubleComplex newA, newB;
-
-    if (axis == 0) {  // X
-        newA = make_cuDoubleComplex(c * cuCreal(a) + s * cuCimag(b),
-                                      c * cuCimag(a) - s * cuCreal(b));
-        newB = make_cuDoubleComplex(s * cuCimag(a) + c * cuCreal(b),
-                                      -s * cuCreal(a) + c * cuCimag(b));
-    } else if (axis == 1) {  // Y
-        newA = make_cuDoubleComplex(c * cuCreal(a) - s * cuCreal(b),
-                                      c * cuCimag(a) - s * cuCimag(b));
-        newB = make_cuDoubleComplex(s * cuCreal(a) + c * cuCreal(b),
-                                      s * cuCimag(a) + c * cuCimag(b));
-    } else {  // Z
-        cuDoubleComplex phase0 = make_cuDoubleComplex(c, -s);
-        cuDoubleComplex phase1 = make_cuDoubleComplex(c, s);
-        newA = cuCmul(phase0, a);
-        newB = cuCmul(phase1, b);
+    // Rx: [[c, -is], [-is, c]]   Ry: [[c, -s], [s, c]]   Rz: [[e^{-is}, 0], [0, e^{is}]]
+    if (axis == 0) {  // X: newA = c·a - i·s·b,  newB = -i·s·a + c·b
+        state[idx0] = make_cuDoubleComplex(c*cuCreal(a) + s*cuCimag(b),  c*cuCimag(a) - s*cuCreal(b));
+        state[idx1] = make_cuDoubleComplex(s*cuCimag(a) + c*cuCreal(b), -s*cuCreal(a) + c*cuCimag(b));
+    } else if (axis == 1) {  // Y: newA = c·a - s·b,  newB = s·a + c·b
+        state[idx0] = make_cuDoubleComplex(c*cuCreal(a) - s*cuCreal(b), c*cuCimag(a) - s*cuCimag(b));
+        state[idx1] = make_cuDoubleComplex(s*cuCreal(a) + c*cuCreal(b), s*cuCimag(a) + c*cuCimag(b));
+    } else {  // Z: newA = e^{-is}·a,  newB = e^{is}·b
+        state[idx0] = cuCmul(make_cuDoubleComplex(c, -s), a);
+        state[idx1] = cuCmul(make_cuDoubleComplex(c,  s), b);
     }
-
-    state[idx0] = newA;
-    state[idx1] = newB;
 }
 
-// Hadamard gate on a specific qubit within a register
+// Hadamard gate on a single qubit: H = 1/√2 · [[1,1],[1,-1]]
 __global__ void kernelHadamard(cuDoubleComplex* state, size_t totalSize,
-                                          int regIdx, int qubitIdx,
-                                          const int* qbts, const int* flwQbts) {
+                               int regIdx, int qubitIdx,
+                               const int* qbts, const int* flwQbts) {
     size_t pairIdx = blockIdx.x * blockDim.x + threadIdx.x;
     if (pairIdx >= totalSize / 2) return;
 
-    size_t regStride = 1 << flwQbts[regIdx];
+    size_t idx0, idx1;
+    qubitPairIndices(pairIdx, flwQbts[regIdx] + qbts[regIdx] - 1 - qubitIdx, idx0, idx1);
 
-    // Target qubit mask within the register's local index space
-    // Qubit 0 is the most significant bit
-    size_t targetBit = 1 << (qbts[regIdx] - 1 - qubitIdx);
-
-    // Strategy: pairIdx indexes the "compressed" space where target qubit is factored out
-    // We need to expand it to get both global indices (with qubit=0 and qubit=1)
-    
-    // First, decompose pairIdx into:
-    // - indices for registers other than regIdx
-    // - index within regIdx with target qubit bit removed (compressed local index)
-    
-    size_t regBlockSize = regStride << qbts[regIdx];  // Total elements in one "block" of this register
-    size_t regBlockSizeCompressed = regStride << (qbts[regIdx] - 1);
-    
-    // Index in the space outside this register's block
-    size_t outerIdx = pairIdx / regBlockSizeCompressed;
-    // Index within the compressed register block
-    size_t innerCompressed = pairIdx % regBlockSizeCompressed;
-    
-    // Decompose innerCompressed into local register index (compressed) and stride offset
-    size_t localCompressed = innerCompressed / regStride;
-    size_t strideOffset = innerCompressed % regStride;
-    
-    // Expand localCompressed by inserting the target bit
-    // Split into bits below and above the target bit position
-    size_t lowerBits = localCompressed & (targetBit - 1);  // Bits below target
-    size_t upperBits = localCompressed & ~(targetBit - 1);  // Bits above target (need to shift)
-    
-    // Construct local indices with target qubit = 0 and = 1
-    size_t local0 = (upperBits << 1) | lowerBits;  // Insert 0 at target position
-    size_t local1 = local0 | targetBit;              // Set target bit to 1
-    
-    // Construct global indices
-    size_t idx0 = outerIdx * regBlockSize + local0 * regStride + strideOffset;
-    size_t idx1 = outerIdx * regBlockSize + local1 * regStride + strideOffset;
-
-    // Read amplitudes
-    cuDoubleComplex a = state[idx0];
-    cuDoubleComplex b = state[idx1];
-
-    // Apply Hadamard: H = 1/√2 * [[1, 1], [1, -1]]
-    // |0⟩ -> 1/√2(|0⟩ + |1⟩), |1⟩ -> 1/√2(|0⟩ - |1⟩)
-    double invSqrt2 = 1.0 / SQRT2;
-
-    cuDoubleComplex newA = make_cuDoubleComplex(
-        invSqrt2 * (cuCreal(a) + cuCreal(b)),
-        invSqrt2 * (cuCimag(a) + cuCimag(b))
-    );
-    cuDoubleComplex newB = make_cuDoubleComplex(
-        invSqrt2 * (cuCreal(a) - cuCreal(b)),
-        invSqrt2 * (cuCimag(a) - cuCimag(b))
-    );
-
-    state[idx0] = newA;
-    state[idx1] = newB;
+    cuDoubleComplex a = state[idx0], b = state[idx1];
+    constexpr double INV_SQRT2 = 1.0 / SQRT2;
+    state[idx0] = make_cuDoubleComplex(INV_SQRT2 * (cuCreal(a) + cuCreal(b)), INV_SQRT2 * (cuCimag(a) + cuCimag(b)));
+    state[idx1] = make_cuDoubleComplex(INV_SQRT2 * (cuCreal(a) - cuCreal(b)), INV_SQRT2 * (cuCimag(a) - cuCimag(b)));
 }
 
 // Parity gate: flip all qubits of a register (X on each qubit = reverse index)
@@ -647,11 +561,7 @@ __global__ void kernelCPhaseXX(cuDoubleComplex* state, size_t totalSize,
     double phase = coeff * q1 * q2;
 
     // Z operator: |0⟩ gets +phase, |1⟩ gets -phase
-    if (ctrlLocalIdx & ctrlMask) {
-        state[idx] = cmulPhase(state[idx], -phase);
-    } else {
-        state[idx] = cmulPhase(state[idx], phase);
-    }
+    state[idx] = cmulPhase(state[idx], (ctrlLocalIdx & ctrlMask) ? -phase : phase);
 }
 
 #pragma endregion
