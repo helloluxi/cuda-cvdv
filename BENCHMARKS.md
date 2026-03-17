@@ -12,7 +12,7 @@ $$|\psi\rangle_{\text{CV}} = \int \psi(q) |q\rangle dq \mapsto \sqrt{\lambda} \s
 
 ![Performance Comparison](benchmarks/state_transfer/results/comparison.png)
 
-CUDA-CVDV scales efficiently to dimension **16384** (14 qubits) with **50× speedup** over bosonic-qiskit at dimension 128 (7 qubits). Bosonic-qiskit's runtime grows significantly beyond dimension 128 due to dense matrix operations in Fock basis.
+CUDA-CVDV scales efficiently to dimension **16384** (14 qubits) in **12.4 ms**, while bosonic-qiskit already takes **1079 ms** at the much smaller dimension 128 (7 qubits) — an **87× speedup** at 128× larger scale. Bosonic-qiskit's runtime grows significantly beyond dimension 128 due to dense matrix operations in Fock basis.
 
 ### Cat State Transfer Visualization
 

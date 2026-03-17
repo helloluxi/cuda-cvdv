@@ -73,6 +73,15 @@ typedef struct {
     double* gGridSteps;        // Managed memory: grid step (dx) for each register
     int gNumReg;               // Total number of registers
     int gTotalQbt;             // Total number of qubits across all registers
+
+    // Cached cuFFT plans for FT operations — one plan per register (host-only, regular malloc).
+    // Each plan covers both FORWARD and INVERSE (direction is a runtime arg to cufftExecZ2Z).
+    cufftHandle* ftPlans;
+
+    // Cached plans for Wigner/Husimi — recreated only when batch size changes.
+    cufftHandle wsPlan;    int wsPlanCvDim;    int wsPlanBatch;    bool wsPlanValid;
+    cufftHandle wfPlan;    int wfPlanCvDim;    int wfPlanBatch;    bool wfPlanValid;
+    cufftHandle hPlan;     int hPlanCvDim;     int hPlanBatch;     bool hPlanValid;
 } CVDVContext;
 
 // Lightweight struct for passing separable-state device pointers into CUDA functions.
@@ -982,6 +991,10 @@ CVDVContext* cvdvCreate(int numReg, int* numQubits) {
     ctx->gGridSteps = nullptr;
     ctx->gNumReg = 0;
     ctx->gTotalQbt = 0;
+    ctx->ftPlans = nullptr;
+    ctx->wsPlanValid = false;
+    ctx->wfPlanValid = false;
+    ctx->hPlanValid  = false;
 
     // If no registers specified, return empty context
     if (numReg == 0 || numQubits == nullptr) {
@@ -1021,19 +1034,57 @@ CVDVContext* cvdvCreate(int numReg, int* numQubits) {
         ctx->gFlwQbts[i] = followQubits;
     }
     
+    // Build per-register cuFFT plans (parameters are fully determined now).
+    ctx->ftPlans = (cufftHandle*)malloc(numReg * sizeof(cufftHandle));
+    size_t totalSize = (size_t)1 << ctx->gTotalQbt;
+    for (int i = 0; i < numReg; i++) {
+        int n = 1 << ctx->gQbts[i];
+        size_t regStride = (size_t)1 << ctx->gFlwQbts[i];
+        cufftResult planRes;
+        if (regStride == 1) {
+            int batch = (int)(totalSize / n);
+            planRes = cufftPlan1d(&ctx->ftPlans[i], n, CUFFT_Z2Z, batch);
+        } else {
+            int iStride = (int)regStride, oStride = (int)regStride;
+            int iDist = 1, oDist = 1;
+            int batch = (int)regStride;
+            int nembed[1] = {n * (int)regStride};
+            planRes = cufftPlanMany(&ctx->ftPlans[i], 1, &n,
+                                    nembed, iStride, iDist,
+                                    nembed, oStride, oDist,
+                                    CUFFT_Z2Z, batch);
+        }
+        if (planRes != CUFFT_SUCCESS) {
+            fprintf(stderr, "cvdvCreate: cuFFT plan creation failed for register %d: %d\n", i, planRes);
+            exit(EXIT_FAILURE);
+        }
+    }
+
     logInfo(ctx, "Registers allocated successfully: %d total qubits", ctx->gTotalQbt);
     return ctx;
 }
 
 void cvdvDestroy(CVDVContext* ctx) {
     if (!ctx) return;
-    
+
     // Free device memory
     if (ctx->dState != nullptr) {
         checkCudaErrors(ctx, cudaFree(ctx->dState));
         ctx->dState = nullptr;
     }
-    
+
+    // Destroy cached cuFFT plans
+    if (ctx->ftPlans != nullptr) {
+        for (int i = 0; i < ctx->gNumReg; i++) {
+            cufftDestroy(ctx->ftPlans[i]);
+        }
+        free(ctx->ftPlans);
+        ctx->ftPlans = nullptr;
+    }
+    if (ctx->wsPlanValid) { cufftDestroy(ctx->wsPlan); ctx->wsPlanValid = false; }
+    if (ctx->wfPlanValid) { cufftDestroy(ctx->wfPlan); ctx->wfPlanValid = false; }
+    if (ctx->hPlanValid)  { cufftDestroy(ctx->hPlan);  ctx->hPlanValid  = false; }
+
     // Free managed memory
     if (ctx->gQbts != nullptr) {
         checkCudaErrors(ctx, cudaFree(ctx->gQbts));
@@ -1177,92 +1228,44 @@ void cvdvFtQ2P(CVDVContext* ctx, int regIdx) {
     kernelPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, totalSize,
                                           regIdx,
                                           ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, phaseCoeff);
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
 
-    // Step 2: Forward FFT using cuFFTPlanMany
-    // New layout: last register is contiguous (stride 1), first register has largest stride
-    // Stride for regIdx = product of dimensions after regIdx = 2^(sum of qubits after regIdx)
+    // Step 2: Forward FFT — use cached plan
     size_t regStride = 1 << ctx->gFlwQbts[regIdx];
-    
-    // Number of complete FFTs to perform
-    size_t numFFTs = (1 << ctx->gTotalQbt) / regDim;
-    
-    cufftHandle plan;
-    int n = regDim;
-    
+    cufftHandle plan = ctx->ftPlans[regIdx];
+
     if (regStride == 1) {
-        // Contiguous case: FFT dimension is contiguous, batch FFTs together
-        int batch = numFFTs;
-        logDebug(ctx, "Contiguous FFT: n=%d, batch=%d", n, batch);
-        cufftResult result = cufftPlan1d(&plan, n, CUFFT_Z2Z, batch);
-        if (result != CUFFT_SUCCESS) {
-            fprintf(stderr, "cuFFT plan creation failed: %d\n", result);
-            exit(EXIT_FAILURE);
-        }
-        
-        logDebug(ctx, "Executing FFT...");
-        result = cufftExecZ2Z(plan, ctx->dState, ctx->dState, CUFFT_FORWARD);
+        logDebug(ctx, "Contiguous FFT (cached plan)");
+        cufftResult result = cufftExecZ2Z(plan, ctx->dState, ctx->dState, CUFFT_FORWARD);
         if (result != CUFFT_SUCCESS) {
             fprintf(stderr, "cuFFT forward execution failed: %d\n", result);
             exit(EXIT_FAILURE);
         }
-        logDebug(ctx, "FFT completed successfully");
     } else {
-        // Strided case: FFT dimension is strided  
-        // Layout: elements of one FFT are at stride regStride apart
-        // Consecutive FFTs start at distance 1 (consecutive in inner dimension)
-        int iStride = regStride, oStride = regStride;
-        int iDist = 1, oDist = 1;
-        int batch = regStride;  
-        int inembed[1] = {n * (int)regStride};  // Logical size of input array
-        int onembed[1] = {n * (int)regStride};  // Logical size of output array
-        
-        logDebug(ctx, "FFT strided case: regIdx=%d, n=%d, stride=%zu, batch=%d, nembed=%d", 
-                 regIdx, n, regStride, batch, inembed[0]);
-        
-        cufftResult result = cufftPlanMany(&plan, 1, &n, inembed, iStride, iDist,
-                                            onembed, oStride, oDist, CUFFT_Z2Z, batch);
-        if (result != CUFFT_SUCCESS) {
-            fprintf(stderr, "cuFFT plan creation failed: %d\n", result);
-            exit(EXIT_FAILURE);
-        }
-        
-        // Number of outer blocks to process
+        // Strided case: loop over outer blocks (plan covers one block at a time)
         size_t regBlockSize = regStride << ctx->gQbts[regIdx];
         size_t outerDim = totalSize / regBlockSize;
-        logDebug(ctx, "Processing %zu outer blocks", outerDim);
-        
-        // Process each outer block
+        logDebug(ctx, "Strided FFT (cached plan): %zu outer blocks", outerDim);
         for (size_t o = 0; o < outerDim; o++) {
-            // Start of this outer block
             cuDoubleComplex* blockStart = ctx->dState + (o << (ctx->gFlwQbts[regIdx] + ctx->gQbts[regIdx]));
-            result = cufftExecZ2Z(plan, blockStart, blockStart, CUFFT_FORWARD);
+            cufftResult result = cufftExecZ2Z(plan, blockStart, blockStart, CUFFT_FORWARD);
             if (result != CUFFT_SUCCESS) {
                 fprintf(stderr, "cuFFT forward execution failed: %d at block %zu\n", result, o);
                 exit(EXIT_FAILURE);
             }
         }
-        logDebug(ctx, "Strided FFT completed successfully");
     }
-    
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
-    cufftDestroy(plan);
 
     // Step 3: Post-phase correction: exp(i*π(N-1)/N * k)
     // In momentum representation: exp(i*π(N-1)/(N*dx) * p)
-    logDebug(ctx, "Applying post-phase correction: phaseCoeff=%.6f", phaseCoeff);
     kernelPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, totalSize,
                                           regIdx,
                                           ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, phaseCoeff);
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
 
     // Step 4: Normalization (1/√N for unitary transform)
     double norm = 1.0 / sqrt((double)regDim);
-    logDebug(ctx, "Applying normalization: norm=%.6f", norm);
     kernelGlobalScalar<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, totalSize,
                                                    regIdx,
                                                    ctx->gQbts, norm);
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
 
     // Step 5: Global phase correction: exp(i*π*(N-1)²/(2N))
     // Matches dvsim-code convention: dvsim_QFT = CVDV_QFT * exp(i*π*(N-1)²/(2N))
@@ -1297,77 +1300,41 @@ void cvdvFtP2Q(CVDVContext* ctx, int regIdx) {
     kernelPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
                                           regIdx,
                                           ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, phaseCoeff);
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
 
-    // Step 2: Inverse FFT using cuFFTPlanMany
-    // New layout: last register is contiguous (stride 1), first register has largest stride
-    // Stride for regIdx = product of dimensions after regIdx = 2^(sum of qubits after regIdx)
+    // Step 2: Inverse FFT — use cached plan
     size_t regStride = 1 << ctx->gFlwQbts[regIdx];
-    
-    // Number of complete FFTs to perform
-    size_t numFFTs = (1 << ctx->gTotalQbt) / regDim;
-    
-    cufftHandle plan;
-    int n = regDim;
-    
+    cufftHandle plan = ctx->ftPlans[regIdx];
+
     if (regStride == 1) {
-        // Contiguous case: FFT dimension is contiguous, batch FFTs together
-        int batch = numFFTs;
-        cufftResult result = cufftPlan1d(&plan, n, CUFFT_Z2Z, batch);
-        if (result != CUFFT_SUCCESS) {
-            fprintf(stderr, "cuFFT plan creation failed: %d\n", result);
-            exit(EXIT_FAILURE);
-        }
-        
-        result = cufftExecZ2Z(plan, ctx->dState, ctx->dState, CUFFT_INVERSE);
+        cufftResult result = cufftExecZ2Z(plan, ctx->dState, ctx->dState, CUFFT_INVERSE);
         if (result != CUFFT_SUCCESS) {
             fprintf(stderr, "cuFFT inverse execution failed: %d\n", result);
             exit(EXIT_FAILURE);
         }
     } else {
-        // Strided case: FFT dimension is strided
-        int iStride = regStride, oStride = regStride;
-        int iDist = 1, oDist = 1;
-        int batch = regStride;
-        int inembed[1] = {n * (int)regStride};
-        int onembed[1] = {n * (int)regStride};
-        
-        cufftResult result = cufftPlanMany(&plan, 1, &n, inembed, iStride, iDist,
-                                            onembed, oStride, oDist, CUFFT_Z2Z, batch);
-        if (result != CUFFT_SUCCESS) {
-            fprintf(stderr, "cuFFT plan creation failed: %d\n", result);
-            exit(EXIT_FAILURE);
-        }
-        
-        // Number of outer blocks
         size_t regBlockSize = regStride << ctx->gQbts[regIdx];
         size_t outerDim = (1 << ctx->gTotalQbt) / regBlockSize;
         for (size_t o = 0; o < outerDim; o++) {
             cuDoubleComplex* blockStart = ctx->dState + (o << (ctx->gFlwQbts[regIdx] + ctx->gQbts[regIdx]));
-            result = cufftExecZ2Z(plan, blockStart, blockStart, CUFFT_INVERSE);
+            cufftResult result = cufftExecZ2Z(plan, blockStart, blockStart, CUFFT_INVERSE);
             if (result != CUFFT_SUCCESS) {
                 fprintf(stderr, "cuFFT inverse execution failed: %d at block %zu\n", result, o);
                 exit(EXIT_FAILURE);
             }
         }
     }
-    
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
-    cufftDestroy(plan);
 
     // Step 3: Post-phase correction (negative phase): exp(-i*π(N-1)/N * k)
     // In position representation: exp(-i*π(N-1)/(N*dx) * x)
     kernelPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
                                           regIdx,
                                           ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, phaseCoeff);
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
 
     // Step 4: Normalization (1/√N for unitary transform)
     double norm = 1.0 / sqrt((double)regDim);
     kernelGlobalScalar<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
                                                    regIdx,
                                                    ctx->gQbts, norm);
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
 
     // Step 5: Global phase correction (conjugate of ftQ2P): exp(-i*π*(N-1)²/(2N))
     double globalPhase = -PI * (double)(regDim - 1) * (double)(regDim - 1) / (2.0 * (double)regDim);
@@ -1976,20 +1943,25 @@ void cvdvGetWignerSingleSlice(CVDVContext* ctx, int regIdx, int* sliceIndices, d
         ctx->gQbts, ctx->gFlwQbts);
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 
-    // Step 2: Batched IFFT — one per Wigner x-row
-    cufftHandle plan;
-    cufftResult cufftRes = cufftPlan1d(&plan, cvDim, CUFFT_Z2Z, wignerN);
-    if (cufftRes != CUFFT_SUCCESS) {
-        fprintf(stderr, "cuFFT plan creation failed: %d\n", cufftRes);
-        cudaFree(dBuf); cudaFree(dSliceIndices);
-        return;
+    // Step 2: Batched IFFT — one per Wigner x-row (cached plan)
+    if (!ctx->wsPlanValid || ctx->wsPlanCvDim != (int)cvDim || ctx->wsPlanBatch != wignerN) {
+        if (ctx->wsPlanValid) cufftDestroy(ctx->wsPlan);
+        cufftResult planRes = cufftPlan1d(&ctx->wsPlan, cvDim, CUFFT_Z2Z, wignerN);
+        if (planRes != CUFFT_SUCCESS) {
+            fprintf(stderr, "cuFFT plan creation failed: %d\n", planRes);
+            cudaFree(dBuf); cudaFree(dSliceIndices);
+            ctx->wsPlanValid = false;
+            return;
+        }
+        ctx->wsPlanCvDim = (int)cvDim;
+        ctx->wsPlanBatch = wignerN;
+        ctx->wsPlanValid = true;
     }
-    cufftRes = cufftExecZ2Z(plan, dBuf, dBuf, CUFFT_INVERSE);
+    cufftResult cufftRes = cufftExecZ2Z(ctx->wsPlan, dBuf, dBuf, CUFFT_INVERSE);
     if (cufftRes != CUFFT_SUCCESS) {
         fprintf(stderr, "cuFFT execution failed: %d\n", cufftRes);
     }
     checkCudaErrors(ctx, cudaDeviceSynchronize());
-    cufftDestroy(plan);
 
     // Step 3: Extract Wigner values at user-requested p-grid
     double* dWigner;
@@ -2029,20 +2001,25 @@ void cvdvGetWignerFullMode(CVDVContext* ctx, int regIdx, double* wignerOut,
         ctx->gNumReg, ctx->gQbts, ctx->gFlwQbts);
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 
-    // Step 2: Batched IFFT — transforms y→p for all x-rows
-    cufftHandle plan;
-    cufftResult cufftRes = cufftPlan1d(&plan, cvDim, CUFFT_Z2Z, wignerN);
-    if (cufftRes != CUFFT_SUCCESS) {
-        fprintf(stderr, "cuFFT plan creation failed: %d\n", cufftRes);
-        cudaFree(dBuf);
-        return;
+    // Step 2: Batched IFFT — transforms y→p for all x-rows (cached plan)
+    if (!ctx->wfPlanValid || ctx->wfPlanCvDim != (int)cvDim || ctx->wfPlanBatch != wignerN) {
+        if (ctx->wfPlanValid) cufftDestroy(ctx->wfPlan);
+        cufftResult planRes = cufftPlan1d(&ctx->wfPlan, cvDim, CUFFT_Z2Z, wignerN);
+        if (planRes != CUFFT_SUCCESS) {
+            fprintf(stderr, "cuFFT plan creation failed: %d\n", planRes);
+            cudaFree(dBuf);
+            ctx->wfPlanValid = false;
+            return;
+        }
+        ctx->wfPlanCvDim = (int)cvDim;
+        ctx->wfPlanBatch = wignerN;
+        ctx->wfPlanValid = true;
     }
-    cufftRes = cufftExecZ2Z(plan, dBuf, dBuf, CUFFT_INVERSE);
+    cufftResult cufftRes = cufftExecZ2Z(ctx->wfPlan, dBuf, dBuf, CUFFT_INVERSE);
     if (cufftRes != CUFFT_SUCCESS) {
         fprintf(stderr, "cuFFT execution failed: %d\n", cufftRes);
     }
     checkCudaErrors(ctx, cudaDeviceSynchronize());
-    cufftDestroy(plan);
 
     // Step 3: Extract Wigner values at user-requested p-grid
     double* dWigner;
@@ -2079,13 +2056,19 @@ void cvdvGetHusimiQFullMode(CVDVContext* ctx, int regIdx, double* outHusimiQ, in
     checkCudaErrors(ctx, cudaMalloc(&dAccum, qN * cvDim * sizeof(double)));
     checkCudaErrors(ctx, cudaMemset(dAccum, 0, qN * cvDim * sizeof(double)));
 
-    // Step 2: Create cuFFT plan (reused across slices)
-    cufftHandle plan;
-    cufftResult cufftRes = cufftPlan1d(&plan, cvDim, CUFFT_Z2Z, qN);
-    if (cufftRes != CUFFT_SUCCESS) {
-        fprintf(stderr, "cuFFT plan creation failed: %d\n", cufftRes);
-        cudaFree(dBuf); cudaFree(dAccum);
-        return;
+    // Step 2: Get cuFFT plan — cached across calls, reused across slices
+    if (!ctx->hPlanValid || ctx->hPlanCvDim != (int)cvDim || ctx->hPlanBatch != qN) {
+        if (ctx->hPlanValid) cufftDestroy(ctx->hPlan);
+        cufftResult planRes = cufftPlan1d(&ctx->hPlan, cvDim, CUFFT_Z2Z, qN);
+        if (planRes != CUFFT_SUCCESS) {
+            fprintf(stderr, "cuFFT plan creation failed: %d\n", planRes);
+            cudaFree(dBuf); cudaFree(dAccum);
+            ctx->hPlanValid = false;
+            return;
+        }
+        ctx->hPlanCvDim = (int)cvDim;
+        ctx->hPlanBatch = qN;
+        ctx->hPlanValid = true;
     }
 
     int buildGrid = (qN * cvDim + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
@@ -2096,13 +2079,12 @@ void cvdvGetHusimiQFullMode(CVDVContext* ctx, int regIdx, double* outHusimiQ, in
             dBuf, ctx->dState, regIdx, dx, qN, qMax, sliceIdx,
             ctx->gQbts, ctx->gFlwQbts);
 
-        cufftExecZ2Z(plan, dBuf, dBuf, CUFFT_FORWARD);
+        cufftExecZ2Z(ctx->hPlan, dBuf, dBuf, CUFFT_FORWARD);
 
         kernelAccumHusimiPower<<<buildGrid, CUDA_BLOCK_SIZE>>>(
             dAccum, dBuf, qN * cvDim);
     }
     checkCudaErrors(ctx, cudaDeviceSynchronize());
-    cufftDestroy(plan);
 
     // Step 4: Extract Q values at user-requested p-grid
     double* dHusimiQ;
