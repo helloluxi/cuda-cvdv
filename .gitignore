@@ -63,3 +63,4 @@ benchmarks/results/test_*
 
 # Environment
 .venv
+.envrc

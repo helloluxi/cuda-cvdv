@@ -10,10 +10,11 @@ CURRENT_CSV   = os.path.join(PROFILING_DIR, 'current',   'results.csv')
 # Examples: A100 SXM = 2000, H100 SXM = 3350, RTX 4090 = 1008, RTX 3090 = 936
 PEAK_BW_GBS = 256
 
-TIME_COL        = 'gpu__time_duration.sum'
-L2MISS_READ_COL  = 'lts__t_sectors_op_read.sum'
-L2MISS_WRITE_COL = 'lts__t_sectors_op_write.sum'
-L2_SECTOR_BYTES  = 128
+TIME_COL         = 'gpu__time_duration.sum'
+# Use DRAM metrics for accurate bandwidth (industry standard)
+DRAM_READ_COL    = 'dram__sectors_read.sum'
+DRAM_WRITE_COL   = 'dram__sectors_write.sum'
+DRAM_SECTOR_BYTES = 32  # DRAM sectors are 32 bytes
 OCC_COL          = 'sm__warps_active.avg.pct_of_peak_sustained_active'
 FLOP_COLS = [
     'sm__sass_thread_inst_executed_op_fadd_pred_on.sum',
@@ -23,12 +24,12 @@ FLOP_COLS = [
 
 
 def total_bytes(row, suffix=''):
-    """L2 sector traffic in bytes: sectors × 128 bytes/sector."""
-    r = f'{L2MISS_READ_COL}{suffix}'
-    w = f'{L2MISS_WRITE_COL}{suffix}'
+    """DRAM sector traffic in bytes: sectors × 32 bytes/sector."""
+    r = f'{DRAM_READ_COL}{suffix}'
+    w = f'{DRAM_WRITE_COL}{suffix}'
     sectors = (row[r] if r in row.index else 0.0) + \
               (row[w] if w in row.index else 0.0)
-    return sectors * L2_SECTOR_BYTES
+    return sectors * DRAM_SECTOR_BYTES
 
 
 def arithmetic_intensity(row, suffix=''):
@@ -41,7 +42,7 @@ def arithmetic_intensity(row, suffix=''):
 
 
 def achieved_bw_gbs(row, suffix=''):
-    """Achieved memory bandwidth in GB/s."""
+    """Achieved DRAM bandwidth in GB/s (industry standard metric)."""
     t_us = row.get(f'{TIME_COL}{suffix}', float('nan'))
     if t_us == 0 or math.isnan(t_us):
         return float('nan')

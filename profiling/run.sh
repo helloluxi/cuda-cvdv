@@ -21,26 +21,30 @@ sm__sass_thread_inst_executed_op_fmul_pred_on.sum,\
 sm__sass_thread_inst_executed_op_ffma_pred_on.sum,\
 sm__warps_active.avg.pct_of_peak_sustained_active"
 
-echo "[0/3] building workload  →  $WORKLOAD_BIN"
+echo "[0/4] building workload  →  $WORKLOAD_BIN"
 $NVCC -O2 -std=c++17 \
     "$WORKLOAD_SRC" \
     -o "$WORKLOAD_BIN" \
     -L"$REPO/build" -lcvdv -lcufft \
     -Xlinker -rpath,"$REPO/build"
 
+echo "[1/4] benching C API  →  profiling/current/bench.csv"
+LD_LIBRARY_PATH="$REPO/build:$LD_LIBRARY_PATH" \
+python profiling/bench.py | tee profiling/current/bench.log
+
 KERNEL_FILTER=""
 [ -n "$1" ] && KERNEL_FILTER="--kernel-name $1"
 
-echo "[1/3] profiling  →  profiling/current/results.ncu-rep"
+echo "[2/4] profiling  →  profiling/current/results.ncu-rep"
 LD_LIBRARY_PATH="$REPO/build:$LD_LIBRARY_PATH" \
 ncu --metrics "$NCU_METRICS" --target-processes all -f $KERNEL_FILTER \
     -o profiling/current/results \
     "$WORKLOAD_BIN" > /dev/null
 
-echo "[2/3] exporting  →  profiling/current/results.csv"
+echo "[3/4] exporting  →  profiling/current/results.csv"
 ncu --import profiling/current/results.ncu-rep --csv > profiling/current/results.csv
 
-echo "[3/3] comparing"
+echo "[4/4] comparing kernels"
 python profiling/compare.py | tee profiling/current/compare.log
 
 popd > /dev/null
