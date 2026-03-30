@@ -296,50 +296,46 @@ class TestPhaseSpaceClosedForm:
         return sim
 
     @staticmethod
-    def _wigner_grids(sim, regIdx, bound):
-        """Return (x_grid, p_grid) matching exactly what getWigner passes to the backend."""
+    def _wigner_grids(sim, regIdx):
+        """Return (x_grid, p_grid) for native N×N grid."""
         dx = sim.grid_steps[regIdx]
-        dp = pi / (sim.register_dims[regIdx] * dx)
-        N = int(round(2 * bound / dx)) + 1
-        wXMax = (N - 1) / 2 * dx
-        n_p_bins = int(round(bound / dp))
-        wPMax = n_p_bins * dp
-        # Backend uses linspace(-wXMax, wXMax, N) and linspace(-wPMax, wPMax, N)
-        x_grid = np.linspace(-wXMax, wXMax, N)
-        p_grid = np.linspace(-wPMax, wPMax, N)
+        dim = sim.register_dims[regIdx]
+        dp = pi / (dim * dx)
+        x_grid = np.array([(k - (dim-1)/2) * dx for k in range(dim)])
+        p_grid = np.array([(j - dim/2) * dp for j in range(dim)])
         return x_grid, p_grid
 
     @staticmethod
-    def _husimi_grids(sim, regIdx, bound):
-        """Return (q_grid, p_grid) matching exactly what getHusimiQ passes to the backend."""
+    def _husimi_grids(sim, regIdx):
+        """Return (q_grid, p_grid) for native N×N grid."""
         dx = sim.grid_steps[regIdx]
-        dp = 2 * pi / (sim.register_dims[regIdx] * dx)
-        N = int(round(2 * bound / dx)) + 1
-        qMax = (N - 1) / 2 * dx
-        n_p_bins = int(round(bound / dp))
-        pMax = n_p_bins * dp
-        q_grid = np.linspace(-qMax, qMax, N)
-        p_grid = np.linspace(-pMax, pMax, N)
+        dim = sim.register_dims[regIdx]
+        dp = 2 * pi / (dim * dx)
+        q_grid = np.array([(k - (dim-1)/2) * dx for k in range(dim)])
+        p_grid = np.array([(j - dim/2) * dp for j in range(dim)])
         return q_grid, p_grid
 
     def test_wigner_coherent_closed_form(self):
         """W for coherent state matches (dx/π) exp(-(x-q₀)²-(p-p₀)²) to WIGNER_ATOL."""
         sim = self._make_sim()
-        W = sim.getWigner(0, self.BOUND)
-        x_grid, p_grid = self._wigner_grids(sim, 0, self.BOUND)
+        W = sim.getWigner(0)                         # no bound
+        x_grid, p_grid = self._wigner_grids(sim, 0)  # no bound
         W_exact = self._wigner_exact(x_grid, p_grid, self.ALPHA, sim.grid_steps[0])
         np.testing.assert_allclose(W, W_exact, atol=self.WIGNER_ATOL,
                                    err_msg="Wigner vs closed form failed")
+        assert W.shape == (sim.register_dims[0], sim.register_dims[0])
         del sim
 
     def test_husimi_coherent_closed_form(self):
         """Q for coherent state matches (1/π) exp(-½(x-q₀)²-½(p-p₀)²) to HUSIMI_ATOL."""
         sim = self._make_sim()
-        Q = sim.getHusimiQ(0, self.BOUND)
-        q_grid, p_grid = self._husimi_grids(sim, 0, self.BOUND)
+        Q = sim.getHusimiQ(0)                        # no bound
+        q_grid, p_grid = self._husimi_grids(sim, 0)  # no bound
         Q_exact = self._husimi_exact(q_grid, p_grid, self.ALPHA)
         np.testing.assert_allclose(Q, Q_exact, atol=self.HUSIMI_ATOL,
                                    err_msg="Husimi Q vs closed form failed")
+        assert Q.shape == (sim.register_dims[0], sim.register_dims[0])
+        assert np.all(Q >= -1e-10)   # Husimi is non-negative
         del sim
 
 

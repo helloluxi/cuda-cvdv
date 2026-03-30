@@ -7,9 +7,6 @@ A high-performance CUDA library for simulating hybrid continuous-variable (CV) a
 ## Todo List
 
 - **Kernel optimizations**
-  - [ ] `kernelBuildWignerIntegrand` / `kernelBuildWignerIntegrandSingleSlice` — shared-memory tiling for inner `otherIdx` reduction loop; scattered state reads → 3–5× kernel, ~1.5–2× end-to-end (cuFFT is also bottleneck)
-  - [ ] `kernelBuildHusimiWindowed` — bit-packed non-contiguous state reads; shared-memory staging → 2–4× kernel
-  - [ ] `kernelMeasureGlobal` — global atomics on small registers cause contention; replace with two-pass reduction (already bypassed by `kernelMeasureShared` for most cases)
   - [ ] `kernelComputeJointMeasure` — full multi-register index reconstruction in inner loop; scattered reads → 3–5× but low priority (not on critical path)
 
 - **Algorithmic improvements**

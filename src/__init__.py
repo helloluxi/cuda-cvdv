@@ -90,14 +90,11 @@ def _compile_and_load() -> ctypes.CDLL:
     lib.cvdvFtQ2P.restype = None
     lib.cvdvFtP2Q.argtypes = [ctypes.c_void_p, c_int]
     lib.cvdvFtP2Q.restype = None
-    lib.cvdvGetWignerSingleSlice.argtypes = [ctypes.c_void_p, c_int, POINTER(c_int), POINTER(c_double), c_int, c_double, c_double]
-    lib.cvdvGetWignerSingleSlice.restype = None
-    lib.cvdvGetWignerFullMode.argtypes = [ctypes.c_void_p, c_int, POINTER(c_double), c_int, c_double, c_double]
-    lib.cvdvGetWignerFullMode.restype = None
-    lib.cvdvGetHusimiQFullMode.argtypes = [ctypes.c_void_p, c_int, POINTER(c_double), c_int, c_double, c_double]
-    lib.cvdvGetHusimiQFullMode.restype = None
+    lib.cvdvGetWigner.argtypes = [ctypes.c_void_p, c_int, POINTER(c_double)]
+    lib.cvdvGetWigner.restype = None
+    lib.cvdvGetHusimiQ.argtypes = [ctypes.c_void_p, c_int, POINTER(c_double)]
+    lib.cvdvGetHusimiQ.restype = None
     lib.cvdvJointMeasure.argtypes = [ctypes.c_void_p, c_int, c_int, POINTER(c_double)]
-    lib.cvdvJointMeasure.restype = None
     lib.cvdvGetState.argtypes = [ctypes.c_void_p, POINTER(c_double), POINTER(c_double)]
     lib.cvdvGetState.restype = None
     lib.cvdvGetNumRegisters.argtypes = [ctypes.c_void_p]
@@ -691,191 +688,84 @@ class CVDV:
 
     # ==================== Phase Space Functions ====================
 
-    def getWignerSingleSlice(self, regIdx: int, slice_indices: Sequence[int], wignerN: int = 101,
-                             wXMax: float = 5.0, wPMax: float = 5.0) -> npt.NDArray[np.float64]:
-        """Compute Wigner function for register at specific slice."""
-        if len(slice_indices) != self.num_registers:
-            raise ValueError(f"slice_indices must have length {self.num_registers}")
+    def getWigner(self, regIdx: int) -> npt.NDArray[np.float64]:
+        """Wigner function on native N×N grid. Row=p-index, col=x-index.
+        Output coordinates: x_i = (i-(N-1)/2)*dx, p_j = (j-N/2)*π/(N*dx)."""
+        dim = self.register_dims[regIdx]
         if self.backend == 'cuda':
-            slice_indices_arr = np.array(slice_indices, dtype=np.int32)
-            wigner = np.zeros(wignerN * wignerN, dtype=np.float64)
-            _get_lib().cvdvGetWignerSingleSlice(self.ctx, regIdx,
-                slice_indices_arr.ctypes.data_as(POINTER(c_int)),
-                wigner.ctypes.data_as(POINTER(c_double)),
-                wignerN, wXMax, wPMax
-            )
-            return wigner.reshape((wignerN, wignerN))
+            out = np.zeros(dim * dim, dtype=np.float64)
+            _get_lib().cvdvGetWigner(self.ctx, regIdx, out.ctypes.data_as(POINTER(c_double)))
+            return out.reshape((dim, dim))
         else:
-            
-            perm = list(range(self.num_registers))
-            perm[0], perm[regIdx] = perm[regIdx], perm[0]
-            state = self.state.permute(*perm)
-            for i in range(1, self.num_registers):
-                actual_reg = perm[i]
-                state = state.select(i, slice_indices[actual_reg])
-            psi = state.cpu().numpy()
-            dim = self.register_dims[regIdx]; dx = self.grid_steps[regIdx]
-            x_grid = np.linspace(-wXMax, wXMax, wignerN)
-            p_grid = np.linspace(-wPMax, wPMax, wignerN)
-            fft_results = np.zeros((wignerN, dim), dtype=np.complex128)
-            for i, x in enumerate(x_grid):
+            # CPU fallback: native grid (i, k) instead of arbitrary wXMax
+            dx = self.grid_steps[regIdx]
+            # Trace out other registers (reduce to single-register density matrix diagonal)
+            psi = self._get_reduced_state_cpu(regIdx)  # shape (dim,), marginal wavefunction
+            fft_results = np.zeros((dim, dim), dtype=np.complex128)
+            for i in range(dim):
                 integrand = np.zeros(dim, dtype=np.complex128)
-                for j in range(dim):
-                    y = (j - (dim - 1) / 2) * dx
-                    ip = int(round((x + y) / dx)) + dim // 2
-                    im = int(round((x - y) / dx)) + dim // 2
-                    if 0 <= ip < dim and 0 <= im < dim:
-                        integrand[j] = np.conj(psi[ip]) * psi[im]
+                for k in range(dim):
+                    kDisp = k - (dim - 1) // 2
+                    iPy = i + kDisp
+                    iMy = i - kDisp
+                    if 0 <= iPy < dim and 0 <= iMy < dim:
+                        integrand[k] = np.conj(psi[iPy]) * psi[iMy]
                 fft_results[i, :] = np.fft.ifft(integrand) * dim
-            wigner = np.zeros((wignerN, wignerN), dtype=np.float64)
             dp = pi / (dim * dx)
-            for k, p in enumerate(p_grid):
-                k_s = int(round(p / dp + dim / 2))
-                k_s = max(0, min(dim - 1, k_s))
-                k_fft = (k_s + dim // 2) % dim
-                p_act = (k_s - dim / 2) * dp
-                phase_corr = np.exp(-1j * p_act * (dim - 1) * dx)
-                for i in range(wignerN):
-                    wigner[k, i] = np.real(phase_corr * fft_results[i, k_fft]) * dx / pi
+            wigner = np.zeros((dim, dim), dtype=np.float64)
+            for jc in range(dim):
+                k_fft = (jc + dim // 2) % dim
+                pj = (jc - dim / 2) * dp
+                phase_corr = np.exp(-1j * pj * (dim - 1) * dx)
+                for i in range(dim):
+                    wigner[jc, i] = np.real(phase_corr * fft_results[i, k_fft]) * dx / pi
             return wigner
 
-    def getWignerFullMode(self, regIdx: int, wignerN: int = 101, wXMax=5.0, wPMax=5.0) -> npt.NDArray[np.float64]:
-        """Compute reduced Wigner function by tracing out all other registers."""
+    def getHusimiQ(self, regIdx: int) -> npt.NDArray[np.float64]:
+        """Husimi Q function on native N×N grid. Row=p-index, col=q-index.
+        Output coordinates: q_i = (i-(N-1)/2)*dx, p_j = (j-N/2)*2π/(N*dx)."""
+        dim = self.register_dims[regIdx]
         if self.backend == 'cuda':
-            wigner = np.zeros(wignerN * wignerN, dtype=np.float64)
-            _get_lib().cvdvGetWignerFullMode(self.ctx, regIdx,
-                wigner.ctypes.data_as(POINTER(c_double)),
-                wignerN, wXMax, wPMax
-            )
-            return wigner.reshape((wignerN, wignerN))
+            out = np.zeros(dim * dim, dtype=np.float64)
+            _get_lib().cvdvGetHusimiQ(self.ctx, regIdx, out.ctypes.data_as(POINTER(c_double)))
+            return out.reshape((dim, dim))
         else:
-            
-            perm = list(range(self.num_registers))
-            perm[0], perm[regIdx] = perm[regIdx], perm[0]
-            state = self.state.permute(*perm)
-            dim = self.register_dims[regIdx]; other_size = self.total_size // dim
-            psi = state.reshape(dim, other_size).cpu().numpy()
+            # CPU fallback: native grid positions for q
             dx = self.grid_steps[regIdx]
-            x_grid = np.linspace(-wXMax, wXMax, wignerN)
-            p_grid = np.linspace(-wPMax, wPMax, wignerN)
-            fft_results = np.zeros((wignerN, dim), dtype=np.complex128)
-            for i, x in enumerate(x_grid):
-                integrand = np.zeros(dim, dtype=np.complex128)
-                for j in range(dim):
-                    y = (j - (dim - 1) / 2) * dx
-                    ip = int(round((x + y) / dx)) + dim // 2
-                    im = int(round((x - y) / dx)) + dim // 2
-                    if 0 <= ip < dim and 0 <= im < dim:
-                        integrand[j] = np.dot(np.conj(psi[ip, :]), psi[im, :])
-                fft_results[i, :] = np.fft.ifft(integrand) * dim
-            wigner = np.zeros((wignerN, wignerN), dtype=np.float64)
-            dp = pi / (dim * dx)
-            for k, p in enumerate(p_grid):
-                k_s = int(round(p / dp + dim / 2))
-                k_s = max(0, min(dim - 1, k_s))
-                k_fft = (k_s + dim // 2) % dim
-                p_act = (k_s - dim / 2) * dp
-                phase_corr = np.exp(-1j * p_act * (dim - 1) * dx)
-                for i in range(wignerN):
-                    wigner[k, i] = np.real(phase_corr * fft_results[i, k_fft]) * dx / pi
-            return wigner
-
-    def getHusimiQFullMode(self, regIdx: int, qN: int = 101, qMax=5.0, pMax=5.0) -> npt.NDArray[np.float64]:
-        """Compute Husimi Q function by tracing out all other registers."""
-        if self.backend == 'cuda':
-            husimiQ = np.zeros(qN * qN, dtype=np.float64)
-            _get_lib().cvdvGetHusimiQFullMode(self.ctx, regIdx,
-                husimiQ.ctypes.data_as(POINTER(c_double)),
-                qN, qMax, pMax
-            )
-            return husimiQ.reshape((qN, qN))
-        else:
-            
-            perm = list(range(self.num_registers))
-            perm[0], perm[regIdx] = perm[regIdx], perm[0]
-            state = self.state.permute(*perm)
-            target_dim = self.register_dims[regIdx]; other_size = self.total_size // target_dim
-            psi = state.reshape(target_dim, other_size).cpu().numpy()
-            dx = self.grid_steps[regIdx]
-            x_values = np.array([(j - (target_dim - 1) / 2) * dx for j in range(target_dim)])
-            husimiQ = np.zeros((qN, qN), dtype=np.float64)
-            q_grid = np.linspace(-qMax, qMax, qN)
-            p_grid = np.linspace(-pMax, pMax, qN)
-            PI_POW_NEG_QUARTER = pi ** (-0.25)
-            windowed_signals = np.zeros((qN, target_dim), dtype=np.float64)
-            for i, q in enumerate(q_grid):
-                window = np.exp(-0.5 * (x_values - q) ** 2) * PI_POW_NEG_QUARTER * np.sqrt(dx)
-                for slice_idx in range(other_size):
-                    windowed = window * psi[:, slice_idx]
-                    fft_result = np.fft.fft(windowed)
-                    windowed_signals[i, :] += np.abs(fft_result) ** 2
-            dp = 2.0 * pi / (target_dim * dx)
-            for j, p_val in enumerate(p_grid):
-                for i in range(qN):
-                    k_s = int(round(p_val / dp + target_dim / 2))
-                    k_s = max(0, min(target_dim - 1, k_s))
-                    k_fft = (k_s + target_dim // 2) % target_dim
-                    husimiQ[j, i] = windowed_signals[i, k_fft] / pi
+            psi = self._get_reduced_state_cpu(regIdx)  # shape (dim,)
+            x_grid = np.array([(k - (dim-1)/2) * dx for k in range(dim)])
+            accum = np.zeros((dim, dim), dtype=np.float64)
+            for qi in range(dim):
+                sample_q = (qi - (dim-1)/2) * dx
+                window = (pi**(-0.25)) * np.exp(-0.5*(x_grid - sample_q)**2) * np.sqrt(dx)
+                h = psi * window
+                H = np.fft.fft(h)
+                accum[qi, :] += np.abs(H)**2
+            dp = 2 * pi / (dim * dx)
+            husimiQ = np.zeros((dim, dim), dtype=np.float64)
+            for jc in range(dim):
+                k_fft = (jc + dim // 2) % dim
+                for qi in range(dim):
+                    husimiQ[jc, qi] = accum[qi, k_fft] / pi
             return husimiQ
 
-    def getWigner(self, regIdx: int, bound) -> npt.NDArray[np.float64]:
-        """Compute Wigner function on the native grids, cropped to [-bound,+bound]^2."""
-        dx = self.grid_steps[regIdx]
-        dp = np.pi / (self.register_dims[regIdx] * dx)
-        N = int(round(2 * bound / dx)) + 1
-        wXMax = (N - 1) / 2 * dx
-        n_p_bins = int(round(bound / dp))
-        wPMax = n_p_bins * dp
-        return self.getWignerFullMode(regIdx, wignerN=N, wXMax=wXMax, wPMax=wPMax)
 
-    def getHusimiQ(self, regIdx: int, bound) -> npt.NDArray[np.float64]:
-        """Compute Husimi Q function on the native grids, cropped to [-bound,+bound]^2."""
-        dx = self.grid_steps[regIdx]
-        dp = 2 * np.pi / (self.register_dims[regIdx] * dx)
-        N = int(round(2 * bound / dx)) + 1
-        qMax = (N - 1) / 2 * dx
-        n_p_bins = int(round(bound / dp))
-        pMax = n_p_bins * dp
-        return self.getHusimiQFullMode(regIdx, qN=N, qMax=qMax, pMax=pMax)
-
-    # ==================== Info & Plotting ====================
-
-    def info(self) -> None:
-        """Print system information."""
-        vram_gb = (self.total_size * 16) / (1024 * 1024 * 1024)
-        print(f"Backend: {self.backend}")
-        print(f"Number of registers: {self.num_registers}")
-        print(f"Total state size: {self.total_size} elements ({vram_gb:.3f} GB)")
-        for i in range(self.num_registers):
-            dim = self.register_dims[i]; dx = self.grid_steps[i]
-            x_bound = sqrt(2 * pi * dim)
-            print(f"  Register {i}: dim={dim}, qubits={self.qubit_counts[i]}, dx={dx:.6f}, x_bound={x_bound:.6f}")
-
-    def plotWigner(self, regIdx: int, slice_indices: Optional[Sequence[int]] = None, wignerN: int = 201, wignerMax=5.0,
-                    cmap: str = 'RdBu', figsize: Tuple[int, int] = (7, 6), show: bool = True) -> Tuple[Any, Any]:
-        """Plot Wigner function for a register. Requires matplotlib and scienceplots."""
-        import matplotlib.pyplot as plt
-        try:
-            import scienceplots  # noqa: F401
-            plt.style.use(['science'])
-            plt.rcParams.update({'font.size': 24, 'text.usetex': True})
-        except ImportError:
-            pass
-        if slice_indices is not None:
-            wigner = self.getWignerSingleSlice(regIdx, slice_indices,
-                                              wignerN=wignerN, wXMax=wignerMax, wPMax=wignerMax)
+    def _get_reduced_state_cpu(self, regIdx: int) -> npt.NDArray[np.complex128]:
+        """Get reduced single-register wavefunction for CPU fallback."""
+        if self.num_registers == 1:
+            return self.state.cpu().numpy()
         else:
-            wigner = self.getWignerFullMode(regIdx, wignerN=wignerN,
-                                           wXMax=wignerMax, wPMax=wignerMax)
-        fig, ax = plt.subplots(figsize=figsize)
-        vmax = np.max(np.abs(wigner))
-        im = ax.imshow(wigner, extent=(-wignerMax, wignerMax, -wignerMax, wignerMax),
-                      origin='lower', cmap=cmap, vmin=-vmax, vmax=vmax, aspect='equal')
-        ax.set_xlabel(r'$q$'); ax.set_ylabel(r'$p$')
-        plt.colorbar(im, ax=ax); plt.tight_layout()
-        if show:
-            plt.show()
-        return fig, ax
+            # For multi-register systems, trace out other registers
+            # Move target register to first dimension
+            perm = list(range(self.num_registers))
+            perm[0], perm[regIdx] = perm[regIdx], perm[0]
+            state = self.state.permute(*perm)
+            
+            # Sum over all other dimensions to get reduced density matrix diagonal
+            # This gives us the marginal wavefunction for the target register
+            other_dims = tuple(range(1, self.num_registers))
+            rho_diag = torch.sum(torch.abs(state) ** 2, dim=other_dims)
+            return torch.sqrt(rho_diag).cpu().numpy()
 
     # ==================== Torch-backend helpers (private) ====================
 
@@ -989,6 +879,69 @@ class CVDV:
         state = state.reshape([ctrl_dim] + list(state.shape[n_ctrl:]))
         state = state.permute(*[perm.index(i) for i in range(self.num_registers)])
         self.state = state
+
+
+# ==================== Plotting Methods ====================
+
+    def plotWigner(self, regIdx: int, bound: float = 5.0,
+                   cmap: str = 'RdBu', figsize: Tuple[int, int] = (7, 6),
+                   show: bool = True) -> Tuple[Any, Any]:
+        """Plot Wigner function for a register, cropped to [-bound, +bound]²."""
+        import matplotlib.pyplot as plt
+        try:
+            import scienceplots  # noqa: F401
+            plt.style.use(['science'])
+            plt.rcParams.update({'font.size': 24, 'text.usetex': True})
+        except ImportError:
+            pass
+        wigner = self.getWigner(regIdx)
+        dim = self.register_dims[regIdx]
+        dx = self.grid_steps[regIdx]
+        dp = np.pi / (dim * dx)
+        x_vals = np.array([(k - (dim-1)/2) * dx for k in range(dim)])
+        p_vals = np.array([(j - dim/2) * dp for j in range(dim)])
+        x_mask = np.abs(x_vals) <= bound
+        p_mask = np.abs(p_vals) <= bound
+        x_plot = x_vals[x_mask]; p_plot = p_vals[p_mask]
+        W_plot = wigner[np.ix_(p_mask, x_mask)]
+        fig, ax = plt.subplots(figsize=figsize)
+        vmax = np.max(np.abs(W_plot))
+        im = ax.pcolormesh(x_plot, p_plot, W_plot, cmap=cmap, vmin=-vmax, vmax=vmax,
+                           shading='auto')
+        ax.set_xlabel(r'$q$'); ax.set_ylabel(r'$p$')
+        fig.colorbar(im, ax=ax); plt.tight_layout()
+        if show:
+            plt.show()
+        return fig, ax
+
+    def plotHusimiQ(self, regIdx: int, bound: float = 5.0,
+                    cmap: str = 'viridis', figsize: Tuple[int, int] = (7, 6),
+                    show: bool = True) -> Tuple[Any, Any]:
+        """Plot Husimi Q function for a register, cropped to [-bound, +bound]²."""
+        import matplotlib.pyplot as plt
+        try:
+            import scienceplots  # noqa: F401
+            plt.style.use(['science'])
+            plt.rcParams.update({'font.size': 24, 'text.usetex': True})
+        except ImportError:
+            pass
+        Q = self.getHusimiQ(regIdx)
+        dim = self.register_dims[regIdx]
+        dx = self.grid_steps[regIdx]
+        dp = 2 * np.pi / (dim * dx)
+        q_vals = np.array([(k - (dim-1)/2) * dx for k in range(dim)])
+        p_vals = np.array([(j - dim/2) * dp for j in range(dim)])
+        q_mask = np.abs(q_vals) <= bound
+        p_mask = np.abs(p_vals) <= bound
+        q_plot = q_vals[q_mask]; p_plot = p_vals[p_mask]
+        Q_plot = Q[np.ix_(p_mask, q_mask)]
+        fig, ax = plt.subplots(figsize=figsize)
+        im = ax.pcolormesh(q_plot, p_plot, Q_plot, cmap=cmap, shading='auto')
+        ax.set_xlabel(r'$q$'); ax.set_ylabel(r'$p$')
+        fig.colorbar(im, ax=ax); plt.tight_layout()
+        if show:
+            plt.show()
+        return fig, ax
 
 
 # CVDVTorch kept as a backward-compatible alias

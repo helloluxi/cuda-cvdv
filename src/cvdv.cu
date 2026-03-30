@@ -1,8 +1,9 @@
 // cvdv.cu - CUDA library for hybrid CV-DV quantum simulation
 
-#include <cuda_runtime.h>
 #include <cuComplex.h>
+#include <cuda_runtime.h>
 #include <cufft.h>
+
 #include <cmath>
 #include <cstdio>
 #include <ctime>
@@ -12,48 +13,52 @@
 // Global log file (filename from LOG_FILENAME constexpr)
 static FILE* gLogFile = nullptr;
 
-#define logInfo(ctx, ...) do { \
-    if (gLogFile) { \
-        fprintf(gLogFile, "[INFO] "); \
-        fprintf(gLogFile, __VA_ARGS__); \
-        fprintf(gLogFile, "\n"); \
-        fflush(gLogFile); \
-    } \
-} while(0)
+#define logInfo(ctx, ...)                   \
+    do {                                    \
+        if (gLogFile) {                     \
+            fprintf(gLogFile, "[INFO] ");   \
+            fprintf(gLogFile, __VA_ARGS__); \
+            fprintf(gLogFile, "\n");        \
+            fflush(gLogFile);               \
+        }                                   \
+    } while (0)
 
-#define logDebug(ctx, ...) do { \
-    if (gLogFile) { \
-        fprintf(gLogFile, "[DEBUG] "); \
-        fprintf(gLogFile, __VA_ARGS__); \
-        fprintf(gLogFile, "\n"); \
-        fflush(gLogFile); \
-    } \
-} while(0)
+#define logDebug(ctx, ...)                  \
+    do {                                    \
+        if (gLogFile) {                     \
+            fprintf(gLogFile, "[DEBUG] ");  \
+            fprintf(gLogFile, __VA_ARGS__); \
+            fprintf(gLogFile, "\n");        \
+            fflush(gLogFile);               \
+        }                                   \
+    } while (0)
 
-#define logError(ctx, ...) do { \
-    fprintf(stderr, "[ERROR] "); \
-    fprintf(stderr, __VA_ARGS__); \
-    fprintf(stderr, "\n"); \
-    if (gLogFile) { \
-        fprintf(gLogFile, "[ERROR] "); \
-        fprintf(gLogFile, __VA_ARGS__); \
-        fprintf(gLogFile, "\n"); \
-        fflush(gLogFile); \
-    } \
-} while(0)
+#define logError(ctx, ...)                  \
+    do {                                    \
+        fprintf(stderr, "[ERROR] ");        \
+        fprintf(stderr, __VA_ARGS__);       \
+        fprintf(stderr, "\n");              \
+        if (gLogFile) {                     \
+            fprintf(gLogFile, "[ERROR] ");  \
+            fprintf(gLogFile, __VA_ARGS__); \
+            fprintf(gLogFile, "\n");        \
+            fflush(gLogFile);               \
+        }                                   \
+    } while (0)
 
-#define checkCudaErrors(ctx, val) do { \
-    cudaError_t err = (val); \
-    if (err != cudaSuccess) { \
-        const char* msg = cudaGetErrorString(err); \
-        fprintf(stderr, "[CUDA ERROR] %s at %s:%d\n", msg, __FILE__, __LINE__); \
-        if (gLogFile) { \
-            fprintf(gLogFile, "[CUDA ERROR] %s at %s:%d\n", msg, __FILE__, __LINE__); \
-            fflush(gLogFile); \
-        } \
-        exit(EXIT_FAILURE); \
-    } \
-} while(0)
+#define checkCudaErrors(ctx, val)                                                         \
+    do {                                                                                  \
+        cudaError_t err = (val);                                                          \
+        if (err != cudaSuccess) {                                                         \
+            const char* msg = cudaGetErrorString(err);                                    \
+            fprintf(stderr, "[CUDA ERROR] %s at %s:%d\n", msg, __FILE__, __LINE__);       \
+            if (gLogFile) {                                                               \
+                fprintf(gLogFile, "[CUDA ERROR] %s at %s:%d\n", msg, __FILE__, __LINE__); \
+                fflush(gLogFile);                                                         \
+            }                                                                             \
+            exit(EXIT_FAILURE);                                                           \
+        }                                                                                 \
+    } while (0)
 
 constexpr double PI = 3.14159265358979323846;
 constexpr double SQRT2 = 1.41421356237309504880;
@@ -68,24 +73,29 @@ constexpr const char* LOG_FILENAME = "cuda.log";
 // Context structure to enable multiple instances
 typedef struct {
     cuDoubleComplex* dState;
-    int* gQbts;                // Managed memory: number of qubits in each register
-    int* gFlwQbts;             // Managed memory: cumulative qubits after each register
-    double* gGridSteps;        // Managed memory: grid step (dx) for each register
-    int gNumReg;               // Total number of registers
-    int gTotalQbt;             // Total number of qubits across all registers
+    int* gQbts;          // Managed memory: number of qubits in each register
+    int* gFlwQbts;       // Managed memory: cumulative qubits after each register
+    double* gGridSteps;  // Managed memory: grid step (dx) for each register
+    int gNumReg;         // Total number of registers
+    int gTotalQbt;       // Total number of qubits across all registers
 
-    // Cached cuFFT plans for FT operations — one plan per register (host-only, regular malloc).
-    // Each plan covers both FORWARD and INVERSE (direction is a runtime arg to cufftExecZ2Z).
+    // Cached cuFFT plans for FT operations — one plan per register (host-only,
+    // regular malloc). Each plan covers both FORWARD and INVERSE (direction is a
+    // runtime arg to cufftExecZ2Z).
     cufftHandle* ftPlans;
 
-    // Cached plans for Wigner/Husimi — recreated only when batch size changes.
-    cufftHandle wsPlan;    int wsPlanCvDim;    int wsPlanBatch;    bool wsPlanValid;
-    cufftHandle wfPlan;    int wfPlanCvDim;    int wfPlanBatch;    bool wfPlanValid;
-    cufftHandle hPlan;     int hPlanCvDim;     int hPlanBatch;     bool hPlanValid;
+    // Cached plans for Wigner/Husimi - simplified native grid only
+    cufftHandle wPlan;
+    int wPlanCvDim;
+    bool wPlanValid;
+    cufftHandle hPlan;
+    int hPlanCvDim;
+    bool hPlanValid;
 } CVDVContext;
 
-// Lightweight struct for passing separable-state device pointers into CUDA functions.
-// Python fills this from SeparableState.register_arrays[i].data_ptr().
+// Lightweight struct for passing separable-state device pointers into CUDA
+// functions. Python fills this from
+// SeparableState.register_arrays[i].data_ptr().
 typedef struct {
     cuDoubleComplex** ptrs;  // host-side array of numReg device pointers
     int numReg;
@@ -125,7 +135,8 @@ __device__ __host__ inline cuDoubleComplex cuCmul(cuDoubleComplex a, double b) {
 
 // Extract local index within a register from global index
 // Returns the index for register regIdx given the global flat index
-__device__ __host__ inline size_t getLocalIndex(size_t globalIdx, int flwQbtCount, int regQbtCount) {
+__device__ __host__ inline size_t getLocalIndex(size_t globalIdx, int flwQbtCount,
+                                                int regQbtCount) {
     return (globalIdx >> flwQbtCount) & ((1 << regQbtCount) - 1);
 }
 
@@ -139,26 +150,27 @@ __device__ __forceinline__ double warpReduceSum(double val) {
 }
 
 // Block-level reduction using warp reduction + minimal shared memory
-// This is the modern standard for CUDA reductions (faster than tree-based shared memory)
+// This is the modern standard for CUDA reductions (faster than tree-based
+// shared memory)
 __device__ __forceinline__ double blockReduceSum(double val) {
     static __shared__ double warpSums[32];  // Max 1024 threads / 32 = 32 warps
-    
+
     int lane = threadIdx.x % 32;
     int wid = threadIdx.x / 32;
-    
+
     // Reduce within warp using shuffle
     val = warpReduceSum(val);
-    
+
     // First thread in each warp writes to shared memory
     if (lane == 0) warpSums[wid] = val;
     __syncthreads();
-    
+
     // First warp reduces the warp sums
     if (threadIdx.x < 32) {
         val = (threadIdx.x < blockDim.x / 32) ? warpSums[threadIdx.x] : 0.0;
         val = warpReduceSum(val);
     }
-    
+
     return val;
 }
 
@@ -166,10 +178,10 @@ __device__ __forceinline__ double blockReduceSum(double val) {
 // only at the target qubit bit. Standard state-vector simulator pair-indexing.
 //   pairIdx ∈ [0, totalSize/2)
 //   globalBit = bit position of the target qubit in the flat global index
-//             = flwQbts[r] + qbts[r] - 1 - qubitIdx  (qubit 0 is MSB of register)
-__device__ __forceinline__ void qubitPairIndices(
-        size_t pairIdx, size_t globalBit,
-        size_t& idx0, size_t& idx1) {
+//             = flwQbts[r] + qbts[r] - 1 - qubitIdx  (qubit 0 is MSB of
+//             register)
+__device__ __forceinline__ void qubitPairIndices(size_t pairIdx, size_t globalBit, size_t& idx0,
+                                                 size_t& idx1) {
     size_t mask = (size_t)1 << globalBit;
     idx0 = ((pairIdx & ~(mask - 1)) << 1) | (pairIdx & (mask - 1));
     idx1 = idx0 | mask;
@@ -179,8 +191,8 @@ __device__ __forceinline__ void qubitPairIndices(
 
 #pragma region State Initialization Kernels
 
-__global__ void kernelSetCoherent(cuDoubleComplex* state, int cvDim, double dx,
-                                   double alphaRe, double alphaIm) {
+__global__ void kernelSetCoherent(cuDoubleComplex* state, int cvDim, double dx, double alphaRe,
+                                  double alphaIm) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= cvDim) return;
 
@@ -195,10 +207,10 @@ __global__ void kernelSetCoherent(cuDoubleComplex* state, int cvDim, double dx,
     double phase = p * x - p * q / 2.0;
 
     cuDoubleComplex phaseFactor = phaseToZ(phase);
-    double amplitude = norm * gauss * sqrt(dx); // Normalize as qubit register
+    double amplitude = norm * gauss * sqrt(dx);  // Normalize as qubit register
 
-    state[idx] = make_cuDoubleComplex(amplitude * cuCreal(phaseFactor), 
-                                      amplitude * cuCimag(phaseFactor));
+    state[idx] =
+        make_cuDoubleComplex(amplitude * cuCreal(phaseFactor), amplitude * cuCimag(phaseFactor));
 }
 
 __global__ void kernelSetFock(cuDoubleComplex* state, int cvDim, double dx, int n) {
@@ -207,9 +219,9 @@ __global__ void kernelSetFock(cuDoubleComplex* state, int cvDim, double dx, int 
 
     double x = gridX(idx, cvDim, dx);
 
-    // Fock state |n> using normalized Hermite function recurrence for numerical stability:
-    // psi_0(x) = exp(-x^2/2) / pi^(1/4) * sqrt(dx)
-    // psi_n(x) = sqrt(2/n) * x * psi_{n-1}(x) - sqrt((n-1)/n) * psi_{n-2}(x)
+    // Fock state |n> using normalized Hermite function recurrence for numerical
+    // stability: psi_0(x) = exp(-x^2/2) / pi^(1/4) * sqrt(dx) psi_n(x) =
+    // sqrt(2/n) * x * psi_{n-1}(x) - sqrt((n-1)/n) * psi_{n-2}(x)
     double psiPrev = 0.0;
     double psiCurr = exp(-0.5 * x * x) * PI_POW_NEG_QUARTER * sqrt(dx);
 
@@ -223,7 +235,7 @@ __global__ void kernelSetFock(cuDoubleComplex* state, int cvDim, double dx, int 
 }
 
 __global__ void kernelSetFocks(cuDoubleComplex* state, int cvDim, double dx,
-                                  const cuDoubleComplex* coeffs, int length) {
+                               const cuDoubleComplex* coeffs, int length) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= cvDim) return;
     double x = gridX(idx, cvDim, dx);
@@ -253,7 +265,8 @@ __global__ void kernelSetFocks(cuDoubleComplex* state, int cvDim, double dx,
 // Cat state: superposition of coherent states
 // Takes array of [alpha_i, coeff_i] pairs
 __global__ void kernelSetCat(cuDoubleComplex* state, int cvDim, double dx,
-                              const cuDoubleComplex* alphas, const cuDoubleComplex* coeffs, int length) {
+                             const cuDoubleComplex* alphas, const cuDoubleComplex* coeffs,
+                             int length) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= cvDim) return;
 
@@ -277,10 +290,8 @@ __global__ void kernelSetCat(cuDoubleComplex* state, int cvDim, double dx,
         cuDoubleComplex phaseFactor = phaseToZ(phase);
         double amplitude = norm * gauss * sqrt(dx);
 
-        cuDoubleComplex coherentState = make_cuDoubleComplex(
-            amplitude * cuCreal(phaseFactor),
-            amplitude * cuCimag(phaseFactor)
-        );
+        cuDoubleComplex coherentState = make_cuDoubleComplex(amplitude * cuCreal(phaseFactor),
+                                                             amplitude * cuCimag(phaseFactor));
 
         // Add coeff_i * |alpha_i>
         result = cuCadd(result, cuCmul(coeffs[i], coherentState));
@@ -290,7 +301,8 @@ __global__ void kernelSetCat(cuDoubleComplex* state, int cvDim, double dx,
 }
 
 // Compute norm for a single register array (reduction within block)
-__global__ void kernelComputeRegisterNorm(double* partialSums, const cuDoubleComplex* state, int cvDim) {
+__global__ void kernelComputeRegisterNorm(double* partialSums, const cuDoubleComplex* state,
+                                          int cvDim) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     double localSum = 0.0;
 
@@ -313,10 +325,7 @@ __global__ void kernelNormalizeRegister(cuDoubleComplex* state, int cvDim, doubl
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= cvDim) return;
 
-    state[idx] = make_cuDoubleComplex(
-        cuCreal(state[idx]) * invNorm,
-        cuCimag(state[idx]) * invNorm
-    );
+    state[idx] = make_cuDoubleComplex(cuCreal(state[idx]) * invNorm, cuCimag(state[idx]) * invNorm);
 }
 
 #pragma endregion
@@ -324,11 +333,8 @@ __global__ void kernelNormalizeRegister(cuDoubleComplex* state, int cvDim, doubl
 #pragma region Gate Kernels
 
 // Apply phase factor to a specific register: exp(i*phaseCoeff*x)
-__global__ void kernelPhaseX(cuDoubleComplex* state, size_t totalSize,
-                                             int regIdx,
-                                             const int* qbts, const double* gridSteps,
-                                             const int* flwQbts,
-                                             double phaseCoeff) {
+__global__ void kernelPhaseX(cuDoubleComplex* state, size_t totalSize, int regIdx, const int* qbts,
+                             const double* gridSteps, const int* flwQbts, double phaseCoeff) {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= totalSize) return;
 
@@ -340,13 +346,11 @@ __global__ void kernelPhaseX(cuDoubleComplex* state, size_t totalSize,
     state[idx] = cmulPhase(state[idx], phaseCoeff * x);
 }
 
-// Apply controlled phase to a specific register with control from another register
-// exp(i*phaseCoeff*Z*x) where Z acts on ctrlQubit in ctrlReg
-__global__ void kernelCPhaseX(cuDoubleComplex* state, size_t totalSize,
-                                                         int targetReg, int ctrlReg, int ctrlQubit,
-                                                         const int* qbts, const double* gridSteps,
-                                                         const int* flwQbts,
-                                                         double phaseCoeff) {
+// Apply controlled phase to a specific register with control from another
+// register exp(i*phaseCoeff*Z*x) where Z acts on ctrlQubit in ctrlReg
+__global__ void kernelCPhaseX(cuDoubleComplex* state, size_t totalSize, int targetReg, int ctrlReg,
+                              int ctrlQubit, const int* qbts, const double* gridSteps,
+                              const int* flwQbts, double phaseCoeff) {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= totalSize) return;
 
@@ -366,11 +370,9 @@ __global__ void kernelCPhaseX(cuDoubleComplex* state, size_t totalSize,
 
 // Apply controlled phase based on position squared: exp(i*t*Z*x^2)
 // where Z acts on ctrlQubit in ctrlReg
-__global__ void kernelCPhaseX2(cuDoubleComplex* state, size_t totalSize,
-                                                        int targetReg, int ctrlReg, int ctrlQubit,
-                                                        const int* qbts, const double* gridSteps,
-                                                        const int* flwQbts,
-                                                        double t) {
+__global__ void kernelCPhaseX2(cuDoubleComplex* state, size_t totalSize, int targetReg, int ctrlReg,
+                               int ctrlQubit, const int* qbts, const double* gridSteps,
+                               const int* flwQbts, double t) {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= totalSize) return;
 
@@ -389,10 +391,9 @@ __global__ void kernelCPhaseX2(cuDoubleComplex* state, size_t totalSize,
 }
 
 // Pauli rotation Rn(θ) on a single qubit: exp(-i·θ/2·σn), axis 0=X 1=Y 2=Z
-__global__ void kernelPauliRotation(cuDoubleComplex* state, size_t totalSize,
-                                    int regIdx, int qubitIdx,
-                                    const int* qbts, const int* flwQbts,
-                                    int axis, double theta) {
+__global__ void kernelPauliRotation(cuDoubleComplex* state, size_t totalSize, int regIdx,
+                                    int qubitIdx, const int* qbts, const int* flwQbts, int axis,
+                                    double theta) {
     size_t pairIdx = blockIdx.x * blockDim.x + threadIdx.x;
     if (pairIdx >= totalSize / 2) return;
 
@@ -403,22 +404,26 @@ __global__ void kernelPauliRotation(cuDoubleComplex* state, size_t totalSize,
     cuDoubleComplex b = state[idx1];
     double c = cos(theta / 2.0), s = sin(theta / 2.0);
 
-    // Rx: [[c, -is], [-is, c]]   Ry: [[c, -s], [s, c]]   Rz: [[e^{-is}, 0], [0, e^{is}]]
+    // Rx: [[c, -is], [-is, c]]   Ry: [[c, -s], [s, c]]   Rz: [[e^{-is}, 0], [0,
+    // e^{is}]]
     if (axis == 0) {  // X: newA = c·a - i·s·b,  newB = -i·s·a + c·b
-        state[idx0] = make_cuDoubleComplex(c*cuCreal(a) + s*cuCimag(b),  c*cuCimag(a) - s*cuCreal(b));
-        state[idx1] = make_cuDoubleComplex(s*cuCimag(a) + c*cuCreal(b), -s*cuCreal(a) + c*cuCimag(b));
+        state[idx0] =
+            make_cuDoubleComplex(c * cuCreal(a) + s * cuCimag(b), c * cuCimag(a) - s * cuCreal(b));
+        state[idx1] =
+            make_cuDoubleComplex(s * cuCimag(a) + c * cuCreal(b), -s * cuCreal(a) + c * cuCimag(b));
     } else if (axis == 1) {  // Y: newA = c·a - s·b,  newB = s·a + c·b
-        state[idx0] = make_cuDoubleComplex(c*cuCreal(a) - s*cuCreal(b), c*cuCimag(a) - s*cuCimag(b));
-        state[idx1] = make_cuDoubleComplex(s*cuCreal(a) + c*cuCreal(b), s*cuCimag(a) + c*cuCimag(b));
+        state[idx0] =
+            make_cuDoubleComplex(c * cuCreal(a) - s * cuCreal(b), c * cuCimag(a) - s * cuCimag(b));
+        state[idx1] =
+            make_cuDoubleComplex(s * cuCreal(a) + c * cuCreal(b), s * cuCimag(a) + c * cuCimag(b));
     } else {  // Z: newA = e^{-is}·a,  newB = e^{is}·b
         state[idx0] = cuCmul(make_cuDoubleComplex(c, -s), a);
-        state[idx1] = cuCmul(make_cuDoubleComplex(c,  s), b);
+        state[idx1] = cuCmul(make_cuDoubleComplex(c, s), b);
     }
 }
 
 // Hadamard gate on a single qubit: H = 1/√2 · [[1,1],[1,-1]]
-__global__ void kernelHadamard(cuDoubleComplex* state, size_t totalSize,
-                               int regIdx, int qubitIdx,
+__global__ void kernelHadamard(cuDoubleComplex* state, size_t totalSize, int regIdx, int qubitIdx,
                                const int* qbts, const int* flwQbts) {
     size_t pairIdx = blockIdx.x * blockDim.x + threadIdx.x;
     if (pairIdx >= totalSize / 2) return;
@@ -428,14 +433,16 @@ __global__ void kernelHadamard(cuDoubleComplex* state, size_t totalSize,
 
     cuDoubleComplex a = state[idx0], b = state[idx1];
     constexpr double INV_SQRT2 = 1.0 / SQRT2;
-    state[idx0] = make_cuDoubleComplex(INV_SQRT2 * (cuCreal(a) + cuCreal(b)), INV_SQRT2 * (cuCimag(a) + cuCimag(b)));
-    state[idx1] = make_cuDoubleComplex(INV_SQRT2 * (cuCreal(a) - cuCreal(b)), INV_SQRT2 * (cuCimag(a) - cuCimag(b)));
+    state[idx0] = make_cuDoubleComplex(INV_SQRT2 * (cuCreal(a) + cuCreal(b)),
+                                       INV_SQRT2 * (cuCimag(a) + cuCimag(b)));
+    state[idx1] = make_cuDoubleComplex(INV_SQRT2 * (cuCreal(a) - cuCreal(b)),
+                                       INV_SQRT2 * (cuCimag(a) - cuCimag(b)));
 }
 
 // Parity gate: flip all qubits of a register (X on each qubit = reverse index)
 // This maps |j⟩ → |N-1-j⟩ for the target register
-__global__ void kernelParity(cuDoubleComplex* state, size_t totalSize,
-                             int regIdx, const int* qbts, const int* flwQbts) {
+__global__ void kernelParity(cuDoubleComplex* state, size_t totalSize, int regIdx, const int* qbts,
+                             const int* flwQbts) {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= totalSize) return;
 
@@ -455,9 +462,9 @@ __global__ void kernelParity(cuDoubleComplex* state, size_t totalSize,
     state[partnerIdx] = tmp;
 }
 
-__global__ void kernelConditionalParity(cuDoubleComplex* state, size_t totalSize,
-                             int targetReg, int ctrlReg, int ctrlQubit,
-                             const int* qbts, const int* flwQbts) {
+__global__ void kernelConditionalParity(cuDoubleComplex* state, size_t totalSize, int targetReg,
+                                        int ctrlReg, int ctrlQubit, const int* qbts,
+                                        const int* flwQbts) {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= totalSize) return;
 
@@ -480,10 +487,9 @@ __global__ void kernelConditionalParity(cuDoubleComplex* state, size_t totalSize
     state[partnerIdx] = tmp;
 }
 
-// SWAP gate: swap the qubit contents of two registers (must have same numQubits)
-// Maps |i⟩₁|j⟩₂ → |j⟩₁|i⟩₂
-__global__ void kernelSwapRegisters(cuDoubleComplex* state, size_t totalSize,
-                                    int reg1, int reg2,
+// SWAP gate: swap the qubit contents of two registers (must have same
+// numQubits) Maps |i⟩₁|j⟩₂ → |j⟩₁|i⟩₂
+__global__ void kernelSwapRegisters(cuDoubleComplex* state, size_t totalSize, int reg1, int reg2,
                                     const int* qbts, const int* flwQbts) {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= totalSize) return;
@@ -497,9 +503,8 @@ __global__ void kernelSwapRegisters(cuDoubleComplex* state, size_t totalSize,
     // Compute partner index: swap local1 and local2
     size_t stride1 = 1 << flwQbts[reg1];
     size_t stride2 = 1 << flwQbts[reg2];
-    size_t partnerIdx = idx
-        + (local2 - local1) * stride1   // reg1 gets local2
-        - (local2 - local1) * stride2;  // reg2 gets local1
+    size_t partnerIdx = idx + (local2 - local1) * stride1  // reg1 gets local2
+                        - (local2 - local1) * stride2;     // reg2 gets local1
 
     cuDoubleComplex tmp = state[idx];
     state[idx] = state[partnerIdx];
@@ -507,11 +512,8 @@ __global__ void kernelSwapRegisters(cuDoubleComplex* state, size_t totalSize,
 }
 
 // Apply phase based on position squared: exp(i*t*x^2)
-__global__ void kernelPhaseX2(cuDoubleComplex* state, size_t totalSize,
-                                                    int regIdx,
-                                                    const int* qbts, const double* gridSteps,
-                                                    const int* flwQbts,
-                                                    double t) {
+__global__ void kernelPhaseX2(cuDoubleComplex* state, size_t totalSize, int regIdx, const int* qbts,
+                              const double* gridSteps, const int* flwQbts, double t) {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= totalSize) return;
 
@@ -524,11 +526,8 @@ __global__ void kernelPhaseX2(cuDoubleComplex* state, size_t totalSize,
 }
 
 // Apply phase factor to a specific register: exp(i*phaseCoeff*x)
-__global__ void kernelPhaseX3(cuDoubleComplex* state, size_t totalSize,
-                                             int regIdx,
-                                             const int* qbts, const double* gridSteps,
-                                             const int* flwQbts,
-                                             double phaseCoeff) {
+__global__ void kernelPhaseX3(cuDoubleComplex* state, size_t totalSize, int regIdx, const int* qbts,
+                              const double* gridSteps, const int* flwQbts, double phaseCoeff) {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= totalSize) return;
 
@@ -542,11 +541,9 @@ __global__ void kernelPhaseX3(cuDoubleComplex* state, size_t totalSize,
 
 // Apply two-mode position coupling: exp(i*coeff*q1*q2)
 // where q1 and q2 are position operators for two registers
-__global__ void kernelPhaseXX(cuDoubleComplex* state, size_t totalSize,
-                                          int reg1Idx, int reg2Idx,
-                                          const int* qbts, const double* gridSteps,
-                                          const int* flwQbts,
-                                          double coeff) {
+__global__ void kernelPhaseXX(cuDoubleComplex* state, size_t totalSize, int reg1Idx, int reg2Idx,
+                              const int* qbts, const double* gridSteps, const int* flwQbts,
+                              double coeff) {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= totalSize) return;
 
@@ -554,24 +551,21 @@ __global__ void kernelPhaseXX(cuDoubleComplex* state, size_t totalSize,
     size_t reg2Dim = 1 << qbts[reg2Idx];
     double dx1 = gridSteps[reg1Idx];
     double dx2 = gridSteps[reg2Idx];
-    
+
     size_t local1 = getLocalIndex(idx, flwQbts[reg1Idx], qbts[reg1Idx]);
     size_t local2 = getLocalIndex(idx, flwQbts[reg2Idx], qbts[reg2Idx]);
 
     double q1 = gridX(local1, reg1Dim, dx1);
     double q2 = gridX(local2, reg2Dim, dx2);
-    
+
     state[idx] = cmulPhase(state[idx], coeff * q1 * q2);
 }
 
 // Apply controlled two-mode position coupling: exp(i*coeff*Z*q1*q2)
 // where Z acts on ctrlQubit in ctrlReg
-__global__ void kernelCPhaseXX(cuDoubleComplex* state, size_t totalSize,
-                                          int reg1Idx, int reg2Idx,
-                                          int ctrlReg, int ctrlQubit,
-                                          const int* qbts, const double* gridSteps,
-                                          const int* flwQbts,
-                                          double coeff) {
+__global__ void kernelCPhaseXX(cuDoubleComplex* state, size_t totalSize, int reg1Idx, int reg2Idx,
+                               int ctrlReg, int ctrlQubit, const int* qbts, const double* gridSteps,
+                               const int* flwQbts, double coeff) {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= totalSize) return;
 
@@ -599,15 +593,14 @@ __global__ void kernelCPhaseXX(cuDoubleComplex* state, size_t totalSize,
 
 #pragma region FFT Helper Kernels
 
-// Apply scalar multiplication to register elements (not neccessarily normalized scalar)
-__global__ void kernelGlobalScalar(cuDoubleComplex* data, size_t totalSize,
-                                              int regIdx,
-                                              const int* qbts, double scalar) {
+// Apply scalar multiplication to register elements (not neccessarily normalized
+// scalar)
+__global__ void kernelGlobalScalar(cuDoubleComplex* data, size_t totalSize, int regIdx,
+                                   const int* qbts, double scalar) {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= totalSize) return;
 
-    data[idx] = make_cuDoubleComplex(cuCreal(data[idx]) * scalar,
-                                      cuCimag(data[idx]) * scalar);
+    data[idx] = make_cuDoubleComplex(cuCreal(data[idx]) * scalar, cuCimag(data[idx]) * scalar);
 }
 
 // Apply global complex phase exp(i*phase) to all elements of the state
@@ -621,39 +614,26 @@ __global__ void kernelGlobalPhase(cuDoubleComplex* data, size_t totalSize, doubl
 
 #pragma region Utility Kernels
 
-// ============ FFT-based Wigner Function ============
-// Build integrand f_x[y] = Σ_other conj(ψ(x+y)) · ψ(x-y) for batched FFT (FullMode: trace over all other registers)
-__global__ void kernelBuildWignerIntegrand(
-    cuDoubleComplex* dBuf,            // output: [wignerN x cvDim] contiguous rows
-    const cuDoubleComplex* state,
-    int regIdx, int cvDim, double dx,
-    int wignerN, double wXMax,
-    int numReg, const int* qbts, const int* flwQbts)
-{
+// ============ Native Grid Wigner Function ============
+// Build integrand g_i[k] for each x-row on native grid, tracing out other
+// registers
+__global__ void kernelBuildWignerRow(cuDoubleComplex* dBuf, const cuDoubleComplex* state,
+                                     int regIdx, int cvDim, double dx, int numReg, const int* qbts,
+                                     const int* flwQbts) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = wignerN * cvDim;
-    if (tid >= total) return;
-
-    int wxIdx = tid / cvDim;
-    int yIdx  = tid % cvDim;
-
-    double wDx = 2.0 * wXMax / (wignerN - 1);
-    double wx = -wXMax + wxIdx * wDx;
-    double y  = gridX(yIdx, cvDim, dx);
-
-    int xpyIdx = (int)round((wx + y) / dx) + cvDim / 2;
-    int xmyIdx = (int)round((wx - y) / dx) + cvDim / 2;
-
+    if (tid >= cvDim * cvDim) return;
+    int i = tid / cvDim;
+    int k = tid % cvDim;
+    int kDisp = k - (cvDim - 1) / 2;
+    int iPy = i + kDisp;
+    int iMy = i - kDisp;
     cuDoubleComplex sum = make_cuDoubleComplex(0.0, 0.0);
-
-    if (xpyIdx >= 0 && xpyIdx < cvDim && xmyIdx >= 0 && xmyIdx < cvDim) {
+    if (iPy >= 0 && iPy < cvDim && iMy >= 0 && iMy < cvDim) {
         size_t regStride = 1 << flwQbts[regIdx];
         int totalQubits = qbts[0] + flwQbts[0];
         size_t otherSize = 1 << (totalQubits - qbts[regIdx]);
-
         for (size_t otherIdx = 0; otherIdx < otherSize; otherIdx++) {
-            size_t baseIdx = 0;
-            size_t remainingIdx = otherIdx;
+            size_t baseIdx = 0, remainingIdx = otherIdx;
             for (int r = numReg - 1; r >= 0; r--) {
                 if (r == regIdx) continue;
                 size_t rDim = 1 << qbts[r];
@@ -661,203 +641,93 @@ __global__ void kernelBuildWignerIntegrand(
                 baseIdx += (remainingIdx % rDim) * rStride;
                 remainingIdx /= rDim;
             }
-            size_t idxPy = baseIdx + xpyIdx * regStride;
-            size_t idxMy = baseIdx + xmyIdx * regStride;
-            sum = cuCadd(sum, conjMul(state[idxPy], state[idxMy]));
+            sum = cuCadd(
+                sum, conjMul(state[baseIdx + iPy * regStride], state[baseIdx + iMy * regStride]));
         }
     }
-
-    dBuf[wxIdx * cvDim + yIdx] = sum;
+    dBuf[i * cvDim + k] = sum;
 }
 
-// Build integrand for SingleSlice (one fixed configuration of other registers)
-__global__ void kernelBuildWignerIntegrandSingleSlice(
-    cuDoubleComplex* dBuf,            // output: [wignerN x cvDim] contiguous rows
-    const cuDoubleComplex* state,
-    int regIdx, const int* sliceIndices,
-    int cvDim, double dx,
-    int wignerN, double wXMax,
-    const int* qbts, const int* flwQbts)
-{
+// Apply phase correction + fftshift, write N×N output
+__global__ void kernelFinalizeWigner(double* wigner, const cuDoubleComplex* dFFTOut, int cvDim,
+                                     double dx) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = wignerN * cvDim;
-    if (tid >= total) return;
-
-    int wxIdx = tid / cvDim;
-    int yIdx  = tid % cvDim;
-
-    double wDx = 2.0 * wXMax / (wignerN - 1);
-    double wx = -wXMax + wxIdx * wDx;
-    double y  = gridX(yIdx, cvDim, dx);
-
-    int xpyIdx = (int)round((wx + y) / dx) + cvDim / 2;
-    int xmyIdx = (int)round((wx - y) / dx) + cvDim / 2;
-
-    cuDoubleComplex val = make_cuDoubleComplex(0.0, 0.0);
-
-    if (xpyIdx >= 0 && xpyIdx < cvDim && xmyIdx >= 0 && xmyIdx < cvDim) {
-        // Compute base index for the fixed slice
-        size_t baseIdx = 0;
-        for (int r = 0; ; r++) {
-            if (flwQbts[r] == 0 && r > 0) break;
-            if (r != regIdx) {
-                baseIdx += sliceIndices[r] << flwQbts[r];
-            }
-        }
-        size_t regStride = 1 << flwQbts[regIdx];
-        size_t idxPy = baseIdx + xpyIdx * regStride;
-        size_t idxMy = baseIdx + xmyIdx * regStride;
-        val = conjMul(state[idxPy], state[idxMy]);
-    }
-
-    dBuf[wxIdx * cvDim + yIdx] = val;
+    if (tid >= cvDim * cvDim) return;
+    int jc = tid / cvDim;  // centered p-index (row of output)
+    int i = tid % cvDim;   // x-index (col of output)
+    int k_fft = (jc + cvDim / 2) % cvDim;
+    cuDoubleComplex G = dFFTOut[i * cvDim + k_fft];
+    double pj = (jc - cvDim / 2.0) * PI / ((double)cvDim * dx);
+    double phase = -pj * (cvDim - 1) * dx;
+    wigner[tid] = (cuCreal(G) * cos(phase) - cuCimag(G) * sin(phase)) * dx / PI;
 }
 
-// Extract Wigner values from FFT output at user-requested p-grid points
-// cuFFT INVERSE: G[k] = Σ_j f[j] e^{+2πijk/N}, matching p_k = πk/(N·dx)
-// W(x, p) = (dx/π) Re(e^{-ip(N-1)dx} · G[k])
-__global__ void kernelExtractWigner(
-    double* wigner,                    // output: [wignerN x wignerN]
-    const cuDoubleComplex* dFFTOut,    // input:  [wignerN x cvDim] post-IFFT
-    int cvDim, double dx,
-    int wignerN, double wPMax)
-{
+// ============ Native Grid Husimi Q Function ============
+// Build h_{i,slice}[k] for all q-rows for one other-register slice
+__global__ void kernelBuildHusimiRows(cuDoubleComplex* dBuf, const cuDoubleComplex* state,
+                                      int regIdx, double dx, int cvDim, size_t sliceIdx,
+                                      const int* qbts, const int* flwQbts) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= wignerN * wignerN) return;
-
-    int wxIdx = tid % wignerN;
-    int wpIdx = tid / wignerN;
-
-    double wDp = 2.0 * wPMax / (wignerN - 1);
-    double wp = -wPMax + wpIdx * wDp;
-
-    // Map wp to FFT bin index
-    // IFFT freq: p_k = πk/(cvDim·dx) for k=0..cvDim-1 (before fftshift)
-    // After fftshift: p_{k'} = (k' - cvDim/2) · π/(cvDim·dx)
-    // Invert: k' = wp·cvDim·dx/π + cvDim/2
-    double dp = PI / ((double)cvDim * dx);
-    int kShifted = (int)round(wp / dp + cvDim * 0.5);
-
-    if (kShifted < 0) kShifted = 0;
-    if (kShifted >= cvDim) kShifted = cvDim - 1;
-
-    // Undo fftshift to get cuFFT output index: k = (kShifted + cvDim/2) % cvDim
-    int k = (kShifted + cvDim / 2) % cvDim;
-
-    cuDoubleComplex G = dFFTOut[wxIdx * cvDim + k];
-
-    // Phase correction: e^{-ip·(cvDim-1)·dx} where p is the actual FFT frequency
-    double pActual = (kShifted - cvDim * 0.5) * dp;
-    double phase = -pActual * (cvDim - 1) * dx;
-
-    double result = cuCreal(G) * cos(phase) - cuCimag(G) * sin(phase);
-    wigner[tid] = result * dx / PI;
-}
-
-// ============ FFT-based Husimi Q Function ============
-// Build windowed signal h_q[x] = π^{-1/4} exp(-½(x-q)²) √dx · ψ_slice(x) for one slice
-__global__ void kernelBuildHusimiWindowed(
-    cuDoubleComplex* dBuf,            // output: [qN x cvDim] contiguous rows
-    const cuDoubleComplex* state,
-    int regIdx, double dx,
-    int qN, double qMax,
-    size_t sliceIdx,
-    const int* qbts, const int* flwQbts)
-{
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    int cvDim = 1 << qbts[regIdx];
-    int total = qN * cvDim;
-    if (tid >= total) return;
-
+    if (tid >= cvDim * cvDim) return;
     int qIdx = tid / cvDim;
     int xIdx = tid % cvDim;
-
-    double dq = 2.0 * qMax / (qN - 1);
-    double sample_q = -qMax + qIdx * dq;
+    double sample_q = gridX(qIdx, cvDim, dx);  // native grid point
     double x = gridX(xIdx, cvDim, dx);
-
-    // Gaussian window (no phase factor — phases cancel in |·|²)
     double amplitude = PI_POW_NEG_QUARTER * exp(-0.5 * (x - sample_q) * (x - sample_q)) * sqrt(dx);
-
-    // State vector element for this slice (same bitmask indexing as before)
+    // same bitmask indexing as kernelBuildHusimiWindowed:
     int qbtsAfterCV = flwQbts[regIdx];
     size_t qbtsAfterCVMask = (1 << qbtsAfterCV) - 1;
-    cuDoubleComplex psi = state[(sliceIdx & qbtsAfterCVMask) |
-                                (xIdx << flwQbts[regIdx]) |
-                                ((sliceIdx & ~qbtsAfterCVMask) << (qbts[regIdx]))];
+    cuDoubleComplex psi = state[(sliceIdx & qbtsAfterCVMask) | ((size_t)xIdx << flwQbts[regIdx]) |
+                                ((sliceIdx & ~qbtsAfterCVMask) << qbts[regIdx])];
+    dBuf[qIdx * cvDim + xIdx] = cuCmul(psi, make_cuDoubleComplex(amplitude, 0.0));
+}
 
-    dBuf[qIdx * cvDim + xIdx] = cuCmul(psi, amplitude);
+// fftshift + normalize accumulated power
+__global__ void kernelFinalizeHusimi(double* outQ, const double* dAccum, int cvDim) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= cvDim * cvDim) return;
+    int jc = tid / cvDim;    // centered p-index (row of output)
+    int qIdx = tid % cvDim;  // q-index (col of output)
+    int k_fft = (jc + cvDim / 2) % cvDim;
+    outQ[tid] = dAccum[qIdx * cvDim + k_fft] / PI;
 }
 
 // Accumulate |H[k]|² from FFT output into accumulation buffer
 __global__ void kernelAccumHusimiPower(
-    double* dAccum,                    // [qN x cvDim], accumulated across slices
-    const cuDoubleComplex* dFFTOut,    // [qN x cvDim], post-FFT for one slice
-    int totalElements)
-{
+    double* dAccum,                  // [qN x cvDim], accumulated across slices
+    const cuDoubleComplex* dFFTOut,  // [qN x cvDim], post-FFT for one slice
+    int totalElements) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= totalElements) return;
     dAccum[tid] += absSquare(dFFTOut[tid]);
 }
 
-// Extract Husimi Q values from accumulated power spectrum at user-requested p-grid
-// cuFFT FORWARD: H[k] = Σ h[j] e^{-2πijk/N}, matching p_k = 2πk/(N·dx)
-// Q(q,p) = |H[k]|² / π  (no phase correction needed)
-__global__ void kernelExtractHusimi(
-    double* outHusimiQ,               // output: [qN x qN]
-    const double* dAccum,             // input:  [qN x cvDim]
-    int cvDim, double dx,
-    int qN, double qMax, double pMax)
-{
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= qN * qN) return;
-
-    int qIdx = tid % qN;
-    int pIdx = tid / qN;
-
-    double dp_out = 2.0 * pMax / (qN - 1);
-    double sample_p = -pMax + pIdx * dp_out;
-
-    // Map sample_p to FFT bin index
-    // FFT freq: p_k = 2πk/(cvDim·dx) for k=0..cvDim-1 (before fftshift)
-    // After fftshift: p_{k'} = (k' - cvDim/2) · 2π/(cvDim·dx)
-    double dp = 2.0 * PI / ((double)cvDim * dx);
-    int kShifted = (int)round(sample_p / dp + cvDim * 0.5);
-
-    if (kShifted < 0) kShifted = 0;
-    if (kShifted >= cvDim) kShifted = cvDim - 1;
-
-    int k = (kShifted + cvDim / 2) % cvDim;
-
-    outHusimiQ[tid] = dAccum[qIdx * cvDim + k] / PI;
-}
-
-// Compute probability of joint measurement for two registers by summing over all other registers
+// Compute probability of joint measurement for two registers by summing over
+// all other registers
 __global__ void kernelComputeJointMeasure(double* outJointProb, const cuDoubleComplex* state,
-                                          int reg1Idx, int reg2Idx,
-                                          size_t totalSize, int numReg,
+                                          int reg1Idx, int reg2Idx, size_t totalSize, int numReg,
                                           const int* qbts, const int* flwQbts) {
     // Each thread computes one joint probability P(local1, local2)
     size_t pairIdx = blockIdx.x * blockDim.x + threadIdx.x;
     size_t totalPairs = 1 << (qbts[reg1Idx] + qbts[reg2Idx]);
-    
+
     if (pairIdx >= totalPairs) return;
-    
+
     // Extract local indices for the two registers from pairIdx
     size_t local1 = pairIdx / (1 << qbts[reg2Idx]);
     size_t local2 = pairIdx % (1 << qbts[reg2Idx]);
-    
+
     // Sum over all configurations of other registers
     double prob = 0.0;
-    
+
     // Total dimension of all other registers
     size_t otherSize = totalSize >> (qbts[reg1Idx] + qbts[reg2Idx]);
-    
+
     for (size_t otherIdx = 0; otherIdx < otherSize; otherIdx++) {
         // Reconstruct global index from local indices and otherIdx
         size_t globalIdx = 0;
         size_t remainingOther = otherIdx;
-        
+
         // Build global index by processing registers from first to last
         for (int r = 0; r < numReg; r++) {
             size_t localIdx;
@@ -871,21 +741,22 @@ __global__ void kernelComputeJointMeasure(double* outJointProb, const cuDoubleCo
                 localIdx = remainingOther % regDim;
                 remainingOther /= regDim;
             }
-            
+
             // Add contribution to global index (last register varies fastest)
             globalIdx += localIdx << flwQbts[r];
         }
-        
+
         prob += absSquare(state[globalIdx]);
     }
-    
+
     outJointProb[pairIdx] = prob;
 }
 
-// Kernel to compute <x²> expectation for a register: sum |state[i]|² * x_localIdx²
-__global__ void kernelExpectX2(double* partialSums, const cuDoubleComplex* state,
-                               size_t totalSize, int regIdx,
-                               const int* qbts, const double* gridSteps, const int* flwQbts) {
+// Kernel to compute <x²> expectation for a register: sum |state[i]|² *
+// x_localIdx²
+__global__ void kernelExpectX2(double* partialSums, const cuDoubleComplex* state, size_t totalSize,
+                               int regIdx, const int* qbts, const double* gridSteps,
+                               const int* flwQbts) {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     double localSum = 0.0;
 
@@ -905,7 +776,8 @@ __global__ void kernelExpectX2(double* partialSums, const cuDoubleComplex* state
 }
 
 // Kernel to compute norm (sum of |state[i]|^2)
-__global__ void kernelComputeNorm(double* partialSums, const cuDoubleComplex* state, size_t totalSize) {
+__global__ void kernelComputeNorm(double* partialSums, const cuDoubleComplex* state,
+                                  size_t totalSize) {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     double localSum = 0.0;
 
@@ -923,38 +795,39 @@ __global__ void kernelComputeNorm(double* partialSums, const cuDoubleComplex* st
     }
 }
 
-// Kernel to compute tensor product element and its contribution to inner product
-// Each thread computes one element of the tensor product and accumulates <current_state | tensor_product>
-__global__ void kernelComputeInnerProduct(cuDoubleComplex* partialSums, const cuDoubleComplex* state,
-                                          cuDoubleComplex** dRegisterArrays,
-                                          int numReg, const int* qbts, const int* flwQbts,
-                                          size_t totalSize) {
+// Kernel to compute tensor product element and its contribution to inner
+// product Each thread computes one element of the tensor product and
+// accumulates <current_state | tensor_product>
+__global__ void kernelComputeInnerProduct(cuDoubleComplex* partialSums,
+                                          const cuDoubleComplex* state,
+                                          cuDoubleComplex** dRegisterArrays, int numReg,
+                                          const int* qbts, const int* flwQbts, size_t totalSize) {
     // Shared memory for reduction within block
     extern __shared__ cuDoubleComplex sdata[];
-    
+
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    
+
     cuDoubleComplex localSum = make_cuDoubleComplex(0.0, 0.0);
-    
+
     // Grid-stride loop
     for (size_t globalIdx = idx; globalIdx < totalSize; globalIdx += blockDim.x * gridDim.x) {
         // Compute tensor product element for this global index
         cuDoubleComplex tensorElement = make_cuDoubleComplex(1.0, 0.0);
-        
+
         for (int r = 0; r < numReg; r++) {
             size_t localIdx = getLocalIndex(globalIdx, flwQbts[r], qbts[r]);
             tensorElement = cuCmul(tensorElement, dRegisterArrays[r][localIdx]);
         }
-        
+
         // Accumulate <state | tensor_product> = sum conj(state) * tensor_product
         cuDoubleComplex stateVal = state[globalIdx];
         localSum = cuCadd(localSum, conjMul(stateVal, tensorElement));
     }
-    
+
     // Store in shared memory
     sdata[threadIdx.x] = localSum;
     __syncthreads();
-    
+
     // Reduce within block
     for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
         if (threadIdx.x < s) {
@@ -962,7 +835,7 @@ __global__ void kernelComputeInnerProduct(cuDoubleComplex* partialSums, const cu
         }
         __syncthreads();
     }
-    
+
     // Write block result
     if (threadIdx.x == 0) {
         partialSums[blockIdx.x] = sdata[0];
@@ -972,8 +845,7 @@ __global__ void kernelComputeInnerProduct(cuDoubleComplex* partialSums, const cu
 // Kernel to compute inner product <psi1|psi2> = sum conj(psi1[i]) * psi2[i]
 __global__ void kernelInnerProductStatevectors(cuDoubleComplex* partialSums,
                                                const cuDoubleComplex* psi1,
-                                               const cuDoubleComplex* psi2,
-                                               size_t totalSize) {
+                                               const cuDoubleComplex* psi2, size_t totalSize) {
     extern __shared__ cuDoubleComplex sdata[];
 
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1014,7 +886,7 @@ CVDVContext* cvdvCreate(int numReg, int* numQubits) {
             fflush(gLogFile);
         }
     }
-    
+
     CVDVContext* ctx;
     checkCudaErrors(nullptr, cudaMallocManaged(&ctx, sizeof(CVDVContext)));
     ctx->dState = nullptr;
@@ -1024,16 +896,15 @@ CVDVContext* cvdvCreate(int numReg, int* numQubits) {
     ctx->gNumReg = 0;
     ctx->gTotalQbt = 0;
     ctx->ftPlans = nullptr;
-    ctx->wsPlanValid = false;
-    ctx->wfPlanValid = false;
-    ctx->hPlanValid  = false;
+    ctx->wPlanValid = false;
+    ctx->hPlanValid = false;
 
     // If no registers specified, return empty context
     if (numReg == 0 || numQubits == nullptr) {
         logInfo(ctx, "Created empty context");
         return ctx;
     }
-    
+
     logInfo(ctx, "Allocating %d registers", numReg);
     ctx->gNumReg = numReg;
 
@@ -1052,11 +923,10 @@ CVDVContext* cvdvCreate(int numReg, int* numQubits) {
         size_t registerDim = 1 << numQubits[i];
         ctx->gGridSteps[i] = sqrt(2.0 * PI / registerDim);
 
-        logDebug(ctx, "Register %d: qubits=%d, dx=%.6f, dim=%zu, x_bound=%.6f",
-                  i, numQubits[i], ctx->gGridSteps[i], registerDim,
-                  sqrt(2.0 * PI * registerDim));
+        logDebug(ctx, "Register %d: qubits=%d, dx=%.6f, dim=%zu, x_bound=%.6f", i, numQubits[i],
+                 ctx->gGridSteps[i], registerDim, sqrt(2.0 * PI * registerDim));
     }
-    
+
     // Compute following qubit counts (sum of qubits after each register)
     for (int i = 0; i < numReg; i++) {
         int followQubits = 0;
@@ -1065,7 +935,7 @@ CVDVContext* cvdvCreate(int numReg, int* numQubits) {
         }
         ctx->gFlwQbts[i] = followQubits;
     }
-    
+
     // Build per-register cuFFT plans (parameters are fully determined now).
     ctx->ftPlans = (cufftHandle*)malloc(numReg * sizeof(cufftHandle));
     size_t totalSize = (size_t)1 << ctx->gTotalQbt;
@@ -1081,13 +951,12 @@ CVDVContext* cvdvCreate(int numReg, int* numQubits) {
             int iDist = 1, oDist = 1;
             int batch = (int)regStride;
             int nembed[1] = {n * (int)regStride};
-            planRes = cufftPlanMany(&ctx->ftPlans[i], 1, &n,
-                                    nembed, iStride, iDist,
-                                    nembed, oStride, oDist,
-                                    CUFFT_Z2Z, batch);
+            planRes = cufftPlanMany(&ctx->ftPlans[i], 1, &n, nembed, iStride, iDist, nembed,
+                                    oStride, oDist, CUFFT_Z2Z, batch);
         }
         if (planRes != CUFFT_SUCCESS) {
-            fprintf(stderr, "cvdvCreate: cuFFT plan creation failed for register %d: %d\n", i, planRes);
+            fprintf(stderr, "cvdvCreate: cuFFT plan creation failed for register %d: %d\n", i,
+                    planRes);
             exit(EXIT_FAILURE);
         }
     }
@@ -1113,9 +982,14 @@ void cvdvDestroy(CVDVContext* ctx) {
         free(ctx->ftPlans);
         ctx->ftPlans = nullptr;
     }
-    if (ctx->wsPlanValid) { cufftDestroy(ctx->wsPlan); ctx->wsPlanValid = false; }
-    if (ctx->wfPlanValid) { cufftDestroy(ctx->wfPlan); ctx->wfPlanValid = false; }
-    if (ctx->hPlanValid)  { cufftDestroy(ctx->hPlan);  ctx->hPlanValid  = false; }
+    if (ctx->wPlanValid) {
+        cufftDestroy(ctx->wPlan);
+        ctx->wPlanValid = false;
+    }
+    if (ctx->hPlanValid) {
+        cufftDestroy(ctx->hPlan);
+        ctx->hPlanValid = false;
+    }
 
     // Free managed memory
     if (ctx->gQbts != nullptr) {
@@ -1138,7 +1012,7 @@ void cvdvDestroy(CVDVContext* ctx) {
         fclose(gLogFile);
         gLogFile = nullptr;
     }
-    
+
     cudaFree(ctx);
 }
 
@@ -1147,8 +1021,9 @@ void cvdvDestroy(CVDVContext* ctx) {
 #pragma region C API - Initialization and Cleanup
 
 // Build the full tensor-product state from per-register device pointers.
-// devicePtrs[i] must point to cuDoubleComplex device memory of size (1 << gQbts[i]).
-// This replaces the old cvdvInitStateVector + cvdvSetRegisterFromDevicePtr pattern.
+// devicePtrs[i] must point to cuDoubleComplex device memory of size (1 <<
+// gQbts[i]). This replaces the old cvdvInitStateVector +
+// cvdvSetRegisterFromDevicePtr pattern.
 void cvdvInitFromSeparable(CVDVContext* ctx, void** devicePtrs, int numReg) {
     if (!ctx) return;
     if (ctx->gNumReg == 0) {
@@ -1170,10 +1045,9 @@ void cvdvInitFromSeparable(CVDVContext* ctx, void** devicePtrs, int numReg) {
     for (int i = 0; i < numReg; i++) {
         size_t regDim = 1 << ctx->gQbts[i];
         hTempRegs[i] = new cuDoubleComplex[regDim];
-        checkCudaErrors(ctx, cudaMemcpy(hTempRegs[i],
-                                        reinterpret_cast<cuDoubleComplex*>(devicePtrs[i]),
-                                        regDim * sizeof(cuDoubleComplex),
-                                        cudaMemcpyDeviceToHost));
+        checkCudaErrors(ctx,
+                        cudaMemcpy(hTempRegs[i], reinterpret_cast<cuDoubleComplex*>(devicePtrs[i]),
+                                   regDim * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost));
     }
 
     // Compute tensor product on host (last register varies fastest)
@@ -1198,8 +1072,7 @@ void cvdvInitFromSeparable(CVDVContext* ctx, void** devicePtrs, int numReg) {
     logDebug(ctx, "Allocating device memory: %.3f GB",
              totalSize * sizeof(cuDoubleComplex) / (1024.0 * 1024.0 * 1024.0));
     checkCudaErrors(ctx, cudaMalloc(&ctx->dState, totalSize * sizeof(cuDoubleComplex)));
-    checkCudaErrors(ctx, cudaMemcpy(ctx->dState, hState,
-                                    totalSize * sizeof(cuDoubleComplex),
+    checkCudaErrors(ctx, cudaMemcpy(ctx->dState, hState, totalSize * sizeof(cuDoubleComplex),
                                     cudaMemcpyHostToDevice));
     delete[] hState;
 
@@ -1257,9 +1130,8 @@ void cvdvFtQ2P(CVDVContext* ctx, int regIdx) {
     // In position representation: exp(i*π(N-1)/(N*dx) * x)
     double phaseCoeff = PI * (regDim - 1.0) / (regDim * dx);
     logDebug(ctx, "Applying pre-phase correction: phaseCoeff=%.6f", phaseCoeff);
-    kernelPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, totalSize,
-                                          regIdx,
-                                          ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, phaseCoeff);
+    kernelPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, totalSize, regIdx, ctx->gQbts,
+                                            ctx->gGridSteps, ctx->gFlwQbts, phaseCoeff);
 
     // Step 2: Forward FFT — use cached plan
     size_t regStride = 1 << ctx->gFlwQbts[regIdx];
@@ -1278,7 +1150,8 @@ void cvdvFtQ2P(CVDVContext* ctx, int regIdx) {
         size_t outerDim = totalSize / regBlockSize;
         logDebug(ctx, "Strided FFT (cached plan): %zu outer blocks", outerDim);
         for (size_t o = 0; o < outerDim; o++) {
-            cuDoubleComplex* blockStart = ctx->dState + (o << (ctx->gFlwQbts[regIdx] + ctx->gQbts[regIdx]));
+            cuDoubleComplex* blockStart =
+                ctx->dState + (o << (ctx->gFlwQbts[regIdx] + ctx->gQbts[regIdx]));
             cufftResult result = cufftExecZ2Z(plan, blockStart, blockStart, CUFFT_FORWARD);
             if (result != CUFFT_SUCCESS) {
                 fprintf(stderr, "cuFFT forward execution failed: %d at block %zu\n", result, o);
@@ -1289,15 +1162,12 @@ void cvdvFtQ2P(CVDVContext* ctx, int regIdx) {
 
     // Step 3: Post-phase correction: exp(i*π(N-1)/N * k)
     // In momentum representation: exp(i*π(N-1)/(N*dx) * p)
-    kernelPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, totalSize,
-                                          regIdx,
-                                          ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, phaseCoeff);
+    kernelPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, totalSize, regIdx, ctx->gQbts,
+                                            ctx->gGridSteps, ctx->gFlwQbts, phaseCoeff);
 
     // Step 4: Normalization (1/√N for unitary transform)
     double norm = 1.0 / sqrt((double)regDim);
-    kernelGlobalScalar<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, totalSize,
-                                                   regIdx,
-                                                   ctx->gQbts, norm);
+    kernelGlobalScalar<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, totalSize, regIdx, ctx->gQbts, norm);
 
     // Step 5: Global phase correction: exp(i*π*(N-1)²/(2N))
     // Matches dvsim-code convention: dvsim_QFT = CVDV_QFT * exp(i*π*(N-1)²/(2N))
@@ -1329,9 +1199,8 @@ void cvdvFtP2Q(CVDVContext* ctx, int regIdx) {
     // Step 1: Pre-phase correction (negative phase): exp(-i*π(N-1)/N * j)
     // In momentum representation: exp(-i*π(N-1)/(N*dx) * p)
     double phaseCoeff = -PI * (regDim - 1.0) / (regDim * dx);
-    kernelPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
-                                          regIdx,
-                                          ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, phaseCoeff);
+    kernelPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), regIdx, ctx->gQbts,
+                                            ctx->gGridSteps, ctx->gFlwQbts, phaseCoeff);
 
     // Step 2: Inverse FFT — use cached plan
     size_t regStride = 1 << ctx->gFlwQbts[regIdx];
@@ -1347,7 +1216,8 @@ void cvdvFtP2Q(CVDVContext* ctx, int regIdx) {
         size_t regBlockSize = regStride << ctx->gQbts[regIdx];
         size_t outerDim = (1 << ctx->gTotalQbt) / regBlockSize;
         for (size_t o = 0; o < outerDim; o++) {
-            cuDoubleComplex* blockStart = ctx->dState + (o << (ctx->gFlwQbts[regIdx] + ctx->gQbts[regIdx]));
+            cuDoubleComplex* blockStart =
+                ctx->dState + (o << (ctx->gFlwQbts[regIdx] + ctx->gQbts[regIdx]));
             cufftResult result = cufftExecZ2Z(plan, blockStart, blockStart, CUFFT_INVERSE);
             if (result != CUFFT_SUCCESS) {
                 fprintf(stderr, "cuFFT inverse execution failed: %d at block %zu\n", result, o);
@@ -1358,15 +1228,13 @@ void cvdvFtP2Q(CVDVContext* ctx, int regIdx) {
 
     // Step 3: Post-phase correction (negative phase): exp(-i*π(N-1)/N * k)
     // In position representation: exp(-i*π(N-1)/(N*dx) * x)
-    kernelPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
-                                          regIdx,
-                                          ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, phaseCoeff);
+    kernelPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), regIdx, ctx->gQbts,
+                                            ctx->gGridSteps, ctx->gFlwQbts, phaseCoeff);
 
     // Step 4: Normalization (1/√N for unitary transform)
     double norm = 1.0 / sqrt((double)regDim);
-    kernelGlobalScalar<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
-                                                   regIdx,
-                                                   ctx->gQbts, norm);
+    kernelGlobalScalar<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), regIdx,
+                                                  ctx->gQbts, norm);
 
     // Step 5: Global phase correction (conjugate of ftQ2P): exp(-i*π*(N-1)²/(2N))
     double globalPhase = -PI * (double)(regDim - 1) * (double)(regDim - 1) / (2.0 * (double)regDim);
@@ -1393,10 +1261,9 @@ void cvdvDisplacement(CVDVContext* ctx, int regIdx, double betaRe, double betaIm
 
     // Step 1: Apply D(i*Im(α)) = exp(i*sqrt(2)*Im(α)*q) in position space
     if (fabs(betaIm) > 1e-12) {
-        kernelPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
-                                                       regIdx,
-                                                       ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
-                                                       SQRT2 * betaIm);
+        kernelPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), regIdx,
+                                                ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
+                                                SQRT2 * betaIm);
         checkCudaErrors(ctx, cudaGetLastError());
         checkCudaErrors(ctx, cudaDeviceSynchronize());
     }
@@ -1407,10 +1274,9 @@ void cvdvDisplacement(CVDVContext* ctx, int regIdx, double betaRe, double betaIm
         cvdvFtQ2P(ctx, regIdx);
 
         // Apply phase in momentum space
-        kernelPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
-                                                       regIdx,
-                                                       ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
-                                                       -SQRT2 * betaRe);
+        kernelPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), regIdx,
+                                                ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
+                                                -SQRT2 * betaRe);
         checkCudaErrors(ctx, cudaGetLastError());
         checkCudaErrors(ctx, cudaDeviceSynchronize());
 
@@ -1421,7 +1287,8 @@ void cvdvDisplacement(CVDVContext* ctx, int regIdx, double betaRe, double betaIm
     // Note: Global phase exp(-i*Im(α)*Re(α)) is ignored
 }
 
-void cvdvConditionalDisplacement(CVDVContext* ctx, int targetReg, int ctrlReg, int ctrlQubit, double alphaRe, double alphaIm) {
+void cvdvConditionalDisplacement(CVDVContext* ctx, int targetReg, int ctrlReg, int ctrlQubit,
+                                 double alphaRe, double alphaIm) {
     if (!ctx) return;
     if (targetReg < 0 || targetReg >= ctx->gNumReg) {
         fprintf(stderr, "Invalid target register index: %d\n", targetReg);
@@ -1434,17 +1301,16 @@ void cvdvConditionalDisplacement(CVDVContext* ctx, int targetReg, int ctrlReg, i
 
     // Conditional displacement: CD(α) = CD(i*Im(α)) CD(Re(α))
     // CD(i*p0) = exp(i*sqrt(2)*p0*Z*q) - controlled phase in position space
-    // CD(q0) = F^{-1} exp(-i*sqrt(2)*q0*Z*p) F - controlled phase in momentum space
-    // where Z = |0⟩⟨0| - |1⟩⟨1|, so |0⟩ gets +α and |1⟩ gets -α
+    // CD(q0) = F^{-1} exp(-i*sqrt(2)*q0*Z*p) F - controlled phase in momentum
+    // space where Z = |0⟩⟨0| - |1⟩⟨1|, so |0⟩ gets +α and |1⟩ gets -α
 
     int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
 
     // Step 1: Apply CD(i*Im(α)) = exp(i√2 Im(α) Z q) in position space
     if (fabs(alphaIm) > 1e-12) {
-        kernelCPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
-                                                targetReg, ctrlReg, ctrlQubit,
-                                                ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
-                                                SQRT2 * alphaIm);
+        kernelCPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), targetReg,
+                                                 ctrlReg, ctrlQubit, ctx->gQbts, ctx->gGridSteps,
+                                                 ctx->gFlwQbts, SQRT2 * alphaIm);
         checkCudaErrors(ctx, cudaGetLastError());
         checkCudaErrors(ctx, cudaDeviceSynchronize());
     }
@@ -1455,10 +1321,9 @@ void cvdvConditionalDisplacement(CVDVContext* ctx, int targetReg, int ctrlReg, i
         cvdvFtQ2P(ctx, targetReg);
 
         // Apply exp(-i√2 Re(α) Z p) in momentum space
-        kernelCPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
-                                                targetReg, ctrlReg, ctrlQubit,
-                                                ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
-                                                -SQRT2 * alphaRe);
+        kernelCPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), targetReg,
+                                                 ctrlReg, ctrlQubit, ctx->gQbts, ctx->gGridSteps,
+                                                 ctx->gFlwQbts, -SQRT2 * alphaRe);
         checkCudaErrors(ctx, cudaGetLastError());
         checkCudaErrors(ctx, cudaDeviceSynchronize());
 
@@ -1476,10 +1341,9 @@ void cvdvPauliRotation(CVDVContext* ctx, int regIdx, int qubitIdx, int axis, dou
 
     int grid = ((1 << ctx->gTotalQbt) / 2 + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
 
-    kernelPauliRotation<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
-                                                      regIdx, qubitIdx,
-                                                      ctx->gQbts, ctx->gFlwQbts,
-                                                      axis, theta);
+    kernelPauliRotation<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), regIdx,
+                                                   qubitIdx, ctx->gQbts, ctx->gFlwQbts, axis,
+                                                   theta);
     checkCudaErrors(ctx, cudaGetLastError());
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 }
@@ -1493,7 +1357,8 @@ void cvdvHadamard(CVDVContext* ctx, int regIdx, int qubitIdx) {
 
     int grid = ((1 << ctx->gTotalQbt) / 2 + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
 
-    kernelHadamard<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), regIdx, qubitIdx, ctx->gQbts, ctx->gFlwQbts);
+    kernelHadamard<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), regIdx, qubitIdx,
+                                              ctx->gQbts, ctx->gFlwQbts);
     checkCudaErrors(ctx, cudaGetLastError());
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 }
@@ -1506,8 +1371,8 @@ void cvdvParity(CVDVContext* ctx, int regIdx) {
     }
 
     int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
-    kernelParity<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
-                                            regIdx, ctx->gQbts, ctx->gFlwQbts);
+    kernelParity<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), regIdx, ctx->gQbts,
+                                            ctx->gFlwQbts);
     checkCudaErrors(ctx, cudaGetLastError());
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 }
@@ -1529,8 +1394,8 @@ void cvdvConditionalParity(CVDVContext* ctx, int targetReg, int ctrlReg, int ctr
 
     int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
     kernelConditionalParity<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
-                                            targetReg, ctrlReg, ctrlQubit,
-                                            ctx->gQbts, ctx->gFlwQbts);
+                                                       targetReg, ctrlReg, ctrlQubit, ctx->gQbts,
+                                                       ctx->gFlwQbts);
     checkCudaErrors(ctx, cudaGetLastError());
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 }
@@ -1548,9 +1413,8 @@ void cvdvSwapRegisters(CVDVContext* ctx, int reg1, int reg2) {
     if (reg1 == reg2) return;
 
     int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
-    kernelSwapRegisters<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
-                                                    reg1, reg2,
-                                                    ctx->gQbts, ctx->gFlwQbts);
+    kernelSwapRegisters<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), reg1, reg2,
+                                                   ctx->gQbts, ctx->gFlwQbts);
     checkCudaErrors(ctx, cudaGetLastError());
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 }
@@ -1564,7 +1428,8 @@ void cvdvPhaseSquare(CVDVContext* ctx, int regIdx, double t) {
 
     int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
 
-    kernelPhaseX2<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), regIdx, ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, t);
+    kernelPhaseX2<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), regIdx, ctx->gQbts,
+                                             ctx->gGridSteps, ctx->gFlwQbts, t);
     checkCudaErrors(ctx, cudaGetLastError());
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 }
@@ -1578,7 +1443,8 @@ void cvdvPhaseCubic(CVDVContext* ctx, int regIdx, double t) {
 
     int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
 
-    kernelPhaseX3<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), regIdx, ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, t);
+    kernelPhaseX3<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), regIdx, ctx->gQbts,
+                                             ctx->gGridSteps, ctx->gFlwQbts, t);
     checkCudaErrors(ctx, cudaGetLastError());
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 }
@@ -1609,7 +1475,8 @@ void cvdvRotation(CVDVContext* ctx, int regIdx, double theta) {
     // where θ₀ ∈ (π/2)Z is chosen so |θ-θ₀| ≤ π/4
     // R(π/2) = FT, R(π) = Parity, R(-π/2) = FT†
 
-    // Find nearest multiple of π/2 using round-half-to-even (matches Python's np.round)
+    // Find nearest multiple of π/2 using round-half-to-even (matches Python's
+    // np.round)
     double theta0 = rint(theta / (PI / 2.0)) * (PI / 2.0);
     double remainder = theta - theta0;
 
@@ -1620,10 +1487,17 @@ void cvdvRotation(CVDVContext* ctx, int regIdx, double theta) {
     quarterTurns = ((quarterTurns % 4) + 4) % 4;
 
     switch (quarterTurns) {
-        case 0: break;  // identity
-        case 1: cvdvFtQ2P(ctx, regIdx); break;          // R(π/2) = FT
-        case 2: cvdvParity(ctx, regIdx); break;          // R(π) = Parity
-        case 3: cvdvFtP2Q(ctx, regIdx); break;           // R(-π/2) = R(3π/2) = FT†
+        case 0:
+            break;  // identity
+        case 1:
+            cvdvFtQ2P(ctx, regIdx);
+            break;  // R(π/2) = FT
+        case 2:
+            cvdvParity(ctx, regIdx);
+            break;  // R(π) = Parity
+        case 3:
+            cvdvFtP2Q(ctx, regIdx);
+            break;  // R(-π/2) = R(3π/2) = FT†
     }
 
     // Apply small-angle remainder
@@ -1631,21 +1505,24 @@ void cvdvRotation(CVDVContext* ctx, int regIdx, double theta) {
 }
 
 // Internal helper: apply controlled phase square exp(i*t*Z*q^2)
-static void cvdvControlledPhaseSquare(CVDVContext* ctx, int targetReg, int ctrlReg, int ctrlQubit, double t) {
+static void cvdvControlledPhaseSquare(CVDVContext* ctx, int targetReg, int ctrlReg, int ctrlQubit,
+                                      double t) {
     int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
 
-    kernelCPhaseX2<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
-                                                targetReg, ctrlReg, ctrlQubit,
-                                                ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, t);
+    kernelCPhaseX2<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), targetReg,
+                                              ctrlReg, ctrlQubit, ctx->gQbts, ctx->gGridSteps,
+                                              ctx->gFlwQbts, t);
     checkCudaErrors(ctx, cudaGetLastError());
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 }
 
 // Internal: small-angle conditional rotation |θ| ≤ π/4
-static void cvdvConditionalRotationSmall(CVDVContext* ctx, int targetReg, int ctrlReg, int ctrlQubit, double theta) {
+static void cvdvConditionalRotationSmall(CVDVContext* ctx, int targetReg, int ctrlReg,
+                                         int ctrlQubit, double theta) {
     if (fabs(theta) < 1e-15) return;
 
-    // CR(θ) = exp(-i/2 Z tan(θ/2) q^2) exp(-i/2 Z sin(θ) p^2) exp(-i/2 Z tan(θ/2) q^2)
+    // CR(θ) = exp(-i/2 Z tan(θ/2) q^2) exp(-i/2 Z sin(θ) p^2) exp(-i/2 Z tan(θ/2)
+    // q^2)
     double tanHalfTheta = tan(theta / 2.0);
     double sinTheta = sin(theta);
 
@@ -1656,7 +1533,8 @@ static void cvdvConditionalRotationSmall(CVDVContext* ctx, int targetReg, int ct
     cvdvControlledPhaseSquare(ctx, targetReg, ctrlReg, ctrlQubit, -0.5 * tanHalfTheta);
 }
 
-void cvdvConditionalRotation(CVDVContext* ctx, int targetReg, int ctrlReg, int ctrlQubit, double theta) {
+void cvdvConditionalRotation(CVDVContext* ctx, int targetReg, int ctrlReg, int ctrlQubit,
+                             double theta) {
     if (!ctx) return;
     if (targetReg < 0 || targetReg >= ctx->gNumReg) {
         fprintf(stderr, "Invalid target register index: %d\n", targetReg);
@@ -1675,7 +1553,8 @@ void cvdvConditionalRotation(CVDVContext* ctx, int targetReg, int ctrlReg, int c
     // where θ₀ ∈ (π/2)Z is chosen so |θ-θ₀| ≤ π/4
     // R(π/2) = FT, R(π) = Parity, R(-π/2) = FT†
 
-    // Find nearest multiple of π/2 using round-half-to-even (matches Python's np.round)
+    // Find nearest multiple of π/2 using round-half-to-even (matches Python's
+    // np.round)
     double theta0 = rint(theta / (PI / 2.0)) * (PI / 2.0);
     double remainder = theta - theta0;
 
@@ -1686,10 +1565,22 @@ void cvdvConditionalRotation(CVDVContext* ctx, int targetReg, int ctrlReg, int c
     quarterTurns = ((quarterTurns % 4) + 4) % 4;
 
     switch (quarterTurns) {
-        case 0: break;  // identity
-        case 1: cvdvFtQ2P(ctx, targetReg); cvdvConditionalParity(ctx, targetReg, ctrlReg, ctrlQubit); cvdvPauliRotation(ctx, ctrlReg, ctrlQubit, 2, PI/2); break;
-        case 2: cvdvParity(ctx, targetReg); cvdvPauliRotation(ctx, ctrlReg, ctrlQubit, 2, PI); break;
-        case 3: cvdvFtP2Q(ctx, targetReg); cvdvConditionalParity(ctx, targetReg, ctrlReg, ctrlQubit); cvdvPauliRotation(ctx, ctrlReg, ctrlQubit, 2, -PI/2); break;
+        case 0:
+            break;  // identity
+        case 1:
+            cvdvFtQ2P(ctx, targetReg);
+            cvdvConditionalParity(ctx, targetReg, ctrlReg, ctrlQubit);
+            cvdvPauliRotation(ctx, ctrlReg, ctrlQubit, 2, PI / 2);
+            break;
+        case 2:
+            cvdvParity(ctx, targetReg);
+            cvdvPauliRotation(ctx, ctrlReg, ctrlQubit, 2, PI);
+            break;
+        case 3:
+            cvdvFtP2Q(ctx, targetReg);
+            cvdvConditionalParity(ctx, targetReg, ctrlReg, ctrlQubit);
+            cvdvPauliRotation(ctx, ctrlReg, ctrlQubit, 2, -PI / 2);
+            break;
     }
 
     // Apply small-angle remainder
@@ -1740,7 +1631,8 @@ void cvdvConditionalSqueeze(CVDVContext* ctx, int targetReg, int ctrlReg, int ct
         return;
     }
 
-    // CS(r) = conditional version of S(r), replacing cvdvPhaseSquare with cvdvControlledPhaseSquare
+    // CS(r) = conditional version of S(r), replacing cvdvPhaseSquare with
+    // cvdvControlledPhaseSquare
     double chR = cosh(r);
     double shR = sinh(r);
     double s = sqrt(2.0 * abs(sinh(0.5 * r)));
@@ -1767,32 +1659,26 @@ static void cvdvBeamSplitterSmall(CVDVContext* ctx, int reg1, int reg2, double t
     if (fabs(theta) < 1e-15) return;
 
     double coeff_q = -tan(0.25 * theta);
-    double coeff_p = -sin(0.5  * theta);
+    double coeff_p = -sin(0.5 * theta);
 
     int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
 
-    kernelPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
-                                        reg1, reg2,
-                                        ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
-                                        coeff_q);
+    kernelPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), reg1, reg2,
+                                             ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, coeff_q);
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 
     cvdvFtQ2P(ctx, reg1);
     cvdvFtQ2P(ctx, reg2);
 
-    kernelPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
-                                        reg1, reg2,
-                                        ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
-                                        coeff_p);
+    kernelPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), reg1, reg2,
+                                             ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, coeff_p);
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 
     cvdvFtP2Q(ctx, reg1);
     cvdvFtP2Q(ctx, reg2);
 
-    kernelPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
-                                        reg1, reg2,
-                                        ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
-                                        coeff_q);
+    kernelPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), reg1, reg2,
+                                             ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, coeff_q);
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 }
 
@@ -1816,12 +1702,14 @@ void cvdvBeamSplitter(CVDVContext* ctx, int reg1, int reg2, double theta) {
 
     // Apply BS(θ₀) for the integer-multiple-of-π part
     int halfTurns = (int)round(theta0 / PI);
-    // Normalize to [0,4) since BS(4π) = identity (BS(2π) = Par₁Par₂, applied twice = id)
+    // Normalize to [0,4) since BS(4π) = identity (BS(2π) = Par₁Par₂, applied
+    // twice = id)
     halfTurns = ((halfTurns % 4) + 4) % 4;
 
     switch (halfTurns) {
-        case 0: break;  // identity
-        case 1:  // BS(π) = FT₁ FT₂ SWAP
+        case 0:
+            break;  // identity
+        case 1:     // BS(π) = FT₁ FT₂ SWAP
             cvdvFtQ2P(ctx, reg1);
             cvdvFtQ2P(ctx, reg2);
             cvdvSwapRegisters(ctx, reg1, reg2);
@@ -1843,43 +1731,39 @@ void cvdvBeamSplitter(CVDVContext* ctx, int reg1, int reg2, double theta) {
 
 // Internal: small-angle conditional beam splitter |θ| ≤ π/2
 // |0⟩ gets BS(θ), |1⟩ gets BS(-θ)
-static void cvdvConditionalBeamSplitterSmall(CVDVContext* ctx, int reg1, int reg2, int ctrlReg, int ctrlQubit, double theta) {
+static void cvdvConditionalBeamSplitterSmall(CVDVContext* ctx, int reg1, int reg2, int ctrlReg,
+                                             int ctrlQubit, double theta) {
     if (fabs(theta) < 1e-15) return;
 
     double coeff_q = -tan(0.25 * theta);
-    double coeff_p = -sin(0.5  * theta);
+    double coeff_p = -sin(0.5 * theta);
 
     int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
 
-    kernelCPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
-                                        reg1, reg2,
-                                        ctrlReg, ctrlQubit,
-                                        ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
-                                        coeff_q);
+    kernelCPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), reg1, reg2,
+                                              ctrlReg, ctrlQubit, ctx->gQbts, ctx->gGridSteps,
+                                              ctx->gFlwQbts, coeff_q);
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 
     cvdvFtQ2P(ctx, reg1);
     cvdvFtQ2P(ctx, reg2);
 
-    kernelCPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
-                                        reg1, reg2,
-                                        ctrlReg, ctrlQubit,
-                                        ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
-                                        coeff_p);
+    kernelCPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), reg1, reg2,
+                                              ctrlReg, ctrlQubit, ctx->gQbts, ctx->gGridSteps,
+                                              ctx->gFlwQbts, coeff_p);
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 
     cvdvFtP2Q(ctx, reg1);
     cvdvFtP2Q(ctx, reg2);
 
-    kernelCPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
-                                        reg1, reg2,
-                                        ctrlReg, ctrlQubit,
-                                        ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
-                                        coeff_q);
+    kernelCPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), reg1, reg2,
+                                              ctrlReg, ctrlQubit, ctx->gQbts, ctx->gGridSteps,
+                                              ctx->gFlwQbts, coeff_q);
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 }
 
-void cvdvConditionalBeamSplitter(CVDVContext* ctx, int reg1, int reg2, int ctrlReg, int ctrlQubit, double theta) {
+void cvdvConditionalBeamSplitter(CVDVContext* ctx, int reg1, int reg2, int ctrlReg, int ctrlQubit,
+                                 double theta) {
     if (!ctx) return;
     if (reg1 < 0 || reg1 >= ctx->gNumReg || reg2 < 0 || reg2 >= ctx->gNumReg) {
         fprintf(stderr, "Invalid register indices: %d, %d\n", reg1, reg2);
@@ -1891,7 +1775,8 @@ void cvdvConditionalBeamSplitter(CVDVContext* ctx, int reg1, int reg2, int ctrlR
     }
 
     // For |θ| > π/2, decompose CBS(θ) = BS(θ₀) CBS(θ-θ₀)
-    // BS(θ₀) applied unconditionally (correct for even half-turns; odd half-turns are approximate)
+    // BS(θ₀) applied unconditionally (correct for even half-turns; odd half-turns
+    // are approximate)
     double theta0 = round(theta / PI) * PI;
     double remainder = theta - theta0;
 
@@ -1899,7 +1784,8 @@ void cvdvConditionalBeamSplitter(CVDVContext* ctx, int reg1, int reg2, int ctrlR
     halfTurns = ((halfTurns % 4) + 4) % 4;
 
     switch (halfTurns) {
-        case 0: break;
+        case 0:
+            break;
         case 1:
             cvdvFtQ2P(ctx, reg1);
             cvdvFtQ2P(ctx, reg2);
@@ -1929,18 +1815,16 @@ void cvdvQ1Q2Gate(CVDVContext* ctx, int reg1, int reg2, double coeff) {
         fprintf(stderr, "Invalid register indices: reg1=%d, reg2=%d\n", reg1, reg2);
         return;
     }
-    
+
     if (reg1 == reg2) {
         fprintf(stderr, "Cannot apply Q1Q2 gate to the same register\n");
         return;
     }
-    
+
     int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
-    
-    kernelPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
-                                        reg1, reg2,
-                                        ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
-                                        coeff);
+
+    kernelPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), reg1, reg2,
+                                             ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, coeff);
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 }
 
@@ -1948,188 +1832,91 @@ void cvdvQ1Q2Gate(CVDVContext* ctx, int reg1, int reg2, double coeff) {
 
 #pragma region C API - State Access
 
-void cvdvGetWignerSingleSlice(CVDVContext* ctx, int regIdx, int* sliceIndices, double* wignerOut,
-                                   int wignerN, double wXMax, double wPMax) {
+void cvdvGetWigner(CVDVContext* ctx, int regIdx, double* wignerOut) {
     if (!ctx) return;
-    if (regIdx < 0 || regIdx >= ctx->gNumReg) {
-        fprintf(stderr, "Invalid register index: %d\n", regIdx);
-        return;
-    }
-
+    if (regIdx < 0 || regIdx >= ctx->gNumReg) return;
     size_t cvDim = 1 << ctx->gQbts[regIdx];
     double dx = ctx->gGridSteps[regIdx];
 
-    // Copy slice indices to device
-    int* dSliceIndices;
-    checkCudaErrors(ctx, cudaMalloc(&dSliceIndices, ctx->gNumReg * sizeof(int)));
-    checkCudaErrors(ctx, cudaMemcpy(dSliceIndices, sliceIndices, ctx->gNumReg * sizeof(int),
-                               cudaMemcpyHostToDevice));
-
-    // Step 1: Build integrand f_x[y] for all (wx, y) pairs
     cuDoubleComplex* dBuf;
-    checkCudaErrors(ctx, cudaMalloc(&dBuf, wignerN * cvDim * sizeof(cuDoubleComplex)));
+    checkCudaErrors(ctx, cudaMalloc(&dBuf, cvDim * cvDim * sizeof(cuDoubleComplex)));
 
-    int buildGrid = (wignerN * cvDim + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
-    kernelBuildWignerIntegrandSingleSlice<<<buildGrid, CUDA_BLOCK_SIZE>>>(
-        dBuf, ctx->dState, regIdx, dSliceIndices, cvDim, dx, wignerN, wXMax,
-        ctx->gQbts, ctx->gFlwQbts);
+    int grid1 = (cvDim * cvDim + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
+    kernelBuildWignerRow<<<grid1, CUDA_BLOCK_SIZE>>>(dBuf, ctx->dState, regIdx, cvDim, dx,
+                                                     ctx->gNumReg, ctx->gQbts, ctx->gFlwQbts);
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 
-    // Step 2: Batched IFFT — one per Wigner x-row (cached plan)
-    if (!ctx->wsPlanValid || ctx->wsPlanCvDim != (int)cvDim || ctx->wsPlanBatch != wignerN) {
-        if (ctx->wsPlanValid) cufftDestroy(ctx->wsPlan);
-        cufftResult planRes = cufftPlan1d(&ctx->wsPlan, cvDim, CUFFT_Z2Z, wignerN);
+    // Fixed plan: batch = cvDim rows (only recreated when cvDim changes)
+    if (!ctx->wPlanValid || ctx->wPlanCvDim != (int)cvDim) {
+        if (ctx->wPlanValid) cufftDestroy(ctx->wPlan);
+        cufftResult planRes = cufftPlan1d(&ctx->wPlan, cvDim, CUFFT_Z2Z, cvDim);
         if (planRes != CUFFT_SUCCESS) {
-            fprintf(stderr, "cuFFT plan creation failed: %d\n", planRes);
-            cudaFree(dBuf); cudaFree(dSliceIndices);
-            ctx->wsPlanValid = false;
-            return;
-        }
-        ctx->wsPlanCvDim = (int)cvDim;
-        ctx->wsPlanBatch = wignerN;
-        ctx->wsPlanValid = true;
-    }
-    cufftResult cufftRes = cufftExecZ2Z(ctx->wsPlan, dBuf, dBuf, CUFFT_INVERSE);
-    if (cufftRes != CUFFT_SUCCESS) {
-        fprintf(stderr, "cuFFT execution failed: %d\n", cufftRes);
-    }
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
-
-    // Step 3: Extract Wigner values at user-requested p-grid
-    double* dWigner;
-    checkCudaErrors(ctx, cudaMalloc(&dWigner, wignerN * wignerN * sizeof(double)));
-
-    int extractGrid = (wignerN * wignerN + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
-    kernelExtractWigner<<<extractGrid, CUDA_BLOCK_SIZE>>>(
-        dWigner, dBuf, cvDim, dx, wignerN, wPMax);
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
-
-    checkCudaErrors(ctx, cudaMemcpy(wignerOut, dWigner, wignerN * wignerN * sizeof(double),
-                               cudaMemcpyDeviceToHost));
-
-    cudaFree(dWigner);
-    cudaFree(dBuf);
-    cudaFree(dSliceIndices);
-}
-
-void cvdvGetWignerFullMode(CVDVContext* ctx, int regIdx, double* wignerOut,
-                                int wignerN, double wXMax, double wPMax) {
-    if (!ctx) return;
-    if (regIdx < 0 || regIdx >= ctx->gNumReg) {
-        fprintf(stderr, "Invalid register index: %d\n", regIdx);
-        return;
-    }
-
-    size_t cvDim = 1 << ctx->gQbts[regIdx];
-    double dx = ctx->gGridSteps[regIdx];
-
-    // Step 1: Build integrand f_x[y] = Σ_other conj(ψ(x+y))·ψ(x-y)
-    cuDoubleComplex* dBuf;
-    checkCudaErrors(ctx, cudaMalloc(&dBuf, wignerN * cvDim * sizeof(cuDoubleComplex)));
-
-    int buildGrid = (wignerN * cvDim + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
-    kernelBuildWignerIntegrand<<<buildGrid, CUDA_BLOCK_SIZE>>>(
-        dBuf, ctx->dState, regIdx, cvDim, dx, wignerN, wXMax,
-        ctx->gNumReg, ctx->gQbts, ctx->gFlwQbts);
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
-
-    // Step 2: Batched IFFT — transforms y→p for all x-rows (cached plan)
-    if (!ctx->wfPlanValid || ctx->wfPlanCvDim != (int)cvDim || ctx->wfPlanBatch != wignerN) {
-        if (ctx->wfPlanValid) cufftDestroy(ctx->wfPlan);
-        cufftResult planRes = cufftPlan1d(&ctx->wfPlan, cvDim, CUFFT_Z2Z, wignerN);
-        if (planRes != CUFFT_SUCCESS) {
-            fprintf(stderr, "cuFFT plan creation failed: %d\n", planRes);
+            fprintf(stderr, "cuFFT wPlan creation failed: %d\n", planRes);
             cudaFree(dBuf);
-            ctx->wfPlanValid = false;
+            ctx->wPlanValid = false;
             return;
         }
-        ctx->wfPlanCvDim = (int)cvDim;
-        ctx->wfPlanBatch = wignerN;
-        ctx->wfPlanValid = true;
+        ctx->wPlanCvDim = (int)cvDim;
+        ctx->wPlanValid = true;
     }
-    cufftResult cufftRes = cufftExecZ2Z(ctx->wfPlan, dBuf, dBuf, CUFFT_INVERSE);
-    if (cufftRes != CUFFT_SUCCESS) {
-        fprintf(stderr, "cuFFT execution failed: %d\n", cufftRes);
-    }
+    cufftExecZ2Z(ctx->wPlan, dBuf, dBuf, CUFFT_INVERSE);
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 
-    // Step 3: Extract Wigner values at user-requested p-grid
     double* dWigner;
-    checkCudaErrors(ctx, cudaMalloc(&dWigner, wignerN * wignerN * sizeof(double)));
-
-    int extractGrid = (wignerN * wignerN + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
-    kernelExtractWigner<<<extractGrid, CUDA_BLOCK_SIZE>>>(
-        dWigner, dBuf, cvDim, dx, wignerN, wPMax);
+    checkCudaErrors(ctx, cudaMalloc(&dWigner, cvDim * cvDim * sizeof(double)));
+    kernelFinalizeWigner<<<grid1, CUDA_BLOCK_SIZE>>>(dWigner, dBuf, cvDim, dx);
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 
-    checkCudaErrors(ctx, cudaMemcpy(wignerOut, dWigner, wignerN * wignerN * sizeof(double),
-                               cudaMemcpyDeviceToHost));
-
+    checkCudaErrors(ctx, cudaMemcpy(wignerOut, dWigner, cvDim * cvDim * sizeof(double),
+                                    cudaMemcpyDeviceToHost));
     cudaFree(dWigner);
     cudaFree(dBuf);
 }
 
-void cvdvGetHusimiQFullMode(CVDVContext* ctx, int regIdx, double* outHusimiQ, int qN, double qMax, double pMax) {
+void cvdvGetHusimiQ(CVDVContext* ctx, int regIdx, double* husimiOut) {
     if (!ctx) return;
-    if (regIdx < 0 || regIdx >= ctx->gNumReg) {
-        fprintf(stderr, "Invalid register index: %d\n", regIdx);
-        return;
-    }
-
+    if (regIdx < 0 || regIdx >= ctx->gNumReg) return;
     size_t cvDim = 1 << ctx->gQbts[regIdx];
     double dx = ctx->gGridSteps[regIdx];
     size_t sliceCount = 1 << (ctx->gTotalQbt - ctx->gQbts[regIdx]);
 
-    // Step 1: Allocate buffers
     cuDoubleComplex* dBuf;
-    checkCudaErrors(ctx, cudaMalloc(&dBuf, qN * cvDim * sizeof(cuDoubleComplex)));
-
     double* dAccum;
-    checkCudaErrors(ctx, cudaMalloc(&dAccum, qN * cvDim * sizeof(double)));
-    checkCudaErrors(ctx, cudaMemset(dAccum, 0, qN * cvDim * sizeof(double)));
+    checkCudaErrors(ctx, cudaMalloc(&dBuf, cvDim * cvDim * sizeof(cuDoubleComplex)));
+    checkCudaErrors(ctx, cudaMalloc(&dAccum, cvDim * cvDim * sizeof(double)));
+    checkCudaErrors(ctx, cudaMemset(dAccum, 0, cvDim * cvDim * sizeof(double)));
 
-    // Step 2: Get cuFFT plan — cached across calls, reused across slices
-    if (!ctx->hPlanValid || ctx->hPlanCvDim != (int)cvDim || ctx->hPlanBatch != qN) {
+    // Fixed plan: batch = cvDim rows (only recreated when cvDim changes)
+    if (!ctx->hPlanValid || ctx->hPlanCvDim != (int)cvDim) {
         if (ctx->hPlanValid) cufftDestroy(ctx->hPlan);
-        cufftResult planRes = cufftPlan1d(&ctx->hPlan, cvDim, CUFFT_Z2Z, qN);
+        cufftResult planRes = cufftPlan1d(&ctx->hPlan, cvDim, CUFFT_Z2Z, cvDim);
         if (planRes != CUFFT_SUCCESS) {
-            fprintf(stderr, "cuFFT plan creation failed: %d\n", planRes);
-            cudaFree(dBuf); cudaFree(dAccum);
+            fprintf(stderr, "cuFFT hPlan creation failed: %d\n", planRes);
+            cudaFree(dBuf);
+            cudaFree(dAccum);
             ctx->hPlanValid = false;
             return;
         }
         ctx->hPlanCvDim = (int)cvDim;
-        ctx->hPlanBatch = qN;
         ctx->hPlanValid = true;
     }
 
-    int buildGrid = (qN * cvDim + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
-
-    // Step 3: For each slice — build windowed signal, FFT, accumulate |H[k]|²
+    int grid1 = (cvDim * cvDim + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
     for (size_t sliceIdx = 0; sliceIdx < sliceCount; sliceIdx++) {
-        kernelBuildHusimiWindowed<<<buildGrid, CUDA_BLOCK_SIZE>>>(
-            dBuf, ctx->dState, regIdx, dx, qN, qMax, sliceIdx,
-            ctx->gQbts, ctx->gFlwQbts);
-
+        kernelBuildHusimiRows<<<grid1, CUDA_BLOCK_SIZE>>>(dBuf, ctx->dState, regIdx, dx, cvDim,
+                                                          sliceIdx, ctx->gQbts, ctx->gFlwQbts);
         cufftExecZ2Z(ctx->hPlan, dBuf, dBuf, CUFFT_FORWARD);
-
-        kernelAccumHusimiPower<<<buildGrid, CUDA_BLOCK_SIZE>>>(
-            dAccum, dBuf, qN * cvDim);
+        kernelAccumHusimiPower<<<grid1, CUDA_BLOCK_SIZE>>>(dAccum, dBuf, cvDim * cvDim);
     }
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 
-    // Step 4: Extract Q values at user-requested p-grid
     double* dHusimiQ;
-    checkCudaErrors(ctx, cudaMalloc(&dHusimiQ, qN * qN * sizeof(double)));
-
-    int extractGrid = (qN * qN + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
-    kernelExtractHusimi<<<extractGrid, CUDA_BLOCK_SIZE>>>(
-        dHusimiQ, dAccum, cvDim, dx, qN, qMax, pMax);
+    checkCudaErrors(ctx, cudaMalloc(&dHusimiQ, cvDim * cvDim * sizeof(double)));
+    kernelFinalizeHusimi<<<grid1, CUDA_BLOCK_SIZE>>>(dHusimiQ, dAccum, cvDim);
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 
-    checkCudaErrors(ctx, cudaMemcpy(outHusimiQ, dHusimiQ, qN * qN * sizeof(double),
-                               cudaMemcpyDeviceToHost));
-
+    checkCudaErrors(ctx, cudaMemcpy(husimiOut, dHusimiQ, cvDim * cvDim * sizeof(double),
+                                    cudaMemcpyDeviceToHost));
     cudaFree(dHusimiQ);
     cudaFree(dAccum);
     cudaFree(dBuf);
@@ -2156,22 +1943,21 @@ void cvdvJointMeasure(CVDVContext* ctx, int reg1Idx, int reg2Idx, double* jointP
     // Launch kernel
     int grid = min((int)((totalPairs + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE), CUDA_BLOCK_SIZE);
 
-    kernelComputeJointMeasure<<<grid, CUDA_BLOCK_SIZE>>>(dJointProb, ctx->dState,
-                                                reg1Idx, reg2Idx,
-                                                (1 << ctx->gTotalQbt), ctx->gNumReg,
-                                                ctx->gQbts, ctx->gFlwQbts);
+    kernelComputeJointMeasure<<<grid, CUDA_BLOCK_SIZE>>>(dJointProb, ctx->dState, reg1Idx, reg2Idx,
+                                                         (1 << ctx->gTotalQbt), ctx->gNumReg,
+                                                         ctx->gQbts, ctx->gFlwQbts);
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 
     // Copy result to CPU
     checkCudaErrors(ctx, cudaMemcpy(jointProbsOut, dJointProb, totalPairs * sizeof(double),
-                               cudaMemcpyDeviceToHost));
+                                    cudaMemcpyDeviceToHost));
 
     // Clean up
     cudaFree(dJointProb);
 }
 
-// Copy a full flat state from an existing CUDA device pointer (e.g. a torch tensor).
-// d_src must be cuDoubleComplex* on the GPU with totalSize elements.
+// Copy a full flat state from an existing CUDA device pointer (e.g. a torch
+// tensor). d_src must be cuDoubleComplex* on the GPU with totalSize elements.
 // Allocates dState if not yet allocated.
 void cvdvSetStateFromDevicePtr(CVDVContext* ctx, void* d_src) {
     if (!ctx || !d_src) return;
@@ -2179,9 +1965,8 @@ void cvdvSetStateFromDevicePtr(CVDVContext* ctx, void* d_src) {
     if (ctx->dState == nullptr) {
         checkCudaErrors(ctx, cudaMalloc(&ctx->dState, totalSize * sizeof(cuDoubleComplex)));
     }
-    checkCudaErrors(ctx, cudaMemcpy(ctx->dState, d_src,
-                               totalSize * sizeof(cuDoubleComplex),
-                               cudaMemcpyDeviceToDevice));
+    checkCudaErrors(ctx, cudaMemcpy(ctx->dState, d_src, totalSize * sizeof(cuDoubleComplex),
+                                    cudaMemcpyDeviceToDevice));
     logInfo(ctx, "State loaded from device pointer (%zu elements)", totalSize);
 }
 
@@ -2195,7 +1980,7 @@ void cvdvGetState(CVDVContext* ctx, double* realOut, double* imagOut) {
 
     cuDoubleComplex* hState = new cuDoubleComplex[totalSize];
     checkCudaErrors(ctx, cudaMemcpy(hState, ctx->dState, totalSize * sizeof(cuDoubleComplex),
-                               cudaMemcpyDeviceToHost));
+                                    cudaMemcpyDeviceToHost));
 
     for (size_t i = 0; i < totalSize; i++) {
         realOut[i] = cuCreal(hState[i]);
@@ -2208,13 +1993,12 @@ void cvdvGetState(CVDVContext* ctx, double* realOut, double* imagOut) {
 // CUDA kernel to compute marginal probabilities for a register
 // Sums |amplitude|^2 over all other registers
 // Optimized with warp-level reduction to avoid bank conflicts
-__global__ void kernelMeasure(double* probabilities, const cuDoubleComplex* state,
-                              int regShift, int regMask, int regDim, size_t totalSize) {
+__global__ void kernelMeasure(double* probabilities, const cuDoubleComplex* state, int regShift,
+                              int regMask, int regDim, size_t totalSize) {
     extern __shared__ double sProbs[];
 
     // Initialize shared memory
-    for (int i = threadIdx.x; i < regDim; i += blockDim.x)
-        sProbs[i] = 0.0;
+    for (int i = threadIdx.x; i < regDim; i += blockDim.x) sProbs[i] = 0.0;
     __syncthreads();
 
     size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
@@ -2231,8 +2015,7 @@ __global__ void kernelMeasure(double* probabilities, const cuDoubleComplex* stat
     __syncthreads();
 
     // Write block results to global memory
-    for (int i = threadIdx.x; i < regDim; i += blockDim.x)
-        atomicAdd(&probabilities[i], sProbs[i]);
+    for (int i = threadIdx.x; i < regDim; i += blockDim.x) atomicAdd(&probabilities[i], sProbs[i]);
 }
 
 #pragma endregion
@@ -2253,10 +2036,10 @@ void cvdvGetRegisterInfo(CVDVContext* ctx, int* qubitCountsOut, double* gridStep
     if (!ctx) return;
     if (ctx->gNumReg == 0) return;
 
-    checkCudaErrors(ctx, cudaMemcpy(qubitCountsOut, ctx->gQbts,
-                               ctx->gNumReg * sizeof(int), cudaMemcpyDeviceToHost));
-    checkCudaErrors(ctx, cudaMemcpy(gridStepsOut, ctx->gGridSteps,
-                               ctx->gNumReg * sizeof(double), cudaMemcpyDeviceToHost));
+    checkCudaErrors(ctx, cudaMemcpy(qubitCountsOut, ctx->gQbts, ctx->gNumReg * sizeof(int),
+                                    cudaMemcpyDeviceToHost));
+    checkCudaErrors(ctx, cudaMemcpy(gridStepsOut, ctx->gGridSteps, ctx->gNumReg * sizeof(double),
+                                    cudaMemcpyDeviceToHost));
 }
 
 int cvdvGetRegisterDim(CVDVContext* ctx, int regIdx) {
@@ -2264,8 +2047,8 @@ int cvdvGetRegisterDim(CVDVContext* ctx, int regIdx) {
     if (regIdx < 0 || regIdx >= ctx->gNumReg) return -1;
 
     int qubit_count;
-    checkCudaErrors(ctx, cudaMemcpy(&qubit_count, ctx->gQbts + regIdx,
-                               sizeof(int), cudaMemcpyDeviceToHost));
+    checkCudaErrors(
+        ctx, cudaMemcpy(&qubit_count, ctx->gQbts + regIdx, sizeof(int), cudaMemcpyDeviceToHost));
     return 1 << qubit_count;
 }
 
@@ -2274,8 +2057,8 @@ double cvdvGetRegisterDx(CVDVContext* ctx, int regIdx) {
     if (regIdx < 0 || regIdx >= ctx->gNumReg) return -1.0;
 
     double dx;
-    checkCudaErrors(ctx, cudaMemcpy(&dx, ctx->gGridSteps + regIdx,
-                               sizeof(double), cudaMemcpyDeviceToHost));
+    checkCudaErrors(
+        ctx, cudaMemcpy(&dx, ctx->gGridSteps + regIdx, sizeof(double), cudaMemcpyDeviceToHost));
     return dx;
 }
 
@@ -2307,26 +2090,26 @@ void cvdvMeasure(CVDVContext* ctx, int regIdx, double* probabilitiesOut) {
     numBlocks = min(numBlocks, 1024);
 
     size_t sharedMemSize = regDim * sizeof(double);
-    kernelMeasure<<<numBlocks, CUDA_BLOCK_SIZE, sharedMemSize>>>(
-        dProbs, ctx->dState, regShift, regMask, (int)regDim, totalSize);
+    kernelMeasure<<<numBlocks, CUDA_BLOCK_SIZE, sharedMemSize>>>(dProbs, ctx->dState, regShift,
+                                                                 regMask, (int)regDim, totalSize);
     checkCudaErrors(ctx, cudaGetLastError());
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 
     // Copy results back to host
-    checkCudaErrors(ctx, cudaMemcpy(probabilitiesOut, dProbs, regDim * sizeof(double), cudaMemcpyDeviceToHost));
+    checkCudaErrors(
+        ctx, cudaMemcpy(probabilitiesOut, dProbs, regDim * sizeof(double), cudaMemcpyDeviceToHost));
     checkCudaErrors(ctx, cudaFree(dProbs));
 }
 
-// Helper: build device pointer-of-pointers from a host array of numReg device ptrs,
-// run kernelComputeInnerProduct, reduce, free, and return the complex sum.
-static cuDoubleComplex runInnerProductKernel(CVDVContext* ctx,
-                                             void** devicePtrs, int numReg) {
+// Helper: build device pointer-of-pointers from a host array of numReg device
+// ptrs, run kernelComputeInnerProduct, reduce, free, and return the complex
+// sum.
+static cuDoubleComplex runInnerProductKernel(CVDVContext* ctx, void** devicePtrs, int numReg) {
     // Upload pointer array to device
     cuDoubleComplex** dRegArrayPtrs;
     checkCudaErrors(ctx, cudaMalloc(&dRegArrayPtrs, numReg * sizeof(cuDoubleComplex*)));
     // Copy host-side pointer values (each is a device ptr) to device memory
-    checkCudaErrors(ctx, cudaMemcpy(dRegArrayPtrs, devicePtrs,
-                                    numReg * sizeof(cuDoubleComplex*),
+    checkCudaErrors(ctx, cudaMemcpy(dRegArrayPtrs, devicePtrs, numReg * sizeof(cuDoubleComplex*),
                                     cudaMemcpyHostToDevice));
 
     size_t totalSize = 1 << ctx->gTotalQbt;
@@ -2338,15 +2121,12 @@ static cuDoubleComplex runInnerProductKernel(CVDVContext* ctx,
 
     size_t sharedMemSize = CUDA_BLOCK_SIZE * sizeof(cuDoubleComplex);
     kernelComputeInnerProduct<<<numBlocks, CUDA_BLOCK_SIZE, sharedMemSize>>>(
-        dPartialSums, ctx->dState,
-        dRegArrayPtrs, numReg,
-        ctx->gQbts, ctx->gFlwQbts, totalSize);
+        dPartialSums, ctx->dState, dRegArrayPtrs, numReg, ctx->gQbts, ctx->gFlwQbts, totalSize);
     checkCudaErrors(ctx, cudaGetLastError());
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 
     cuDoubleComplex* hPartialSums = new cuDoubleComplex[numBlocks];
-    checkCudaErrors(ctx, cudaMemcpy(hPartialSums, dPartialSums,
-                                    numBlocks * sizeof(cuDoubleComplex),
+    checkCudaErrors(ctx, cudaMemcpy(hPartialSums, dPartialSums, numBlocks * sizeof(cuDoubleComplex),
                                     cudaMemcpyDeviceToHost));
     cuDoubleComplex result = make_cuDoubleComplex(0.0, 0.0);
     for (int i = 0; i < numBlocks; i++) result = cuCadd(result, hPartialSums[i]);
@@ -2357,8 +2137,9 @@ static cuDoubleComplex runInnerProductKernel(CVDVContext* ctx,
     return result;
 }
 
-// Compute fidelity |⟨sep|ψ⟩|² where sep is a SeparableState passed as device pointers.
-// devicePtrs[i] points to cuDoubleComplex device memory of size (1 << gQbts[i]).
+// Compute fidelity |⟨sep|ψ⟩|² where sep is a SeparableState passed as device
+// pointers. devicePtrs[i] points to cuDoubleComplex device memory of size (1 <<
+// gQbts[i]).
 void cvdvGetFidelity(CVDVContext* ctx, void** devicePtrs, int numReg, double* fidOut) {
     if (!ctx) return;
     if (ctx->dState == nullptr || ctx->gNumReg == 0) {
@@ -2388,15 +2169,14 @@ static double computeExpectX2(CVDVContext* ctx, int regIdx) {
     double* dPartialSums;
     checkCudaErrors(ctx, cudaMalloc(&dPartialSums, numBlocks * sizeof(double)));
 
-    kernelExpectX2<<<numBlocks, CUDA_BLOCK_SIZE>>>(
-        dPartialSums, ctx->dState, totalSize, regIdx,
-        ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts);
+    kernelExpectX2<<<numBlocks, CUDA_BLOCK_SIZE>>>(dPartialSums, ctx->dState, totalSize, regIdx,
+                                                   ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts);
     checkCudaErrors(ctx, cudaGetLastError());
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 
     double* hPartialSums = new double[numBlocks];
-    checkCudaErrors(ctx, cudaMemcpy(hPartialSums, dPartialSums,
-                                    numBlocks * sizeof(double), cudaMemcpyDeviceToHost));
+    checkCudaErrors(ctx, cudaMemcpy(hPartialSums, dPartialSums, numBlocks * sizeof(double),
+                                    cudaMemcpyDeviceToHost));
     double result = 0.0;
     for (int i = 0; i < numBlocks; i++) result += hPartialSums[i];
     delete[] hPartialSums;
@@ -2405,7 +2185,8 @@ static double computeExpectX2(CVDVContext* ctx, int regIdx) {
 }
 
 // Compute mean photon number <n> = (<q²> + <p²> - 1) / 2 for register regIdx.
-// Temporarily applies ftQ2P / ftP2Q to measure <p²> in momentum basis (dp = dx).
+// Temporarily applies ftQ2P / ftP2Q to measure <p²> in momentum basis (dp =
+// dx).
 double cvdvGetPhotonNumber(CVDVContext* ctx, int regIdx) {
     if (!ctx || ctx->dState == nullptr) return -1.0;
     if (regIdx < 0 || regIdx >= ctx->gNumReg) return -1.0;
@@ -2437,15 +2218,14 @@ double cvdvGetNorm(CVDVContext* ctx) {
     checkCudaErrors(ctx, cudaMalloc(&dPartialSums, numBlocks * sizeof(double)));
 
     // Launch kernel with warp-level reduction
-    kernelComputeNorm<<<numBlocks, CUDA_BLOCK_SIZE>>>(
-        dPartialSums, ctx->dState, totalSize);
+    kernelComputeNorm<<<numBlocks, CUDA_BLOCK_SIZE>>>(dPartialSums, ctx->dState, totalSize);
     checkCudaErrors(ctx, cudaGetLastError());
     checkCudaErrors(ctx, cudaDeviceSynchronize());
 
     // Download partial sums and reduce on host
     double* hPartialSums = new double[numBlocks];
-    checkCudaErrors(ctx, cudaMemcpy(hPartialSums, dPartialSums,
-                               numBlocks * sizeof(double), cudaMemcpyDeviceToHost));
+    checkCudaErrors(ctx, cudaMemcpy(hPartialSums, dPartialSums, numBlocks * sizeof(double),
+                                    cudaMemcpyDeviceToHost));
 
     double result = 0.0;
     for (int i = 0; i < numBlocks; i++) {
@@ -2462,7 +2242,8 @@ double cvdvGetNorm(CVDVContext* ctx) {
 
 #pragma endregion
 
-// Compute fidelity |⟨psi1|psi2⟩|² between two CUDA statevectors of the same size.
+// Compute fidelity |⟨psi1|psi2⟩|² between two CUDA statevectors of the same
+// size.
 void cvdvFidelityStatevectors(CVDVContext* ctx1, CVDVContext* ctx2, double* fidOut) {
     *fidOut = 0.0;
     if (!ctx1 || !ctx2) return;
@@ -2491,8 +2272,7 @@ void cvdvFidelityStatevectors(CVDVContext* ctx1, CVDVContext* ctx2, double* fidO
 
     cuDoubleComplex* hPartialSums = new cuDoubleComplex[numBlocks];
     checkCudaErrors(ctx1, cudaMemcpy(hPartialSums, dPartialSums,
-                                     numBlocks * sizeof(cuDoubleComplex),
-                                     cudaMemcpyDeviceToHost));
+                                     numBlocks * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost));
     cuDoubleComplex result = make_cuDoubleComplex(0.0, 0.0);
     for (int i = 0; i < numBlocks; i++) result = cuCadd(result, hPartialSums[i]);
 

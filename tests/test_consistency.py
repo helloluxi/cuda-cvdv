@@ -533,8 +533,8 @@ class TestPhaseSpaceFunctions:
         sep.setZero(1)
         cuda_sim.initStateVector(sep)
         torch_sim.initStateVector(sep)
-        cuda_wigner = cuda_sim.getWignerSingleSlice(1, [0, 0], wignerN=51)
-        torch_wigner = torch_sim.getWignerSingleSlice(1, [0, 0], wignerN=51)
+        cuda_wigner = cuda_sim.getWigner(1)
+        torch_wigner = torch_sim.getWigner(1)
         np.testing.assert_allclose(cuda_wigner, torch_wigner, atol=LOOSE_ATOL, rtol=LOOSE_RTOL)
 
     def test_husimi_q_vacuum(self):
@@ -545,12 +545,12 @@ class TestPhaseSpaceFunctions:
         sep.setFock(0, 0)
         cuda_sim.initStateVector(sep)
         torch_sim.initStateVector(sep)
-        cuda_husimi = cuda_sim.getHusimiQFullMode(0, qN=51, qMax=4.0, pMax=4.0)
-        torch_husimi = torch_sim.getHusimiQFullMode(0, qN=51, qMax=4.0, pMax=4.0)
+        cuda_husimi = cuda_sim.getHusimiQ(0)
+        torch_husimi = torch_sim.getHusimiQ(0)
         np.testing.assert_allclose(cuda_husimi, torch_husimi, atol=LOOSE_ATOL, rtol=LOOSE_RTOL)
         assert np.min(cuda_husimi) >= 0.0
         assert np.min(torch_husimi) >= 0.0
-        center_idx = 25
+        center_idx = cuda_husimi.shape[0] // 2  # center of native grid
         assert cuda_husimi[center_idx, center_idx] > np.mean(cuda_husimi)
         assert torch_husimi[center_idx, center_idx] > np.mean(torch_husimi)
         del cuda_sim, torch_sim
@@ -563,8 +563,8 @@ class TestPhaseSpaceFunctions:
         sep.setCoherent(0, 1.5 + 1.0j)
         cuda_sim.initStateVector(sep)
         torch_sim.initStateVector(sep)
-        cuda_husimi = cuda_sim.getHusimiQFullMode(0, qN=51, qMax=4.0, pMax=4.0)
-        torch_husimi = torch_sim.getHusimiQFullMode(0, qN=51, qMax=4.0, pMax=4.0)
+        cuda_husimi = cuda_sim.getHusimiQ(0)
+        torch_husimi = torch_sim.getHusimiQ(0)
         np.testing.assert_allclose(cuda_husimi, torch_husimi, atol=LOOSE_ATOL, rtol=LOOSE_RTOL)
         assert np.min(cuda_husimi) >= 0.0
         assert np.min(torch_husimi) >= 0.0
@@ -578,9 +578,10 @@ class TestPhaseSpaceFunctions:
         sep.setCoherent(0, 1.0 + 0.5j)
         cuda_sim.initStateVector(sep)
         torch_sim.initStateVector(sep)
-        cuda_W = cuda_sim.getWigner(0, bound=3.0)
-        torch_W = torch_sim.getWigner(0, bound=3.0)
+        cuda_W = cuda_sim.getWigner(0)
+        torch_W = torch_sim.getWigner(0)
         assert cuda_W.shape == torch_W.shape
+        assert cuda_W.shape == (256, 256)  # native grid N×N
         np.testing.assert_allclose(cuda_W, torch_W, atol=VERY_LOOSE_ATOL, rtol=VERY_LOOSE_RTOL)
         del cuda_sim, torch_sim
 
@@ -592,9 +593,10 @@ class TestPhaseSpaceFunctions:
         sep.setCoherent(0, 1.0 + 0.5j)
         cuda_sim.initStateVector(sep)
         torch_sim.initStateVector(sep)
-        cuda_Q = cuda_sim.getHusimiQ(0, bound=3.0)
-        torch_Q = torch_sim.getHusimiQ(0, bound=3.0)
+        cuda_Q = cuda_sim.getHusimiQ(0)
+        torch_Q = torch_sim.getHusimiQ(0)
         assert cuda_Q.shape == torch_Q.shape
+        assert cuda_Q.shape == (256, 256)  # native grid N×N
         np.testing.assert_allclose(cuda_Q, torch_Q, atol=LOOSE_ATOL, rtol=LOOSE_RTOL)
         assert np.min(cuda_Q) >= 0.0
         assert np.min(torch_Q) >= 0.0
