@@ -19,6 +19,13 @@ from src import CVDV, SeparableState
 CVDVTorch = lambda qs, device='cuda': CVDV(qs, backend=f'torch-{device}')
 
 
+def _fidelity(cuda_sim, torch_sim) -> float:
+    """Compute |<cuda|torch>|² by loading the torch state into a CUDA reference."""
+    ref = CVDV(cuda_sim.qubit_counts.tolist())
+    ref.initFromArray(torch_sim.state.reshape(-1))
+    return cuda_sim.fidelityWith(ref)
+
+
 # Test tolerances for numerical comparisons
 TIGHT_ATOL = 1e-6
 TIGHT_RTOL = 1e-5
@@ -78,7 +85,7 @@ class TestStateInitialization:
         sep.setZero(0)
         cuda_sim.initStateVector(sep)
         torch_sim.initStateVector(sep)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=TIGHT_ATOL, rtol=TIGHT_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - TIGHT_ATOL
 
     def test_setUniform(self, single_register_pair):
         """Test uniform superposition initialization."""
@@ -87,7 +94,7 @@ class TestStateInitialization:
         sep.setUniform(0)
         cuda_sim.initStateVector(sep)
         torch_sim.initStateVector(sep)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=TIGHT_ATOL, rtol=TIGHT_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - TIGHT_ATOL
 
     @pytest.mark.parametrize("alpha", [
         1.0 + 0.0j,
@@ -101,7 +108,7 @@ class TestStateInitialization:
         sep.setCoherent(0, alpha)
         cuda_sim.initStateVector(sep)
         torch_sim.initStateVector(sep)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=LOOSE_ATOL, rtol=LOOSE_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - LOOSE_ATOL
 
     @pytest.mark.parametrize("n", [0, 1, 2, 3])
     def test_setFock(self, medium_register_pair, n):
@@ -111,7 +118,7 @@ class TestStateInitialization:
         sep.setFock(0, n)
         cuda_sim.initStateVector(sep)
         torch_sim.initStateVector(sep)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=LOOSE_ATOL, rtol=LOOSE_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - LOOSE_ATOL
 
     def test_setFocks_superposition(self, medium_register_pair):
         """Test Fock state superposition."""
@@ -120,7 +127,7 @@ class TestStateInitialization:
         sep.setFocks(0, [0.6, 0.8j, 0.0])
         cuda_sim.initStateVector(sep)
         torch_sim.initStateVector(sep)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=LOOSE_ATOL, rtol=LOOSE_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - LOOSE_ATOL
 
     def test_setCat_state(self):
         """Test cat state (superposition of coherent states)."""
@@ -130,7 +137,7 @@ class TestStateInitialization:
         sep.setCat(0, [(2.0, 1.0), (-2.0, 1.0)])
         cuda_sim.initStateVector(sep)
         torch_sim.initStateVector(sep)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=LOOSE_ATOL, rtol=LOOSE_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - LOOSE_ATOL
         del cuda_sim, torch_sim
 
 
@@ -152,7 +159,7 @@ class TestQubitGates:
         torch_sim.initStateVector(sep)
         gate_method(cuda_sim)
         gate_method(torch_sim)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=TIGHT_ATOL, rtol=TIGHT_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - TIGHT_ATOL
 
     @pytest.mark.parametrize("theta", [pi/4, pi/2, pi])
     def test_rotation_gates(self, single_register_pair, theta):
@@ -164,7 +171,7 @@ class TestQubitGates:
         torch_sim.initStateVector(sep)
         cuda_sim.rx(0, 0, theta)
         torch_sim.rx(0, 0, theta)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=TIGHT_ATOL, rtol=TIGHT_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - TIGHT_ATOL
 
 
 class TestContinuousVariableGates:
@@ -179,7 +186,7 @@ class TestContinuousVariableGates:
         torch_sim.initStateVector(sep)
         cuda_sim.d(0, 0.5 + 0.3j)
         torch_sim.d(0, 0.5 + 0.3j)
-        np.testing.assert_allclose(np.abs(cuda_sim.getState()), np.abs(torch_sim.getState()), atol=LOOSE_ATOL, rtol=LOOSE_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - LOOSE_ATOL
 
     def test_parity_gate(self, single_register_pair):
         """Test parity gate (basis state reversal)."""
@@ -190,7 +197,7 @@ class TestContinuousVariableGates:
         torch_sim.initStateVector(sep)
         cuda_sim.p(0)
         torch_sim.p(0)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=TIGHT_ATOL, rtol=TIGHT_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - TIGHT_ATOL
 
     @pytest.mark.parametrize("t", [0.05, 0.1, 0.2])
     def test_quadratic_phase(self, medium_register_pair, t):
@@ -202,7 +209,7 @@ class TestContinuousVariableGates:
         torch_sim.initStateVector(sep)
         cuda_sim.sheer(0, t)
         torch_sim.sheer(0, t)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=LOOSE_ATOL, rtol=LOOSE_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - LOOSE_ATOL
 
     def test_cubic_phase(self, medium_register_pair):
         """Test cubic phase gate."""
@@ -213,7 +220,7 @@ class TestContinuousVariableGates:
         torch_sim.initStateVector(sep)
         cuda_sim.phaseCubic(0, 0.05)
         torch_sim.phaseCubic(0, 0.05)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=LOOSE_ATOL, rtol=LOOSE_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - LOOSE_ATOL
 
     @pytest.mark.parametrize("theta", [pi/6, pi/4, pi/3])
     def test_rotation_gate(self, medium_register_pair, theta):
@@ -225,7 +232,7 @@ class TestContinuousVariableGates:
         torch_sim.initStateVector(sep)
         cuda_sim.r(0, theta)
         torch_sim.r(0, theta)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=LOOSE_ATOL, rtol=LOOSE_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - LOOSE_ATOL
 
     @pytest.mark.parametrize("r", [0.1, 0.3])
     def test_squeezing_gate(self, medium_register_pair, r):
@@ -237,7 +244,7 @@ class TestContinuousVariableGates:
         torch_sim.initStateVector(sep)
         cuda_sim.s(0, r)
         torch_sim.s(0, r)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=VERY_LOOSE_ATOL, rtol=VERY_LOOSE_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - VERY_LOOSE_ATOL
 
 
 class TestFourierTransforms:
@@ -252,7 +259,7 @@ class TestFourierTransforms:
         torch_sim.initStateVector(sep)
         cuda_sim.ftQ2P(0)
         torch_sim.ftQ2P(0)
-        np.testing.assert_allclose(np.abs(cuda_sim.getState()), np.abs(torch_sim.getState()), atol=LOOSE_ATOL, rtol=LOOSE_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - LOOSE_ATOL
 
     def test_ftP2Q_inverse(self, medium_register_pair):
         """Test inverse Fourier transform (momentum to position)."""
@@ -261,14 +268,14 @@ class TestFourierTransforms:
         sep.setCoherent(0, 1.0)
         cuda_sim.initStateVector(sep)
         torch_sim.initStateVector(sep)
-        cuda_initial = cuda_sim.getState()
-        torch_initial = torch_sim.getState()
+        ref_initial = CVDV([6])
+        ref_initial.initFromArray(torch_sim.state.reshape(-1))
         cuda_sim.ftQ2P(0)
         cuda_sim.ftP2Q(0)
         torch_sim.ftQ2P(0)
         torch_sim.ftP2Q(0)
-        np.testing.assert_allclose(cuda_initial, cuda_sim.getState(), atol=LOOSE_ATOL, rtol=LOOSE_RTOL)
-        np.testing.assert_allclose(torch_initial, torch_sim.getState(), atol=LOOSE_ATOL, rtol=LOOSE_RTOL)
+        assert cuda_sim.fidelityWith(ref_initial) >= 1 - LOOSE_ATOL
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - LOOSE_ATOL
 
 
 class TestMeasurements:
@@ -307,7 +314,7 @@ class TestMeasurements:
         sep.setZero(0)
         cuda_sim.initStateVector(sep)
         torch_sim.initStateVector(sep)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=TIGHT_ATOL, rtol=TIGHT_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - TIGHT_ATOL
 
 
 class TestMultiRegisterOperations:
@@ -321,7 +328,7 @@ class TestMultiRegisterOperations:
         sep.setZero(1)
         cuda_sim.initStateVector(sep)
         torch_sim.initStateVector(sep)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=TIGHT_ATOL, rtol=TIGHT_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - TIGHT_ATOL
 
     def test_independent_register_operations(self, two_register_pair):
         """Test operations on independent registers."""
@@ -335,7 +342,7 @@ class TestMultiRegisterOperations:
         cuda_sim.x(0, 1)
         torch_sim.h(0, 0)
         torch_sim.x(0, 1)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=TIGHT_ATOL, rtol=TIGHT_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - TIGHT_ATOL
 
     def test_combined_cv_dv_operations(self, two_register_pair):
         """Test combined CV and DV operations on different registers."""
@@ -347,7 +354,7 @@ class TestMultiRegisterOperations:
         torch_sim.initStateVector(sep)
         cuda_sim.h(0, 0)
         torch_sim.h(0, 0)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=TIGHT_ATOL, rtol=TIGHT_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - TIGHT_ATOL
 
 
 class TestConditionalGates:
@@ -363,7 +370,7 @@ class TestConditionalGates:
         torch_sim.initStateVector(sep)
         cuda_sim.cd(1, 0, 0, 0.5)
         torch_sim.cd(1, 0, 0, 0.5)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=LOOSE_ATOL, rtol=LOOSE_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - LOOSE_ATOL
 
     def test_conditional_displacement_complex(self, two_register_pair):
         """Test conditional displacement with complex alpha."""
@@ -377,7 +384,7 @@ class TestConditionalGates:
         torch_sim.x(0, 0)
         cuda_sim.cd(1, 0, 0, 0.5 + 0.3j)
         torch_sim.cd(1, 0, 0, 0.5 + 0.3j)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=LOOSE_ATOL, rtol=LOOSE_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - LOOSE_ATOL
 
     def test_conditional_parity(self, two_register_pair):
         """Test conditional parity gate."""
@@ -389,7 +396,7 @@ class TestConditionalGates:
         torch_sim.initStateVector(sep)
         cuda_sim.cp(1, 0, 0)
         torch_sim.cp(1, 0, 0)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=TIGHT_ATOL, rtol=TIGHT_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - TIGHT_ATOL
 
     def test_conditional_parity_control_one(self, two_register_pair):
         """Test conditional parity when control is |1⟩."""
@@ -403,7 +410,7 @@ class TestConditionalGates:
         torch_sim.x(0, 0)
         cuda_sim.cp(1, 0, 0)
         torch_sim.cp(1, 0, 0)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=TIGHT_ATOL, rtol=TIGHT_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - TIGHT_ATOL
 
 
 class TestAdvancedGates:
@@ -420,7 +427,7 @@ class TestAdvancedGates:
         torch_sim.initStateVector(sep)
         cuda_sim.cr(1, 0, 0, theta)
         torch_sim.cr(1, 0, 0, theta)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=VERY_LOOSE_ATOL, rtol=VERY_LOOSE_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - VERY_LOOSE_ATOL
 
     @pytest.mark.parametrize("r", [0.1, 0.2])
     def test_conditional_squeezing(self, two_register_pair, r):
@@ -435,7 +442,7 @@ class TestAdvancedGates:
         torch_sim.x(0, 0)
         cuda_sim.cs(1, 0, 0, r)
         torch_sim.cs(1, 0, 0, r)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=VERY_LOOSE_ATOL, rtol=VERY_LOOSE_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - VERY_LOOSE_ATOL
 
 
 class TestTwoModeGates:
@@ -451,7 +458,7 @@ class TestTwoModeGates:
         torch_sim.initStateVector(sep)
         cuda_sim.q1q2(0, 1, 0.1)
         torch_sim.q1q2(0, 1, 0.1)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=LOOSE_ATOL, rtol=LOOSE_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - LOOSE_ATOL
 
     @pytest.mark.parametrize("theta", [pi/6, pi/4])
     def test_beam_splitter(self, two_equal_register_pair, theta):
@@ -464,7 +471,7 @@ class TestTwoModeGates:
         torch_sim.initStateVector(sep)
         cuda_sim.bs(0, 1, theta)
         torch_sim.bs(0, 1, theta)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=VERY_LOOSE_ATOL, rtol=VERY_LOOSE_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - VERY_LOOSE_ATOL
 
     @pytest.mark.parametrize("theta", [pi/6, pi/4])
     def test_conditional_beam_splitter(self, theta):
@@ -479,7 +486,7 @@ class TestTwoModeGates:
         torch_sim.initStateVector(sep)
         cuda_sim.cbs(1, 2, 0, 0, theta)
         torch_sim.cbs(1, 2, 0, 0, theta)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=VERY_LOOSE_ATOL, rtol=VERY_LOOSE_RTOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - VERY_LOOSE_ATOL
         del cuda_sim, torch_sim
 
     def test_swap_operation(self, two_equal_register_pair):
@@ -490,12 +497,12 @@ class TestTwoModeGates:
         sep.setUniform(1)
         cuda_sim.initStateVector(sep)
         torch_sim.initStateVector(sep)
-        cuda_initial = cuda_sim.getState()
-        torch_initial = torch_sim.getState()
+        ref_initial = CVDV([3, 3])
+        ref_initial.initFromArray(torch_sim.state.reshape(-1))
         cuda_sim.swap(0, 1)
         torch_sim.swap(0, 1)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=TIGHT_ATOL, rtol=TIGHT_RTOL)
-        assert not np.allclose(cuda_initial, cuda_sim.getState(), atol=TIGHT_ATOL)
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - TIGHT_ATOL
+        assert cuda_sim.fidelityWith(ref_initial) < 0.5
 
     def test_double_swap(self, two_equal_register_pair):
         """Test that swapping twice returns to original state."""
@@ -505,15 +512,14 @@ class TestTwoModeGates:
         sep.setZero(1)
         cuda_sim.initStateVector(sep)
         torch_sim.initStateVector(sep)
-        cuda_initial = cuda_sim.getState()
-        torch_initial = torch_sim.getState()
+        ref_initial = CVDV([3, 3])
+        ref_initial.initFromArray(torch_sim.state.reshape(-1))
         cuda_sim.swap(0, 1)
         cuda_sim.swap(0, 1)
         torch_sim.swap(0, 1)
         torch_sim.swap(0, 1)
-        np.testing.assert_allclose(cuda_initial, cuda_sim.getState(), atol=LOOSE_ATOL, rtol=LOOSE_RTOL)
-        np.testing.assert_allclose(torch_initial, torch_sim.getState(), atol=LOOSE_ATOL, rtol=LOOSE_RTOL)
-        np.testing.assert_allclose(cuda_sim.getState(), torch_sim.getState(), atol=LOOSE_ATOL, rtol=LOOSE_RTOL)
+        assert cuda_sim.fidelityWith(ref_initial) >= 1 - LOOSE_ATOL
+        assert _fidelity(cuda_sim, torch_sim) >= 1 - LOOSE_ATOL
 
 
 class TestPhaseSpaceFunctions:

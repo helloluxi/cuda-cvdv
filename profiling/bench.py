@@ -1,13 +1,16 @@
 """
 profiling/bench.py
-Python-level C API timing for CVDV.
+Python-level C API timing for CVDV, with PyTorch-CUDA baseline column.
 
 Times each C API call using time.perf_counter with cudaDeviceSynchronize
 fencing, N=10 timed runs after 1 warm-up, reports median time per op.
+Also times the equivalent torch-cuda operation for each gate (where applicable)
+and reports a "vs Torch" speedup column.
 
 Usage:
   python profiling/bench.py            # time + compare vs committed baseline
   python profiling/bench.py --no-save  # time only, skip writing CSV
+  python profiling/bench.py --no-torch # skip torch-cuda baseline
 """
 
 import sys, os, ctypes, math, shutil
@@ -170,6 +173,71 @@ def _make_ctx(lib, cuda):
     return ctx
 
 
+# ── torch bench ──────────────────────────────────────────────────────────────
+
+def _make_torch_sim():
+    """Create a CVDV torch-cuda sim matching _make_ctx's registers."""
+    sys.path.insert(0, REPO_DIR)
+    from src import CVDV
+    from src.separable import SeparableState
+    sim = CVDV([1, 10, 10], backend='torch-cuda')
+    sep = SeparableState([1, 10, 10])
+    sep.setUniform(0)
+    sep.setCoherent(1, 2.0 + 1.0j)
+    sep.setCoherent(2, 1.0 + 0.5j)
+    sim.initStateVector(sep)
+    return sim
+
+
+def _time_torch_op(fn, *args):
+    """Return median time in microseconds for a torch-cuda op."""
+    import torch
+    times = []
+    for i in range(N_WARMUP + N_RUNS):
+        torch.cuda.synchronize()
+        t0 = perf_counter()
+        fn(*args)
+        torch.cuda.synchronize()
+        t1 = perf_counter()
+        if i >= N_WARMUP:
+            times.append((t1 - t0) * 1e6)
+    return float(np.median(times))
+
+
+def run_torch_bench():
+    """Time each C API op's PyTorch-CUDA equivalent. Returns {op: time_us}."""
+    results = {}
+
+    def rec(c_name, method_name, *args):
+        sim = _make_torch_sim()
+        t = _time_torch_op(getattr(sim, method_name), *args)
+        del sim
+        results[c_name] = t
+
+    rec('cvdvDisplacement',            'd',          1, 1.0+0.5j)
+    rec('cvdvRotation',                'r',          1, 0.3)
+    rec('cvdvSqueeze',                 's',          1, 0.5)
+    rec('cvdvPhaseSquare',             'sheer',      1, 0.1)
+    rec('cvdvPhaseCubic',              'phaseCubic', 1, 0.05)
+    rec('cvdvFtQ2P',                   'ftQ2P',      1)
+    rec('cvdvQ1Q2Gate',                'q1q2',       1, 2, 0.3)
+    rec('cvdvBeamSplitter',            'bs',         1, 2, 0.5)
+    rec('cvdvSwapRegisters',           'swap',       1, 2)
+    rec('cvdvHadamard',                'h',          0, 0)
+    rec('cvdvPauliRotation',           'rx',         0, 0, 0.5)
+    rec('cvdvParity',                  'p',          1)
+    rec('cvdvConditionalDisplacement', 'cd',         1, 0, 0, 1.0+0.5j)
+    rec('cvdvConditionalRotation',     'cr',         1, 0, 0, 0.3)
+    rec('cvdvConditionalSqueeze',      'cs',         1, 0, 0, 0.5)
+    rec('cvdvConditionalParity',       'cp',         1, 0, 0)
+    rec('cvdvConditionalBeamSplitter', 'cbs',        1, 2, 0, 0, 0.5)
+    rec('cvdvGetNorm',                 'getNorm')
+    # Wigner/Husimi torch backend uses CPU numpy loops — not a GPU op, skip
+    rec('cvdvMeasure',                 'm',          1)
+
+    return results
+
+
 # ── timing ────────────────────────────────────────────────────────────────────
 
 def _time_op(cuda, fn, *args):
@@ -238,27 +306,47 @@ def run_bench(lib, cuda):
 
 # ── CSV I/O ───────────────────────────────────────────────────────────────────
 
-def write_csv(path, rows):
+def write_csv(path, rows, torch_dict=None):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w') as f:
-        f.write('op,time_us\n')
+        f.write('op,time_us,torch_us\n')
         for op, t in rows:
-            f.write(f'{op},{t:.3f}\n')
+            tu = torch_dict.get(op) if torch_dict else None
+            torch_str = f'{tu:.3f}' if tu is not None else ''
+            f.write(f'{op},{t:.3f},{torch_str}\n')
 
 
 def read_csv(path):
+    """Return {op: time_us} (reads 2nd column only for backward compat)."""
     out = {}
     with open(path) as f:
         next(f)  # header
         for line in f:
-            op, t = line.strip().split(',')
-            out[op] = float(t)
+            parts = line.strip().split(',')
+            out[parts[0]] = float(parts[1])
+    return out
+
+
+def read_torch_from_csv(path):
+    """Return {op: torch_us} from the 3rd column, or {} if column absent."""
+    out = {}
+    try:
+        with open(path) as f:
+            header = next(f).strip().split(',')
+            if len(header) < 3 or header[2] != 'torch_us':
+                return {}
+            for line in f:
+                parts = line.strip().split(',')
+                if len(parts) >= 3 and parts[2]:
+                    out[parts[0]] = float(parts[2])
+    except OSError:
+        pass
     return out
 
 
 # ── comparison table ──────────────────────────────────────────────────────────
 
-def print_table(current_rows, committed=None):
+def print_table(current_rows, committed=None, torch_dict=None):
     COL_OP  = 36
     COL_T   = 12
 
@@ -266,6 +354,8 @@ def print_table(current_rows, committed=None):
         hdr = (f'{"Op":<{COL_OP}}  {"Before(us)":>{COL_T}}  {"After(us)":>{COL_T}}  {"Speedup":>8}')
     else:
         hdr = (f'{"Op":<{COL_OP}}  {"Time(us)":>{COL_T}}')
+    if torch_dict:
+        hdr += f'  {"Torch(us)":>{COL_T}}  {"vs Torch":>8}'
 
     print(f'\n{hdr}')
     print('-' * len(hdr))
@@ -275,18 +365,27 @@ def print_table(current_rows, committed=None):
             t_old = committed.get(op)
             if t_old is not None:
                 sp_str = f'{t_old / t_new:.2f}x' if t_new else 'n/a'
-                print(f'{op:<{COL_OP}}  {t_old:>{COL_T}.1f}  {t_new:>{COL_T}.1f}  {sp_str:>8}')
+                row = f'{op:<{COL_OP}}  {t_old:>{COL_T}.1f}  {t_new:>{COL_T}.1f}  {sp_str:>8}'
             else:
-                print(f'{op:<{COL_OP}}  {"(new)":>{COL_T}}  {t_new:>{COL_T}.1f}  {"n/a":>8}')
+                row = f'{op:<{COL_OP}}  {"(new)":>{COL_T}}  {t_new:>{COL_T}.1f}  {"n/a":>8}'
         else:
-            print(f'{op:<{COL_OP}}  {t_new:>{COL_T}.1f}')
+            row = f'{op:<{COL_OP}}  {t_new:>{COL_T}.1f}'
+        if torch_dict:
+            t_torch = torch_dict.get(op)
+            if t_torch is not None:
+                vs_str = f'{t_torch / t_new:.2f}x' if t_new else 'n/a'
+                row += f'  {t_torch:>{COL_T}.1f}  {vs_str:>8}'
+            else:
+                row += f'  {"n/a":>{COL_T}}  {"n/a":>8}'
+        print(row)
     print()
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    no_save = '--no-save' in sys.argv
+    no_save   = '--no-save'   in sys.argv
+    no_torch  = '--no-torch'  in sys.argv
 
     cuda = _load_cudart_full()
     lib  = _load_cvdv()
@@ -294,8 +393,17 @@ def main():
     print(f'Benchmarking C API  ({N_WARMUP} warm-up + {N_RUNS} timed runs, reporting median)')
     results = run_bench(lib, cuda)
 
+    torch_dict = None
+    if not no_torch:
+        try:
+            import torch  # noqa: F401
+            print(f'Benchmarking PyTorch-CUDA  ({N_WARMUP} warm-up + {N_RUNS} timed runs, reporting median)')
+            torch_dict = run_torch_bench()
+        except Exception as e:
+            print(f'PyTorch bench skipped: {e}')
+
     if not no_save:
-        write_csv(CURRENT_CSV, results)
+        write_csv(CURRENT_CSV, results, torch_dict)
         print(f'Written: {CURRENT_CSV}')
 
     committed = None
@@ -304,7 +412,7 @@ def main():
     else:
         print('No committed baseline — showing absolute times.')
 
-    print_table(results, committed)
+    print_table(results, committed, torch_dict)
 
 
 if __name__ == '__main__':

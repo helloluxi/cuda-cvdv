@@ -969,6 +969,35 @@ __global__ void kernelComputeInnerProduct(cuDoubleComplex* partialSums, const cu
     }
 }
 
+// Kernel to compute inner product <psi1|psi2> = sum conj(psi1[i]) * psi2[i]
+__global__ void kernelInnerProductStatevectors(cuDoubleComplex* partialSums,
+                                               const cuDoubleComplex* psi1,
+                                               const cuDoubleComplex* psi2,
+                                               size_t totalSize) {
+    extern __shared__ cuDoubleComplex sdata[];
+
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    cuDoubleComplex localSum = make_cuDoubleComplex(0.0, 0.0);
+
+    for (size_t globalIdx = idx; globalIdx < totalSize; globalIdx += blockDim.x * gridDim.x) {
+        localSum = cuCadd(localSum, conjMul(psi1[globalIdx], psi2[globalIdx]));
+    }
+
+    sdata[threadIdx.x] = localSum;
+    __syncthreads();
+
+    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            sdata[threadIdx.x] = cuCadd(sdata[threadIdx.x], sdata[threadIdx.x + s]);
+        }
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0) {
+        partialSums[blockIdx.x] = sdata[0];
+    }
+}
+
 #pragma endregion
 
 extern "C" {
@@ -2432,5 +2461,47 @@ double cvdvGetNorm(CVDVContext* ctx) {
 }
 
 #pragma endregion
+
+// Compute fidelity |⟨psi1|psi2⟩|² between two CUDA statevectors of the same size.
+void cvdvFidelityStatevectors(CVDVContext* ctx1, CVDVContext* ctx2, double* fidOut) {
+    *fidOut = 0.0;
+    if (!ctx1 || !ctx2) return;
+    if (ctx1->dState == nullptr || ctx2->dState == nullptr) {
+        logError(ctx1, "cvdvFidelityStatevectors: state not initialized");
+        return;
+    }
+    if (ctx1->gTotalQbt != ctx2->gTotalQbt) {
+        logError(ctx1, "cvdvFidelityStatevectors: total qubit count mismatch (%d vs %d)",
+                 ctx1->gTotalQbt, ctx2->gTotalQbt);
+        return;
+    }
+
+    size_t totalSize = 1ULL << ctx1->gTotalQbt;
+    int numBlocks = (int)((totalSize + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE);
+    numBlocks = min(numBlocks, 1024);
+
+    cuDoubleComplex* dPartialSums;
+    checkCudaErrors(ctx1, cudaMalloc(&dPartialSums, numBlocks * sizeof(cuDoubleComplex)));
+
+    size_t sharedMemSize = CUDA_BLOCK_SIZE * sizeof(cuDoubleComplex);
+    kernelInnerProductStatevectors<<<numBlocks, CUDA_BLOCK_SIZE, sharedMemSize>>>(
+        dPartialSums, ctx1->dState, ctx2->dState, totalSize);
+    checkCudaErrors(ctx1, cudaGetLastError());
+    checkCudaErrors(ctx1, cudaDeviceSynchronize());
+
+    cuDoubleComplex* hPartialSums = new cuDoubleComplex[numBlocks];
+    checkCudaErrors(ctx1, cudaMemcpy(hPartialSums, dPartialSums,
+                                     numBlocks * sizeof(cuDoubleComplex),
+                                     cudaMemcpyDeviceToHost));
+    cuDoubleComplex result = make_cuDoubleComplex(0.0, 0.0);
+    for (int i = 0; i < numBlocks; i++) result = cuCadd(result, hPartialSums[i]);
+
+    delete[] hPartialSums;
+    checkCudaErrors(ctx1, cudaFree(dPartialSums));
+
+    double re = cuCreal(result), im = cuCimag(result);
+    *fidOut = re * re + im * im;
+    logInfo(ctx1, "FidelityStatevectors: %.10f", *fidOut);
+}
 
 }  // extern "C"

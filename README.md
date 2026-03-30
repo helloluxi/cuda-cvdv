@@ -11,17 +11,14 @@ A high-performance CUDA library for simulating hybrid continuous-variable (CV) a
   - [ ] `kernelBuildHusimiWindowed` — bit-packed non-contiguous state reads; shared-memory staging → 2–4× kernel
   - [ ] `kernelMeasureGlobal` — global atomics on small registers cause contention; replace with two-pass reduction (already bypassed by `kernelMeasureShared` for most cases)
   - [ ] `kernelComputeJointMeasure` — full multi-register index reconstruction in inner loop; scattered reads → 3–5× but low priority (not on critical path)
-  - [ ] L2 cache thrashing on strided accesses (general, covers parity/swap for small regStride)
+
+- **Algorithmic improvements**
+  - [ ] Lazy Gaussian transformation by changing quadrature meta if applicable
 
 - **Packaging**
+  - [ ] Compile API?
   - [ ] Add example notebooks for Product Formula and QSP
 
-- [x] Wigner and Husimi Q CUDA kernels
-- [x] Unit test suite (core + CUDA/Torch consistency)
-- [x] Performance benchmarks vs bosonic-qiskit
-- [x] `CVDV_DEV` flag for dev mode (rebuild on import)
-- [x] CPU fallback via `torch-cpu` backend
-- [x] Optional-dep packaging (`pyproject.toml` extras)
 
 ## Performance Summary
 

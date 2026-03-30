@@ -120,6 +120,8 @@ def _compile_and_load() -> ctypes.CDLL:
     lib.cvdvGetPhotonNumber.restype = c_double
     lib.cvdvSetStateFromDevicePtr.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
     lib.cvdvSetStateFromDevicePtr.restype = None
+    lib.cvdvFidelityStatevectors.argtypes = [ctypes.c_void_p, ctypes.c_void_p, POINTER(c_double)]
+    lib.cvdvFidelityStatevectors.restype = None
 
     return lib
 
@@ -612,6 +614,27 @@ class CVDV:
             if reg1Idx > reg2Idx:
                 probs = probs.transpose(0, 1)
             return probs.cpu().numpy()
+
+    def initFromArray(self, arr) -> None:
+        """Initialize state vector from a flat complex array (torch CUDA tensor or numpy array)."""
+        if self.backend != 'cuda':
+            raise ValueError("initFromArray is only supported for the CUDA backend")
+        if _torch_available and isinstance(arr, torch.Tensor):
+            tensor = arr.reshape(-1).contiguous().to(dtype=torch.cdouble, device='cuda')
+        else:
+            arr_np = np.asarray(arr, dtype=np.complex128).reshape(-1)
+            if not _torch_available:
+                raise RuntimeError("PyTorch is required for initFromArray")
+            tensor = torch.from_numpy(arr_np).to(device='cuda', dtype=torch.cdouble).contiguous()
+        _get_lib().cvdvSetStateFromDevicePtr(self.ctx, ctypes.c_void_p(tensor.data_ptr()))
+
+    def fidelityWith(self, other: 'CVDV') -> float:
+        """Compute |⟨self|other⟩|² between two CUDA state vectors."""
+        if self.backend != 'cuda' or other.backend != 'cuda':
+            raise ValueError("fidelityWith requires both instances to use the CUDA backend")
+        fid_out = c_double(0.0)
+        _get_lib().cvdvFidelityStatevectors(self.ctx, other.ctx, ctypes.byref(fid_out))
+        return float(fid_out.value)
 
     def getFidelity(self, sep: 'SeparableState') -> float:
         """Compute |⟨sep|ψ⟩|² between the current state and a SeparableState."""
