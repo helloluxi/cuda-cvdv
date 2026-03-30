@@ -7,64 +7,26 @@
 #include <cmath>
 #include <cstdio>
 #include <ctime>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
 
 #pragma region Error Checking and Constants
 
-// Global log file (filename from LOG_FILENAME constexpr)
-static FILE* gLogFile = nullptr;
-
-#define logInfo(ctx, ...)                   \
-    do {                                    \
-        if (gLogFile) {                     \
-            fprintf(gLogFile, "[INFO] ");   \
-            fprintf(gLogFile, __VA_ARGS__); \
-            fprintf(gLogFile, "\n");        \
-            fflush(gLogFile);               \
-        }                                   \
-    } while (0)
-
-#define logDebug(ctx, ...)                  \
-    do {                                    \
-        if (gLogFile) {                     \
-            fprintf(gLogFile, "[DEBUG] ");  \
-            fprintf(gLogFile, __VA_ARGS__); \
-            fprintf(gLogFile, "\n");        \
-            fflush(gLogFile);               \
-        }                                   \
-    } while (0)
-
-#define logError(ctx, ...)                  \
-    do {                                    \
-        fprintf(stderr, "[ERROR] ");        \
-        fprintf(stderr, __VA_ARGS__);       \
-        fprintf(stderr, "\n");              \
-        if (gLogFile) {                     \
-            fprintf(gLogFile, "[ERROR] ");  \
-            fprintf(gLogFile, __VA_ARGS__); \
-            fprintf(gLogFile, "\n");        \
-            fflush(gLogFile);               \
-        }                                   \
-    } while (0)
-
-#define checkCudaErrors(ctx, val)                                                         \
-    do {                                                                                  \
-        cudaError_t err = (val);                                                          \
-        if (err != cudaSuccess) {                                                         \
-            const char* msg = cudaGetErrorString(err);                                    \
-            fprintf(stderr, "[CUDA ERROR] %s at %s:%d\n", msg, __FILE__, __LINE__);       \
-            if (gLogFile) {                                                               \
-                fprintf(gLogFile, "[CUDA ERROR] %s at %s:%d\n", msg, __FILE__, __LINE__); \
-                fflush(gLogFile);                                                         \
-            }                                                                             \
-            exit(EXIT_FAILURE);                                                           \
-        }                                                                                 \
+// Modern error handling without file logging
+#define checkCudaErrors(val)                                                           \
+    do {                                                                                \
+        cudaError_t err = (val);                                                        \
+        if (err != cudaSuccess) {                                                       \
+            fprintf(stderr, "CUDA Error: %s at %s:%d\n", cudaGetErrorString(err), __FILE__, __LINE__); \
+            exit(EXIT_FAILURE);                                                         \
+        }                                                                               \
     } while (0)
 
 constexpr double PI = 3.14159265358979323846;
 constexpr double SQRT2 = 1.41421356237309504880;
 constexpr double PI_POW_NEG_QUARTER = 0.75112554446494248286;  // PI^(-0.25)
 constexpr int CUDA_BLOCK_SIZE = 256;  // Default CUDA block size for RTX 4070 Laptop
-constexpr const char* LOG_FILENAME = "cuda.log";
 
 #pragma endregion
 
@@ -877,19 +839,9 @@ extern "C" {
 #pragma region C API - Context Management
 
 CVDVContext* cvdvCreate(int numReg, int* numQubits) {
-    // Open global log file (overwrites existing)
-    if (gLogFile == nullptr) {
-        gLogFile = fopen(LOG_FILENAME, "w");
-        if (gLogFile) {
-            time_t now = time(nullptr);
-            fprintf(gLogFile, "=== CVDV Session Started: %s", ctime(&now));
-            fflush(gLogFile);
-        }
-    }
-
     CVDVContext* ctx;
-    checkCudaErrors(nullptr, cudaMallocManaged(&ctx, sizeof(CVDVContext)));
-    ctx->dState = nullptr;
+    checkCudaErrors(cudaMallocManaged(&ctx, sizeof(CVDVContext)));
+    memset(ctx, 0, sizeof(CVDVContext));
     ctx->gQbts = nullptr;
     ctx->gFlwQbts = nullptr;
     ctx->gGridSteps = nullptr;
@@ -901,17 +853,16 @@ CVDVContext* cvdvCreate(int numReg, int* numQubits) {
 
     // If no registers specified, return empty context
     if (numReg == 0 || numQubits == nullptr) {
-        logInfo(ctx, "Created empty context");
         return ctx;
     }
 
-    logInfo(ctx, "Allocating %d registers", numReg);
+    // Allocate registers
     ctx->gNumReg = numReg;
 
     // Allocate managed memory for register metadata
-    checkCudaErrors(ctx, cudaMallocManaged(&ctx->gQbts, numReg * sizeof(int)));
-    checkCudaErrors(ctx, cudaMallocManaged(&ctx->gFlwQbts, numReg * sizeof(int)));
-    checkCudaErrors(ctx, cudaMallocManaged(&ctx->gGridSteps, numReg * sizeof(double)));
+    checkCudaErrors(cudaMallocManaged(&ctx->gQbts, numReg * sizeof(int)));
+    checkCudaErrors(cudaMallocManaged(&ctx->gFlwQbts, numReg * sizeof(int)));
+    checkCudaErrors(cudaMallocManaged(&ctx->gGridSteps, numReg * sizeof(double)));
 
     // Initialize metadata for each register
     ctx->gTotalQbt = 0;
@@ -922,9 +873,6 @@ CVDVContext* cvdvCreate(int numReg, int* numQubits) {
         // Calculate grid step using formula: dx = sqrt(2 * pi / regDim)
         size_t registerDim = 1 << numQubits[i];
         ctx->gGridSteps[i] = sqrt(2.0 * PI / registerDim);
-
-        logDebug(ctx, "Register %d: qubits=%d, dx=%.6f, dim=%zu, x_bound=%.6f", i, numQubits[i],
-                 ctx->gGridSteps[i], registerDim, sqrt(2.0 * PI * registerDim));
     }
 
     // Compute following qubit counts (sum of qubits after each register)
@@ -961,7 +909,6 @@ CVDVContext* cvdvCreate(int numReg, int* numQubits) {
         }
     }
 
-    logInfo(ctx, "Registers allocated successfully: %d total qubits", ctx->gTotalQbt);
     return ctx;
 }
 
@@ -970,47 +917,41 @@ void cvdvDestroy(CVDVContext* ctx) {
 
     // Free device memory
     if (ctx->dState != nullptr) {
-        checkCudaErrors(ctx, cudaFree(ctx->dState));
+        checkCudaErrors(cudaFree(ctx->dState));
         ctx->dState = nullptr;
     }
 
-    // Destroy cached cuFFT plans
+    // Free cuFFT plans
     if (ctx->ftPlans != nullptr) {
         for (int i = 0; i < ctx->gNumReg; i++) {
-            cufftDestroy(ctx->ftPlans[i]);
+            if (ctx->ftPlans[i] != 0) {
+                cufftDestroy(ctx->ftPlans[i]);
+            }
         }
         free(ctx->ftPlans);
         ctx->ftPlans = nullptr;
     }
+
+    // Free Wigner/Husimi plans
     if (ctx->wPlanValid) {
         cufftDestroy(ctx->wPlan);
-        ctx->wPlanValid = false;
     }
     if (ctx->hPlanValid) {
         cufftDestroy(ctx->hPlan);
-        ctx->hPlanValid = false;
     }
 
     // Free managed memory
     if (ctx->gQbts != nullptr) {
-        checkCudaErrors(ctx, cudaFree(ctx->gQbts));
+        checkCudaErrors(cudaFree(ctx->gQbts));
         ctx->gQbts = nullptr;
     }
     if (ctx->gFlwQbts != nullptr) {
-        checkCudaErrors(ctx, cudaFree(ctx->gFlwQbts));
+        checkCudaErrors(cudaFree(ctx->gFlwQbts));
         ctx->gFlwQbts = nullptr;
     }
     if (ctx->gGridSteps != nullptr) {
-        checkCudaErrors(ctx, cudaFree(ctx->gGridSteps));
+        checkCudaErrors(cudaFree(ctx->gGridSteps));
         ctx->gGridSteps = nullptr;
-    }
-
-    // Close global log file (if this was the last instance using it)
-    if (gLogFile != nullptr) {
-        time_t now = time(nullptr);
-        fprintf(gLogFile, "=== CVDV Session Ended: %s", ctime(&now));
-        fclose(gLogFile);
-        gLogFile = nullptr;
     }
 
     cudaFree(ctx);
@@ -1027,26 +968,22 @@ void cvdvDestroy(CVDVContext* ctx) {
 void cvdvInitFromSeparable(CVDVContext* ctx, void** devicePtrs, int numReg) {
     if (!ctx) return;
     if (ctx->gNumReg == 0) {
-        logError(ctx, "Must call cvdvCreate with registers before cvdvInitFromSeparable");
+        fprintf(stderr, "Error: Must call cvdvCreate with registers before cvdvInitFromSeparable\n");
         return;
     }
     if (numReg != ctx->gNumReg) {
-        logError(ctx, "numReg mismatch: context has %d, got %d", ctx->gNumReg, numReg);
+        fprintf(stderr, "Error: numReg mismatch: context has %d, got %d\n", ctx->gNumReg, numReg);
         return;
     }
 
-    logInfo(ctx, "Initializing state vector from %d device pointers", numReg);
-
     size_t totalSize = 1 << ctx->gTotalQbt;
-    logDebug(ctx, "Total state size: %zu", totalSize);
 
     // Download each register to host
     cuDoubleComplex** hTempRegs = new cuDoubleComplex*[numReg];
     for (int i = 0; i < numReg; i++) {
         size_t regDim = 1 << ctx->gQbts[i];
         hTempRegs[i] = new cuDoubleComplex[regDim];
-        checkCudaErrors(ctx,
-                        cudaMemcpy(hTempRegs[i], reinterpret_cast<cuDoubleComplex*>(devicePtrs[i]),
+        checkCudaErrors(cudaMemcpy(hTempRegs[i], reinterpret_cast<cuDoubleComplex*>(devicePtrs[i]),
                                    regDim * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost));
     }
 
@@ -1069,14 +1006,11 @@ void cvdvInitFromSeparable(CVDVContext* ctx, void** devicePtrs, int numReg) {
 
     if (ctx->dState != nullptr) cudaFree(ctx->dState);
 
-    logDebug(ctx, "Allocating device memory: %.3f GB",
-             totalSize * sizeof(cuDoubleComplex) / (1024.0 * 1024.0 * 1024.0));
-    checkCudaErrors(ctx, cudaMalloc(&ctx->dState, totalSize * sizeof(cuDoubleComplex)));
-    checkCudaErrors(ctx, cudaMemcpy(ctx->dState, hState, totalSize * sizeof(cuDoubleComplex),
+    // Allocate device memory: %.3f GB
+    checkCudaErrors(cudaMalloc(&ctx->dState, totalSize * sizeof(cuDoubleComplex)));
+    checkCudaErrors(cudaMemcpy(ctx->dState, hState, totalSize * sizeof(cuDoubleComplex),
                                     cudaMemcpyHostToDevice));
     delete[] hState;
-
-    logInfo(ctx, "State vector initialized: %d registers, total size: %zu", numReg, totalSize);
 }
 
 void cvdvFree(CVDVContext* ctx) {
@@ -1103,23 +1037,12 @@ void cvdvFree(CVDVContext* ctx) {
 
 #pragma endregion
 
-#pragma region C API - Fourier Transforms
-
 void cvdvFtQ2P(CVDVContext* ctx, int regIdx) {
     if (!ctx) return;
     if (regIdx < 0 || regIdx >= ctx->gNumReg) {
         fprintf(stderr, "Invalid register index: %d\n", regIdx);
         return;
     }
-
-    logDebug(ctx, "ftQ2P called for register %d", regIdx);
-
-    // Index-shifted QFT on specific register
-    // Algorithm:
-    // 1. Pre-phase correction: exp(i*pi*k*(N-1)/N)
-    // 2. Standard FFT
-    // 3. Post-phase correction: exp(i*pi*j*(N-1)/N)
-    // 4. Normalization: 1/√N
 
     size_t totalSize = 1 << ctx->gTotalQbt;
     int grid = (totalSize + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
@@ -1129,7 +1052,6 @@ void cvdvFtQ2P(CVDVContext* ctx, int regIdx) {
     // Step 1: Pre-phase correction: exp(i*π(N-1)/N * j)
     // In position representation: exp(i*π(N-1)/(N*dx) * x)
     double phaseCoeff = PI * (regDim - 1.0) / (regDim * dx);
-    logDebug(ctx, "Applying pre-phase correction: phaseCoeff=%.6f", phaseCoeff);
     kernelPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, totalSize, regIdx, ctx->gQbts,
                                             ctx->gGridSteps, ctx->gFlwQbts, phaseCoeff);
 
@@ -1138,7 +1060,6 @@ void cvdvFtQ2P(CVDVContext* ctx, int regIdx) {
     cufftHandle plan = ctx->ftPlans[regIdx];
 
     if (regStride == 1) {
-        logDebug(ctx, "Contiguous FFT (cached plan)");
         cufftResult result = cufftExecZ2Z(plan, ctx->dState, ctx->dState, CUFFT_FORWARD);
         if (result != CUFFT_SUCCESS) {
             fprintf(stderr, "cuFFT forward execution failed: %d\n", result);
@@ -1148,7 +1069,6 @@ void cvdvFtQ2P(CVDVContext* ctx, int regIdx) {
         // Strided case: loop over outer blocks (plan covers one block at a time)
         size_t regBlockSize = regStride << ctx->gQbts[regIdx];
         size_t outerDim = totalSize / regBlockSize;
-        logDebug(ctx, "Strided FFT (cached plan): %zu outer blocks", outerDim);
         for (size_t o = 0; o < outerDim; o++) {
             cuDoubleComplex* blockStart =
                 ctx->dState + (o << (ctx->gFlwQbts[regIdx] + ctx->gQbts[regIdx]));
@@ -1173,9 +1093,7 @@ void cvdvFtQ2P(CVDVContext* ctx, int regIdx) {
     // Matches dvsim-code convention: dvsim_QFT = CVDV_QFT * exp(i*π*(N-1)²/(2N))
     double globalPhase = PI * (double)(regDim - 1) * (double)(regDim - 1) / (2.0 * (double)regDim);
     kernelGlobalPhase<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, totalSize, globalPhase);
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
-
-    logDebug(ctx, "ftQ2P completed for register %d", regIdx);
+    checkCudaErrors(cudaDeviceSynchronize());
 }
 
 void cvdvFtP2Q(CVDVContext* ctx, int regIdx) {
@@ -1239,7 +1157,7 @@ void cvdvFtP2Q(CVDVContext* ctx, int regIdx) {
     // Step 5: Global phase correction (conjugate of ftQ2P): exp(-i*π*(N-1)²/(2N))
     double globalPhase = -PI * (double)(regDim - 1) * (double)(regDim - 1) / (2.0 * (double)regDim);
     kernelGlobalPhase<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), globalPhase);
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    checkCudaErrors(cudaDeviceSynchronize());
 }
 
 #pragma endregion
@@ -1264,8 +1182,8 @@ void cvdvDisplacement(CVDVContext* ctx, int regIdx, double betaRe, double betaIm
         kernelPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), regIdx,
                                                 ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
                                                 SQRT2 * betaIm);
-        checkCudaErrors(ctx, cudaGetLastError());
-        checkCudaErrors(ctx, cudaDeviceSynchronize());
+        checkCudaErrors(cudaGetLastError());
+        checkCudaErrors(cudaDeviceSynchronize());
     }
 
     // Step 2: Apply D(Re(α)) = exp(-i*sqrt(2)*Re(α)*p) in momentum space
@@ -1277,8 +1195,8 @@ void cvdvDisplacement(CVDVContext* ctx, int regIdx, double betaRe, double betaIm
         kernelPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), regIdx,
                                                 ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts,
                                                 -SQRT2 * betaRe);
-        checkCudaErrors(ctx, cudaGetLastError());
-        checkCudaErrors(ctx, cudaDeviceSynchronize());
+        checkCudaErrors(cudaGetLastError());
+        checkCudaErrors(cudaDeviceSynchronize());
 
         // Transform back to position space
         cvdvFtP2Q(ctx, regIdx);
@@ -1311,8 +1229,8 @@ void cvdvConditionalDisplacement(CVDVContext* ctx, int targetReg, int ctrlReg, i
         kernelCPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), targetReg,
                                                  ctrlReg, ctrlQubit, ctx->gQbts, ctx->gGridSteps,
                                                  ctx->gFlwQbts, SQRT2 * alphaIm);
-        checkCudaErrors(ctx, cudaGetLastError());
-        checkCudaErrors(ctx, cudaDeviceSynchronize());
+        checkCudaErrors(cudaGetLastError());
+        checkCudaErrors(cudaDeviceSynchronize());
     }
 
     // Step 2: Apply CD(Re(α)) = F^{-1} exp(-i√2 Re(α) Z p) F
@@ -1324,8 +1242,8 @@ void cvdvConditionalDisplacement(CVDVContext* ctx, int targetReg, int ctrlReg, i
         kernelCPhaseX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), targetReg,
                                                  ctrlReg, ctrlQubit, ctx->gQbts, ctx->gGridSteps,
                                                  ctx->gFlwQbts, -SQRT2 * alphaRe);
-        checkCudaErrors(ctx, cudaGetLastError());
-        checkCudaErrors(ctx, cudaDeviceSynchronize());
+        checkCudaErrors(cudaGetLastError());
+        checkCudaErrors(cudaDeviceSynchronize());
 
         // Transform back to position space
         cvdvFtP2Q(ctx, targetReg);
@@ -1344,8 +1262,8 @@ void cvdvPauliRotation(CVDVContext* ctx, int regIdx, int qubitIdx, int axis, dou
     kernelPauliRotation<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), regIdx,
                                                    qubitIdx, ctx->gQbts, ctx->gFlwQbts, axis,
                                                    theta);
-    checkCudaErrors(ctx, cudaGetLastError());
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
 }
 
 void cvdvHadamard(CVDVContext* ctx, int regIdx, int qubitIdx) {
@@ -1359,8 +1277,8 @@ void cvdvHadamard(CVDVContext* ctx, int regIdx, int qubitIdx) {
 
     kernelHadamard<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), regIdx, qubitIdx,
                                               ctx->gQbts, ctx->gFlwQbts);
-    checkCudaErrors(ctx, cudaGetLastError());
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
 }
 
 void cvdvParity(CVDVContext* ctx, int regIdx) {
@@ -1373,8 +1291,8 @@ void cvdvParity(CVDVContext* ctx, int regIdx) {
     int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
     kernelParity<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), regIdx, ctx->gQbts,
                                             ctx->gFlwQbts);
-    checkCudaErrors(ctx, cudaGetLastError());
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
 }
 
 void cvdvConditionalParity(CVDVContext* ctx, int targetReg, int ctrlReg, int ctrlQubit) {
@@ -1396,8 +1314,8 @@ void cvdvConditionalParity(CVDVContext* ctx, int targetReg, int ctrlReg, int ctr
     kernelConditionalParity<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt),
                                                        targetReg, ctrlReg, ctrlQubit, ctx->gQbts,
                                                        ctx->gFlwQbts);
-    checkCudaErrors(ctx, cudaGetLastError());
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
 }
 
 void cvdvSwapRegisters(CVDVContext* ctx, int reg1, int reg2) {
@@ -1415,8 +1333,8 @@ void cvdvSwapRegisters(CVDVContext* ctx, int reg1, int reg2) {
     int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
     kernelSwapRegisters<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), reg1, reg2,
                                                    ctx->gQbts, ctx->gFlwQbts);
-    checkCudaErrors(ctx, cudaGetLastError());
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
 }
 
 void cvdvPhaseSquare(CVDVContext* ctx, int regIdx, double t) {
@@ -1430,8 +1348,8 @@ void cvdvPhaseSquare(CVDVContext* ctx, int regIdx, double t) {
 
     kernelPhaseX2<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), regIdx, ctx->gQbts,
                                              ctx->gGridSteps, ctx->gFlwQbts, t);
-    checkCudaErrors(ctx, cudaGetLastError());
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
 }
 
 void cvdvPhaseCubic(CVDVContext* ctx, int regIdx, double t) {
@@ -1445,8 +1363,8 @@ void cvdvPhaseCubic(CVDVContext* ctx, int regIdx, double t) {
 
     kernelPhaseX3<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), regIdx, ctx->gQbts,
                                              ctx->gGridSteps, ctx->gFlwQbts, t);
-    checkCudaErrors(ctx, cudaGetLastError());
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
 }
 
 // Internal: small-angle rotation |θ| ≤ π/4
@@ -1512,8 +1430,8 @@ static void cvdvControlledPhaseSquare(CVDVContext* ctx, int targetReg, int ctrlR
     kernelCPhaseX2<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), targetReg,
                                               ctrlReg, ctrlQubit, ctx->gQbts, ctx->gGridSteps,
                                               ctx->gFlwQbts, t);
-    checkCudaErrors(ctx, cudaGetLastError());
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
 }
 
 // Internal: small-angle conditional rotation |θ| ≤ π/4
@@ -1665,21 +1583,21 @@ static void cvdvBeamSplitterSmall(CVDVContext* ctx, int reg1, int reg2, double t
 
     kernelPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), reg1, reg2,
                                              ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, coeff_q);
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    checkCudaErrors(cudaDeviceSynchronize());
 
     cvdvFtQ2P(ctx, reg1);
     cvdvFtQ2P(ctx, reg2);
 
     kernelPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), reg1, reg2,
                                              ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, coeff_p);
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    checkCudaErrors(cudaDeviceSynchronize());
 
     cvdvFtP2Q(ctx, reg1);
     cvdvFtP2Q(ctx, reg2);
 
     kernelPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), reg1, reg2,
                                              ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, coeff_q);
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    checkCudaErrors(cudaDeviceSynchronize());
 }
 
 void cvdvBeamSplitter(CVDVContext* ctx, int reg1, int reg2, double theta) {
@@ -1743,7 +1661,7 @@ static void cvdvConditionalBeamSplitterSmall(CVDVContext* ctx, int reg1, int reg
     kernelCPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), reg1, reg2,
                                               ctrlReg, ctrlQubit, ctx->gQbts, ctx->gGridSteps,
                                               ctx->gFlwQbts, coeff_q);
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    checkCudaErrors(cudaDeviceSynchronize());
 
     cvdvFtQ2P(ctx, reg1);
     cvdvFtQ2P(ctx, reg2);
@@ -1751,7 +1669,7 @@ static void cvdvConditionalBeamSplitterSmall(CVDVContext* ctx, int reg1, int reg
     kernelCPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), reg1, reg2,
                                               ctrlReg, ctrlQubit, ctx->gQbts, ctx->gGridSteps,
                                               ctx->gFlwQbts, coeff_p);
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    checkCudaErrors(cudaDeviceSynchronize());
 
     cvdvFtP2Q(ctx, reg1);
     cvdvFtP2Q(ctx, reg2);
@@ -1759,7 +1677,7 @@ static void cvdvConditionalBeamSplitterSmall(CVDVContext* ctx, int reg1, int reg
     kernelCPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), reg1, reg2,
                                               ctrlReg, ctrlQubit, ctx->gQbts, ctx->gGridSteps,
                                               ctx->gFlwQbts, coeff_q);
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    checkCudaErrors(cudaDeviceSynchronize());
 }
 
 void cvdvConditionalBeamSplitter(CVDVContext* ctx, int reg1, int reg2, int ctrlReg, int ctrlQubit,
@@ -1825,7 +1743,7 @@ void cvdvQ1Q2Gate(CVDVContext* ctx, int reg1, int reg2, double coeff) {
 
     kernelPhaseXX<<<grid, CUDA_BLOCK_SIZE>>>(ctx->dState, (1 << ctx->gTotalQbt), reg1, reg2,
                                              ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts, coeff);
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    checkCudaErrors(cudaDeviceSynchronize());
 }
 
 #pragma endregion
@@ -1839,12 +1757,12 @@ void cvdvGetWigner(CVDVContext* ctx, int regIdx, double* wignerOut) {
     double dx = ctx->gGridSteps[regIdx];
 
     cuDoubleComplex* dBuf;
-    checkCudaErrors(ctx, cudaMalloc(&dBuf, cvDim * cvDim * sizeof(cuDoubleComplex)));
+    checkCudaErrors(cudaMalloc(&dBuf, cvDim * cvDim * sizeof(cuDoubleComplex)));
 
     int grid1 = (cvDim * cvDim + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
     kernelBuildWignerRow<<<grid1, CUDA_BLOCK_SIZE>>>(dBuf, ctx->dState, regIdx, cvDim, dx,
                                                      ctx->gNumReg, ctx->gQbts, ctx->gFlwQbts);
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    checkCudaErrors(cudaDeviceSynchronize());
 
     // Fixed plan: batch = cvDim rows (only recreated when cvDim changes)
     if (!ctx->wPlanValid || ctx->wPlanCvDim != (int)cvDim) {
@@ -1860,14 +1778,14 @@ void cvdvGetWigner(CVDVContext* ctx, int regIdx, double* wignerOut) {
         ctx->wPlanValid = true;
     }
     cufftExecZ2Z(ctx->wPlan, dBuf, dBuf, CUFFT_INVERSE);
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    checkCudaErrors(cudaDeviceSynchronize());
 
     double* dWigner;
-    checkCudaErrors(ctx, cudaMalloc(&dWigner, cvDim * cvDim * sizeof(double)));
+    checkCudaErrors(cudaMalloc(&dWigner, cvDim * cvDim * sizeof(double)));
     kernelFinalizeWigner<<<grid1, CUDA_BLOCK_SIZE>>>(dWigner, dBuf, cvDim, dx);
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    checkCudaErrors(cudaDeviceSynchronize());
 
-    checkCudaErrors(ctx, cudaMemcpy(wignerOut, dWigner, cvDim * cvDim * sizeof(double),
+    checkCudaErrors(cudaMemcpy(wignerOut, dWigner, cvDim * cvDim * sizeof(double),
                                     cudaMemcpyDeviceToHost));
     cudaFree(dWigner);
     cudaFree(dBuf);
@@ -1882,9 +1800,9 @@ void cvdvGetHusimiQ(CVDVContext* ctx, int regIdx, double* husimiOut) {
 
     cuDoubleComplex* dBuf;
     double* dAccum;
-    checkCudaErrors(ctx, cudaMalloc(&dBuf, cvDim * cvDim * sizeof(cuDoubleComplex)));
-    checkCudaErrors(ctx, cudaMalloc(&dAccum, cvDim * cvDim * sizeof(double)));
-    checkCudaErrors(ctx, cudaMemset(dAccum, 0, cvDim * cvDim * sizeof(double)));
+    checkCudaErrors(cudaMalloc(&dBuf, cvDim * cvDim * sizeof(cuDoubleComplex)));
+    checkCudaErrors(cudaMalloc(&dAccum, cvDim * cvDim * sizeof(double)));
+    checkCudaErrors(cudaMemset(dAccum, 0, cvDim * cvDim * sizeof(double)));
 
     // Fixed plan: batch = cvDim rows (only recreated when cvDim changes)
     if (!ctx->hPlanValid || ctx->hPlanCvDim != (int)cvDim) {
@@ -1908,14 +1826,14 @@ void cvdvGetHusimiQ(CVDVContext* ctx, int regIdx, double* husimiOut) {
         cufftExecZ2Z(ctx->hPlan, dBuf, dBuf, CUFFT_FORWARD);
         kernelAccumHusimiPower<<<grid1, CUDA_BLOCK_SIZE>>>(dAccum, dBuf, cvDim * cvDim);
     }
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    checkCudaErrors(cudaDeviceSynchronize());
 
     double* dHusimiQ;
-    checkCudaErrors(ctx, cudaMalloc(&dHusimiQ, cvDim * cvDim * sizeof(double)));
+    checkCudaErrors(cudaMalloc(&dHusimiQ, cvDim * cvDim * sizeof(double)));
     kernelFinalizeHusimi<<<grid1, CUDA_BLOCK_SIZE>>>(dHusimiQ, dAccum, cvDim);
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    checkCudaErrors(cudaDeviceSynchronize());
 
-    checkCudaErrors(ctx, cudaMemcpy(husimiOut, dHusimiQ, cvDim * cvDim * sizeof(double),
+    checkCudaErrors(cudaMemcpy(husimiOut, dHusimiQ, cvDim * cvDim * sizeof(double),
                                     cudaMemcpyDeviceToHost));
     cudaFree(dHusimiQ);
     cudaFree(dAccum);
@@ -1938,7 +1856,7 @@ void cvdvJointMeasure(CVDVContext* ctx, int reg1Idx, int reg2Idx, double* jointP
 
     // Allocate device memory for joint probabilities
     double* dJointProb;
-    checkCudaErrors(ctx, cudaMalloc(&dJointProb, totalPairs * sizeof(double)));
+    checkCudaErrors(cudaMalloc(&dJointProb, totalPairs * sizeof(double)));
 
     // Launch kernel
     int grid = min((int)((totalPairs + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE), CUDA_BLOCK_SIZE);
@@ -1946,10 +1864,10 @@ void cvdvJointMeasure(CVDVContext* ctx, int reg1Idx, int reg2Idx, double* jointP
     kernelComputeJointMeasure<<<grid, CUDA_BLOCK_SIZE>>>(dJointProb, ctx->dState, reg1Idx, reg2Idx,
                                                          (1 << ctx->gTotalQbt), ctx->gNumReg,
                                                          ctx->gQbts, ctx->gFlwQbts);
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    checkCudaErrors(cudaDeviceSynchronize());
 
     // Copy result to CPU
-    checkCudaErrors(ctx, cudaMemcpy(jointProbsOut, dJointProb, totalPairs * sizeof(double),
+    checkCudaErrors(cudaMemcpy(jointProbsOut, dJointProb, totalPairs * sizeof(double),
                                     cudaMemcpyDeviceToHost));
 
     // Clean up
@@ -1963,11 +1881,10 @@ void cvdvSetStateFromDevicePtr(CVDVContext* ctx, void* d_src) {
     if (!ctx || !d_src) return;
     size_t totalSize = 1 << ctx->gTotalQbt;
     if (ctx->dState == nullptr) {
-        checkCudaErrors(ctx, cudaMalloc(&ctx->dState, totalSize * sizeof(cuDoubleComplex)));
+        checkCudaErrors(cudaMalloc(&ctx->dState, totalSize * sizeof(cuDoubleComplex)));
     }
-    checkCudaErrors(ctx, cudaMemcpy(ctx->dState, d_src, totalSize * sizeof(cuDoubleComplex),
+    checkCudaErrors(cudaMemcpy(ctx->dState, d_src, totalSize * sizeof(cuDoubleComplex),
                                     cudaMemcpyDeviceToDevice));
-    logInfo(ctx, "State loaded from device pointer (%zu elements)", totalSize);
 }
 
 void cvdvGetState(CVDVContext* ctx, double* realOut, double* imagOut) {
@@ -1979,7 +1896,7 @@ void cvdvGetState(CVDVContext* ctx, double* realOut, double* imagOut) {
     }
 
     cuDoubleComplex* hState = new cuDoubleComplex[totalSize];
-    checkCudaErrors(ctx, cudaMemcpy(hState, ctx->dState, totalSize * sizeof(cuDoubleComplex),
+    checkCudaErrors(cudaMemcpy(hState, ctx->dState, totalSize * sizeof(cuDoubleComplex),
                                     cudaMemcpyDeviceToHost));
 
     for (size_t i = 0; i < totalSize; i++) {
@@ -2036,9 +1953,9 @@ void cvdvGetRegisterInfo(CVDVContext* ctx, int* qubitCountsOut, double* gridStep
     if (!ctx) return;
     if (ctx->gNumReg == 0) return;
 
-    checkCudaErrors(ctx, cudaMemcpy(qubitCountsOut, ctx->gQbts, ctx->gNumReg * sizeof(int),
+    checkCudaErrors(cudaMemcpy(qubitCountsOut, ctx->gQbts, ctx->gNumReg * sizeof(int),
                                     cudaMemcpyDeviceToHost));
-    checkCudaErrors(ctx, cudaMemcpy(gridStepsOut, ctx->gGridSteps, ctx->gNumReg * sizeof(double),
+    checkCudaErrors(cudaMemcpy(gridStepsOut, ctx->gGridSteps, ctx->gNumReg * sizeof(double),
                                     cudaMemcpyDeviceToHost));
 }
 
@@ -2047,8 +1964,7 @@ int cvdvGetRegisterDim(CVDVContext* ctx, int regIdx) {
     if (regIdx < 0 || regIdx >= ctx->gNumReg) return -1;
 
     int qubit_count;
-    checkCudaErrors(
-        ctx, cudaMemcpy(&qubit_count, ctx->gQbts + regIdx, sizeof(int), cudaMemcpyDeviceToHost));
+    checkCudaErrors(cudaMemcpy(&qubit_count, ctx->gQbts + regIdx, sizeof(int), cudaMemcpyDeviceToHost));
     return 1 << qubit_count;
 }
 
@@ -2057,23 +1973,20 @@ double cvdvGetRegisterDx(CVDVContext* ctx, int regIdx) {
     if (regIdx < 0 || regIdx >= ctx->gNumReg) return -1.0;
 
     double dx;
-    checkCudaErrors(
-        ctx, cudaMemcpy(&dx, ctx->gGridSteps + regIdx, sizeof(double), cudaMemcpyDeviceToHost));
+    checkCudaErrors(cudaMemcpy(&dx, ctx->gGridSteps + regIdx, sizeof(double), cudaMemcpyDeviceToHost));
     return dx;
 }
 
 void cvdvMeasure(CVDVContext* ctx, int regIdx, double* probabilitiesOut) {
     if (!ctx) return;
     if (regIdx < 0 || regIdx >= ctx->gNumReg) {
-        logError(ctx, "Invalid register index: %d", regIdx);
+        fprintf(stderr, "Invalid register index: %d\n", regIdx);
         return;
     }
     if (ctx->dState == nullptr) {
-        logError(ctx, "State not initialized");
+        fprintf(stderr, "State not initialized\n");
         return;
     }
-
-    logDebug(ctx, "Computing marginal probabilities for register %d", regIdx);
 
     size_t regDim = 1 << ctx->gQbts[regIdx];
     size_t totalSize = 1ULL << ctx->gTotalQbt;
@@ -2082,8 +1995,8 @@ void cvdvMeasure(CVDVContext* ctx, int regIdx, double* probabilitiesOut) {
 
     // Allocate and zero-initialize device probabilities
     double* dProbs;
-    checkCudaErrors(ctx, cudaMalloc(&dProbs, regDim * sizeof(double)));
-    checkCudaErrors(ctx, cudaMemset(dProbs, 0, regDim * sizeof(double)));
+    checkCudaErrors(cudaMalloc(&dProbs, regDim * sizeof(double)));
+    checkCudaErrors(cudaMemset(dProbs, 0, regDim * sizeof(double)));
 
     // Parallelize over full state vector
     int numBlocks = (totalSize + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
@@ -2092,13 +2005,12 @@ void cvdvMeasure(CVDVContext* ctx, int regIdx, double* probabilitiesOut) {
     size_t sharedMemSize = regDim * sizeof(double);
     kernelMeasure<<<numBlocks, CUDA_BLOCK_SIZE, sharedMemSize>>>(dProbs, ctx->dState, regShift,
                                                                  regMask, (int)regDim, totalSize);
-    checkCudaErrors(ctx, cudaGetLastError());
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
 
     // Copy results back to host
-    checkCudaErrors(
-        ctx, cudaMemcpy(probabilitiesOut, dProbs, regDim * sizeof(double), cudaMemcpyDeviceToHost));
-    checkCudaErrors(ctx, cudaFree(dProbs));
+    checkCudaErrors(cudaMemcpy(probabilitiesOut, dProbs, regDim * sizeof(double), cudaMemcpyDeviceToHost));
+    checkCudaErrors(cudaFree(dProbs));
 }
 
 // Helper: build device pointer-of-pointers from a host array of numReg device
@@ -2107,9 +2019,9 @@ void cvdvMeasure(CVDVContext* ctx, int regIdx, double* probabilitiesOut) {
 static cuDoubleComplex runInnerProductKernel(CVDVContext* ctx, void** devicePtrs, int numReg) {
     // Upload pointer array to device
     cuDoubleComplex** dRegArrayPtrs;
-    checkCudaErrors(ctx, cudaMalloc(&dRegArrayPtrs, numReg * sizeof(cuDoubleComplex*)));
+    checkCudaErrors(cudaMalloc(&dRegArrayPtrs, numReg * sizeof(cuDoubleComplex*)));
     // Copy host-side pointer values (each is a device ptr) to device memory
-    checkCudaErrors(ctx, cudaMemcpy(dRegArrayPtrs, devicePtrs, numReg * sizeof(cuDoubleComplex*),
+    checkCudaErrors(cudaMemcpy(dRegArrayPtrs, devicePtrs, numReg * sizeof(cuDoubleComplex*),
                                     cudaMemcpyHostToDevice));
 
     size_t totalSize = 1 << ctx->gTotalQbt;
@@ -2117,23 +2029,23 @@ static cuDoubleComplex runInnerProductKernel(CVDVContext* ctx, void** devicePtrs
     numBlocks = min(numBlocks, 1024);
 
     cuDoubleComplex* dPartialSums;
-    checkCudaErrors(ctx, cudaMalloc(&dPartialSums, numBlocks * sizeof(cuDoubleComplex)));
+    checkCudaErrors(cudaMalloc(&dPartialSums, numBlocks * sizeof(cuDoubleComplex)));
 
     size_t sharedMemSize = CUDA_BLOCK_SIZE * sizeof(cuDoubleComplex);
     kernelComputeInnerProduct<<<numBlocks, CUDA_BLOCK_SIZE, sharedMemSize>>>(
         dPartialSums, ctx->dState, dRegArrayPtrs, numReg, ctx->gQbts, ctx->gFlwQbts, totalSize);
-    checkCudaErrors(ctx, cudaGetLastError());
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
 
     cuDoubleComplex* hPartialSums = new cuDoubleComplex[numBlocks];
-    checkCudaErrors(ctx, cudaMemcpy(hPartialSums, dPartialSums, numBlocks * sizeof(cuDoubleComplex),
+    checkCudaErrors(cudaMemcpy(hPartialSums, dPartialSums, numBlocks * sizeof(cuDoubleComplex),
                                     cudaMemcpyDeviceToHost));
     cuDoubleComplex result = make_cuDoubleComplex(0.0, 0.0);
     for (int i = 0; i < numBlocks; i++) result = cuCadd(result, hPartialSums[i]);
 
     delete[] hPartialSums;
-    checkCudaErrors(ctx, cudaFree(dPartialSums));
-    checkCudaErrors(ctx, cudaFree(dRegArrayPtrs));
+    checkCudaErrors(cudaFree(dPartialSums));
+    checkCudaErrors(cudaFree(dRegArrayPtrs));
     return result;
 }
 
@@ -2143,21 +2055,19 @@ static cuDoubleComplex runInnerProductKernel(CVDVContext* ctx, void** devicePtrs
 void cvdvGetFidelity(CVDVContext* ctx, void** devicePtrs, int numReg, double* fidOut) {
     if (!ctx) return;
     if (ctx->dState == nullptr || ctx->gNumReg == 0) {
-        logError(ctx, "State not initialized");
+        fprintf(stderr, "State not initialized\n");
         *fidOut = 0.0;
         return;
     }
     if (numReg != ctx->gNumReg) {
-        logError(ctx, "numReg mismatch: context has %d, got %d", ctx->gNumReg, numReg);
+        fprintf(stderr, "numReg mismatch: context has %d, got %d\n", ctx->gNumReg, numReg);
         *fidOut = 0.0;
         return;
     }
 
-    logInfo(ctx, "Computing fidelity |<sep|psi>|^2");
     cuDoubleComplex ip = runInnerProductKernel(ctx, devicePtrs, numReg);
     double re = cuCreal(ip), im = cuCimag(ip);
     *fidOut = re * re + im * im;
-    logInfo(ctx, "Fidelity: %.10f", *fidOut);
 }
 
 // Internal: compute <x²> for a register using parallel reduction
@@ -2167,20 +2077,20 @@ static double computeExpectX2(CVDVContext* ctx, int regIdx) {
     numBlocks = min(numBlocks, 1024);
 
     double* dPartialSums;
-    checkCudaErrors(ctx, cudaMalloc(&dPartialSums, numBlocks * sizeof(double)));
+    checkCudaErrors(cudaMalloc(&dPartialSums, numBlocks * sizeof(double)));
 
     kernelExpectX2<<<numBlocks, CUDA_BLOCK_SIZE>>>(dPartialSums, ctx->dState, totalSize, regIdx,
                                                    ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts);
-    checkCudaErrors(ctx, cudaGetLastError());
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
 
     double* hPartialSums = new double[numBlocks];
-    checkCudaErrors(ctx, cudaMemcpy(hPartialSums, dPartialSums, numBlocks * sizeof(double),
+    checkCudaErrors(cudaMemcpy(hPartialSums, dPartialSums, numBlocks * sizeof(double),
                                     cudaMemcpyDeviceToHost));
     double result = 0.0;
     for (int i = 0; i < numBlocks; i++) result += hPartialSums[i];
     delete[] hPartialSums;
-    checkCudaErrors(ctx, cudaFree(dPartialSums));
+    checkCudaErrors(cudaFree(dPartialSums));
     return result;
 }
 
@@ -2203,11 +2113,9 @@ double cvdvGetPhotonNumber(CVDVContext* ctx, int regIdx) {
 double cvdvGetNorm(CVDVContext* ctx) {
     if (!ctx) return 0.0;
     if (ctx->dState == nullptr) {
-        logError(ctx, "State not initialized");
+        fprintf(stderr, "State not initialized\n");
         return 0.0;
     }
-
-    logInfo(ctx, "Computing state norm");
 
     // Allocate partial sums for reduction
     size_t totalSize = 1 << ctx->gTotalQbt;
@@ -2215,16 +2123,16 @@ double cvdvGetNorm(CVDVContext* ctx) {
     numBlocks = min(numBlocks, 1024);  // Cap at 1024 blocks
 
     double* dPartialSums;
-    checkCudaErrors(ctx, cudaMalloc(&dPartialSums, numBlocks * sizeof(double)));
+    checkCudaErrors(cudaMalloc(&dPartialSums, numBlocks * sizeof(double)));
 
     // Launch kernel with warp-level reduction
     kernelComputeNorm<<<numBlocks, CUDA_BLOCK_SIZE>>>(dPartialSums, ctx->dState, totalSize);
-    checkCudaErrors(ctx, cudaGetLastError());
-    checkCudaErrors(ctx, cudaDeviceSynchronize());
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
 
     // Download partial sums and reduce on host
     double* hPartialSums = new double[numBlocks];
-    checkCudaErrors(ctx, cudaMemcpy(hPartialSums, dPartialSums, numBlocks * sizeof(double),
+    checkCudaErrors(cudaMemcpy(hPartialSums, dPartialSums, numBlocks * sizeof(double),
                                     cudaMemcpyDeviceToHost));
 
     double result = 0.0;
@@ -2234,9 +2142,8 @@ double cvdvGetNorm(CVDVContext* ctx) {
 
     // Cleanup
     delete[] hPartialSums;
-    checkCudaErrors(ctx, cudaFree(dPartialSums));
+    checkCudaErrors(cudaFree(dPartialSums));
 
-    logInfo(ctx, "Norm: %.10f", result);
     return result;
 }
 
@@ -2248,11 +2155,11 @@ void cvdvFidelityStatevectors(CVDVContext* ctx1, CVDVContext* ctx2, double* fidO
     *fidOut = 0.0;
     if (!ctx1 || !ctx2) return;
     if (ctx1->dState == nullptr || ctx2->dState == nullptr) {
-        logError(ctx1, "cvdvFidelityStatevectors: state not initialized");
+        fprintf(stderr, "cvdvFidelityStatevectors: state not initialized\n");
         return;
     }
     if (ctx1->gTotalQbt != ctx2->gTotalQbt) {
-        logError(ctx1, "cvdvFidelityStatevectors: total qubit count mismatch (%d vs %d)",
+        fprintf(stderr, "cvdvFidelityStatevectors: total qubit count mismatch (%d vs %d)\n",
                  ctx1->gTotalQbt, ctx2->gTotalQbt);
         return;
     }
@@ -2262,26 +2169,25 @@ void cvdvFidelityStatevectors(CVDVContext* ctx1, CVDVContext* ctx2, double* fidO
     numBlocks = min(numBlocks, 1024);
 
     cuDoubleComplex* dPartialSums;
-    checkCudaErrors(ctx1, cudaMalloc(&dPartialSums, numBlocks * sizeof(cuDoubleComplex)));
+    checkCudaErrors(cudaMalloc(&dPartialSums, numBlocks * sizeof(cuDoubleComplex)));
 
     size_t sharedMemSize = CUDA_BLOCK_SIZE * sizeof(cuDoubleComplex);
     kernelInnerProductStatevectors<<<numBlocks, CUDA_BLOCK_SIZE, sharedMemSize>>>(
         dPartialSums, ctx1->dState, ctx2->dState, totalSize);
-    checkCudaErrors(ctx1, cudaGetLastError());
-    checkCudaErrors(ctx1, cudaDeviceSynchronize());
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
 
     cuDoubleComplex* hPartialSums = new cuDoubleComplex[numBlocks];
-    checkCudaErrors(ctx1, cudaMemcpy(hPartialSums, dPartialSums,
+    checkCudaErrors(cudaMemcpy(hPartialSums, dPartialSums,
                                      numBlocks * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost));
     cuDoubleComplex result = make_cuDoubleComplex(0.0, 0.0);
     for (int i = 0; i < numBlocks; i++) result = cuCadd(result, hPartialSums[i]);
 
     delete[] hPartialSums;
-    checkCudaErrors(ctx1, cudaFree(dPartialSums));
+    checkCudaErrors(cudaFree(dPartialSums));
 
     double re = cuCreal(result), im = cuCimag(result);
     *fidOut = re * re + im * im;
-    logInfo(ctx1, "FidelityStatevectors: %.10f", *fidOut);
 }
 
 }  // extern "C"
