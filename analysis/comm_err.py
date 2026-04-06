@@ -12,7 +12,8 @@ from tqdm import tqdm
 
 from ._common import fock_recurrence, plot_err_vs_gamma, plot_coeff_scaling
 
-from src import CVDV, SeparableState  # type: ignore
+from src.torchCvdv import TorchCvdv
+from src.separable import SeparableState
 
 Ns = [32, 64, 128, 256, 512, 1024]
 PRECISION_CUTOFF = 1e-9
@@ -23,7 +24,7 @@ def _make_sim(sim_class, q, psi_arr):
     """Create a sim with state set to psi_arr without normalization."""
     sep = SeparableState([q], device='cpu')
     sep.setZero(0)
-    sim = sim_class([q], backend='torch-cuda')
+    sim = sim_class([q], device='cuda')
     sim.initStateVector(sep)
     if isinstance(psi_arr, torch.Tensor):
         sim.state = psi_arr.detach().clone().to(dtype=torch.cdouble)
@@ -57,10 +58,9 @@ def _sweep(N: int) -> list:
         x_c = x.to(torch.cdouble)
 
         # x·iQFT(x·QFT(ψ))
-        from src import CVDV as _CVDV
-        t1 = _iqft(_CVDV, q, x_c * _qft(_CVDV, q, psi))
+        t1 = _iqft(TorchCvdv, q, x_c * _qft(TorchCvdv, q, psi))
         # iQFT(x·QFT(x·ψ))
-        t2 = _iqft(_CVDV, q, x_c * _qft(_CVDV, q, x_c * psi))
+        t2 = _iqft(TorchCvdv, q, x_c * _qft(TorchCvdv, q, x_c * psi))
         # commutator residual
         err_vec = x_c * t1 - t2 - 1j * psi
 

@@ -40,10 +40,12 @@ Makefile.generated
 .DS_Store
 
 # AI Assistant Files
-.claude/
-.windsurf/
-.memory/
-.cache/
+ai/
+
+# Symlinks
+.claude
+.windsurf
+.cursor
 
 # Logs and Temporary Files
 *.log

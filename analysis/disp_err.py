@@ -16,7 +16,8 @@ from tqdm import tqdm
 
 from ._common import fit_ab_upper, plot_coeff_scaling, _save_fig
 
-from src import CVDV, SeparableState  # type: ignore
+from src.torchCvdv import TorchCvdv
+from src.separable import SeparableState
 
 N_TOTALS = [64, 128, 256, 512]
 ALPHA = 4.0   # max of sweep range — gives worst-case upper bound
@@ -54,7 +55,7 @@ def _sweep(N: int, alpha: float) -> list:
     for n in range(N):
         sep = SeparableState([q], device='cpu')
         sep.setFock(0, n)
-        sim = CVDV([q], backend='torch-cuda')
+        sim = TorchCvdv([q], device='cuda')
         sim.initStateVector(sep)
         sim.d(0, float(alpha))
         psi_discrete = torch.tensor(sim.getState(), dtype=torch.cdouble)

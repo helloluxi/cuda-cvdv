@@ -6,14 +6,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 import numpy as np
 from numpy import pi, sqrt
-from src import CVDV, SeparableState
+from src.cudaCvdv import CudaCvdv
+from src.separable import SeparableState
 
 class TestCoreOperations:
     """Test core quantum operations using inner product validation."""
 
     def test_vacuum_state_initialization(self):
         """Test that vacuum state |0⟩ = coherent state |α=0⟩."""
-        sim = CVDV([10])
+        sim = CudaCvdv([10])
         sep = SeparableState([10])
         sep.setFock(0, 0)
         sim.initStateVector(sep)
@@ -27,7 +28,7 @@ class TestCoreOperations:
         """Test displacement operator: D(α)|0⟩ = |α⟩."""
         alpha = (np.random.random() - 0.5) * 4 + 1j * (np.random.random() - 0.5) * 4
 
-        sim = CVDV([10])
+        sim = CudaCvdv([10])
         sep = SeparableState([10])
         sep.setFock(0, 0)
         sim.initStateVector(sep)
@@ -43,7 +44,7 @@ class TestCoreOperations:
         alpha = (np.random.random() - 0.5) * 4 + 1j * (np.random.random() - 0.5) * 4
         beta = (np.random.random() - 0.5) * 4 + 1j * (np.random.random() - 0.5) * 4
 
-        sim = CVDV([10])
+        sim = CudaCvdv([10])
         sep = SeparableState([10])
         sep.setFock(0, 0)
         sim.initStateVector(sep)
@@ -59,7 +60,7 @@ class TestCoreOperations:
         """Test that FT_Q2P followed by FT_P2Q returns to original state."""
         nFock = np.random.randint(0, 20)
 
-        sim = CVDV([10])
+        sim = CudaCvdv([10])
         sep = SeparableState([10])
         sep.setFock(0, nFock)
         sim.initStateVector(sep)
@@ -76,7 +77,7 @@ class TestCoreOperations:
     def test_qubit_gates(self):
         """Test all available qubit gates: Hadamard and Pauli rotations (Rx, Ry, Rz)."""
         # Hadamard: H|0⟩ = |+⟩
-        sim = CVDV([1])
+        sim = CudaCvdv([1])
         sep = SeparableState([1])
         sep.setZero(0)
         sim.initStateVector(sep)
@@ -116,7 +117,7 @@ class TestCoreOperations:
         x = (np.random.random() - 0.5) * 2
         y = (np.random.random() - 0.5) * 2
 
-        sim = CVDV([1, 10])
+        sim = CudaCvdv([1, 10])
         sep = SeparableState([1, 10])
         sep.setUniform(0)
         sep.setFock(1, 0)
@@ -135,7 +136,7 @@ class TestCoreOperations:
         """Test phase space rotation on coherent state."""
         alpha = 3.0
 
-        sim = CVDV([10])
+        sim = CudaCvdv([10])
         sep = SeparableState([10])
         sep.setCoherent(0, alpha)
         sim.initStateVector(sep)
@@ -152,7 +153,7 @@ class TestCoreOperations:
         alpha = (np.random.random() - 0.5) * 6
         r = (np.random.random() - 0.5) * 2
 
-        sim = CVDV([10])
+        sim = CudaCvdv([10])
         sep = SeparableState([10])
         sep.setCoherent(0, 3j)
         sim.initStateVector(sep)
@@ -166,7 +167,7 @@ class TestCoreOperations:
     def test_beam_splitter(self):
         """Test beam splitter operation on Fock state + vacuum state pair."""
         nFock = np.random.randint(3, 10)
-        sim = CVDV([10, 10])
+        sim = CudaCvdv([10, 10])
         sep = SeparableState([10, 10])
         sep.setFock(0, nFock)
         sep.setFock(1, 0)
@@ -191,7 +192,7 @@ class TestCoreOperations:
         nFock = np.random.randint(0, 32)
         theta = (np.random.random() - 0.5) * 10
 
-        sim = CVDV([1, 10])
+        sim = CudaCvdv([1, 10])
         sep = SeparableState([1, 10])
         sep.setUniform(0)
         sep.setFock(1, nFock)
@@ -207,7 +208,7 @@ class TestCoreOperations:
         r = (np.random.random() - 0.5) * 2
         alpha = (np.random.random() - 0.5) * 2
 
-        sim = CVDV([1, 10])
+        sim = CudaCvdv([1, 10])
         sep = SeparableState([1, 10])
         sep.setUniform(0)
         sep.setFock(1, 0)
@@ -225,7 +226,7 @@ class TestCoreOperations:
     def test_conditional_beam_splitter(self):
         """Test beam splitter operation on Fock state + vacuum state pair."""
         nFock = np.random.randint(3, 10)
-        sim = CVDV([1, 10, 10])
+        sim = CudaCvdv([1, 10, 10])
         sep = SeparableState([1, 10, 10])
         sep.setUniform(0)
         sep.setFock(1, nFock)
@@ -289,7 +290,7 @@ class TestPhaseSpaceClosedForm:
         return (1 / pi) * np.exp(-0.5 * (X - q0) ** 2 - 0.5 * (P - p0) ** 2)
 
     def _make_sim(self):
-        sim = CVDV([self.NQUBITS])
+        sim = CudaCvdv([self.NQUBITS])
         sep = SeparableState([self.NQUBITS])
         sep.setCoherent(0, self.ALPHA)
         sim.initStateVector(sep)
@@ -351,7 +352,7 @@ class TestPhotonNumber:
 
     def _make_sim(self, nqubits=None):
         nq = nqubits if nqubits is not None else self.NQUBITS
-        sim = CVDV([nq])
+        sim = CudaCvdv([nq])
         return sim
 
     @pytest.mark.parametrize("alpha", [0.0, 1.0, 1.5 + 1.0j, -0.5 + 2.0j, 2.0])

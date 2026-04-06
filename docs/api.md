@@ -31,8 +31,11 @@ sep = SeparableState([1, 10])   # list of qubit counts, one per register
 Main simulator class. Dispatches to CUDA (`libcvdv.so`), `torch-cuda`, or `torch-cpu` depending on `backend`.
 
 ```python
-from src import CVDV
-sim = CVDV(numQubits_list, backend='cuda')   # 'cuda' | 'torch-cuda' | 'torch-cpu'
+from src.cudaCvdv import CudaCvdv
+from src.torchCvdv import TorchCvdv
+sim = CudaCvdv(numQubits_list)               # CUDA lib callers only
+# or
+sim = TorchCvdv(numQubits_list, device='cuda', dtype='complex128')  # pure torch
 ```
 
 `numQubits_list`: list of integers, one per register. Register `i` has `2**numQubits_list[i]` grid points.

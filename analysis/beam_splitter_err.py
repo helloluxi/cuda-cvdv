@@ -18,7 +18,8 @@ from tqdm import tqdm
 
 from ._common import fock_recurrence, fit_ab_upper, plot_coeff_scaling, _save_fig
 
-from src import CVDV, SeparableState  # type: ignore
+from src.torchCvdv import TorchCvdv
+from src.separable import SeparableState
 
 N_TOTALS = [32, 64, 128, 256]
 THETA = float(torch.pi / 2)
@@ -41,7 +42,7 @@ def _sweep(N: int, theta: float) -> list:
         sep = SeparableState([q, q], device='cpu')
         sep.setFock(0, n)
         sep.setFock(1, 0)
-        sim = CVDV([q, q], backend='torch-cuda')
+        sim = TorchCvdv([q, q], device='cuda')
         sim.initStateVector(sep)
         sim.bs(0, 1, theta)
         psi_discrete = torch.tensor(sim.getState(), dtype=torch.cdouble).reshape(N, N)   # [mode0, mode1]

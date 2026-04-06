@@ -18,7 +18,8 @@ from tqdm import tqdm
 
 from ._common import fock_recurrence, fit_ab_upper, plot_coeff_scaling, _save_fig
 
-from src import CVDV, SeparableState  # type: ignore
+from src.torchCvdv import TorchCvdv
+from src.separable import SeparableState
 
 QUBIT_COUNTS = [5, 6, 7, 8, 9, 10]   # N = 32 .. 1024
 PRECISION_CUTOFF = 1e-9
@@ -34,7 +35,7 @@ def _sweep(q: int) -> list:
     for n, psi_pos in enumerate(states):
         sep = SeparableState([q], device='cpu')
         sep.setFock(0, n)
-        sim = CVDV([q], backend='torch-cuda')
+        sim = TorchCvdv([q], device='cuda')
         sim.initStateVector(sep)
         sim.ftQ2P(0)
         psi_qft = torch.tensor(sim.getState(), dtype=torch.cdouble)

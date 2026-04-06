@@ -178,9 +178,9 @@ def _make_ctx(lib, cuda):
 def _make_torch_sim():
     """Create a CVDV torch-cuda sim matching _make_ctx's registers."""
     sys.path.insert(0, REPO_DIR)
-    from src import CVDV
+    from src.torchCvdv import TorchCvdv
     from src.separable import SeparableState
-    sim = CVDV([1, 10, 10], backend='torch-cuda')
+    sim = TorchCvdv([1, 10, 10], device='cuda')
     sep = SeparableState([1, 10, 10])
     sep.setUniform(0)
     sep.setCoherent(1, 2.0 + 1.0j)

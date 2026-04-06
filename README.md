@@ -120,14 +120,15 @@ sys.path.insert(0, "/path/to/cuda-cvdv")   # or add to PYTHONPATH
 Or install into your project's virtualenv with `pip install /path/to/cuda-cvdv`.
 
 ```python
-from src import CVDV
+from src.cudaCvdv import CudaCvdv
+from src.torchCvdv import TorchCvdv
 from src.separable import SeparableState
 
 sep = SeparableState([1, 10])
 sep.setZero(0)
 sep.setCoherent(1, 2 + 1j)
 
-sim = CVDV([1, 10], backend='cuda')
+sim = CudaCvdv([1, 10])
 sim.initStateVector(sep)
 sim.cd(1, 0, 0, 1.5)
 wigner = sim.getWigner(1, bound=5.0)
@@ -146,7 +147,7 @@ pip install ".[torch]"
 ```
 
 ```python
-sim = CVDV([1, 10], backend='torch-cpu')   # no CUDA, no .so needed
+sim = TorchCvdv([1, 10], device='cpu')   # no CUDA, no .so needed
 ```
 
 See [docs/api.md](docs/api.md) for the full API reference and [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for the development workflow.

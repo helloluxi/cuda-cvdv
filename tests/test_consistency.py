@@ -15,13 +15,14 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src import CVDV, SeparableState
-CVDVTorch = lambda qs, device='cuda': CVDV(qs, backend=f'torch-{device}')
+from src.cudaCvdv import CudaCvdv
+from src.torchCvdv import TorchCvdv
+from src.separable import SeparableState
 
 
 def _fidelity(cuda_sim, torch_sim) -> float:
     """Compute |<cuda|torch>|² by loading the torch state into a CUDA reference."""
-    ref = CVDV(cuda_sim.qubit_counts.tolist())
+    ref = CudaCvdv(cuda_sim.qubit_counts.tolist())
     ref.initFromArray(torch_sim.state.reshape(-1))
     return cuda_sim.fidelityWith(ref)
 
@@ -36,40 +37,40 @@ VERY_LOOSE_RTOL = 1e-1
 
 
 @pytest.fixture
-def single_register_pair() -> Generator[Tuple[CVDV, CVDV], None, None]:
+def single_register_pair() -> Generator[Tuple[CudaCvdv, TorchCvdv], None, None]:
     """Create a pair of simulators with single 4-qubit register."""
-    cuda_sim = CVDV([4])
-    torch_sim = CVDVTorch([4], device='cuda')
+    cuda_sim = CudaCvdv([4])
+    torch_sim = TorchCvdv([4], device='cuda', dtype=np.complex128)
     yield cuda_sim, torch_sim
     del cuda_sim
     del torch_sim
 
 
 @pytest.fixture
-def medium_register_pair() -> Generator[Tuple[CVDV, CVDV], None, None]:
+def medium_register_pair() -> Generator[Tuple[CudaCvdv, TorchCvdv], None, None]:
     """Create a pair of simulators with single 6-qubit register."""
-    cuda_sim = CVDV([6])
-    torch_sim = CVDVTorch([6], device='cuda')
+    cuda_sim = CudaCvdv([6])
+    torch_sim = TorchCvdv([6], device='cuda', dtype=np.complex128)
     yield cuda_sim, torch_sim
     del cuda_sim
     del torch_sim
 
 
 @pytest.fixture
-def two_register_pair() -> Generator[Tuple[CVDV, CVDV], None, None]:
+def two_register_pair() -> Generator[Tuple[CudaCvdv, TorchCvdv], None, None]:
     """Create a pair of simulators with two registers."""
-    cuda_sim = CVDV([3, 4])
-    torch_sim = CVDVTorch([3, 4], device='cuda')
+    cuda_sim = CudaCvdv([3, 4])
+    torch_sim = TorchCvdv([3, 4], device='cuda', dtype=np.complex128)
     yield cuda_sim, torch_sim
     del cuda_sim
     del torch_sim
 
 
 @pytest.fixture
-def two_equal_register_pair() -> Generator[Tuple[CVDV, CVDV], None, None]:
+def two_equal_register_pair() -> Generator[Tuple[CudaCvdv, TorchCvdv], None, None]:
     """Create a pair of simulators with two registers of equal size."""
-    cuda_sim = CVDV([3, 3])
-    torch_sim = CVDVTorch([3, 3], device='cuda')
+    cuda_sim = CudaCvdv([3, 3])
+    torch_sim = TorchCvdv([3, 3], device='cuda', dtype=np.complex128)
     yield cuda_sim, torch_sim
     del cuda_sim
     del torch_sim
@@ -131,8 +132,8 @@ class TestStateInitialization:
 
     def test_setCat_state(self):
         """Test cat state (superposition of coherent states)."""
-        cuda_sim = CVDV([7])
-        torch_sim = CVDVTorch([7], device='cuda')
+        cuda_sim = CudaCvdv([7])
+        torch_sim = TorchCvdv([7], device='cuda', dtype=np.complex128)
         sep = SeparableState([7])
         sep.setCat(0, [(2.0, 1.0), (-2.0, 1.0)])
         cuda_sim.initStateVector(sep)
@@ -268,7 +269,7 @@ class TestFourierTransforms:
         sep.setCoherent(0, 1.0)
         cuda_sim.initStateVector(sep)
         torch_sim.initStateVector(sep)
-        ref_initial = CVDV([6])
+        ref_initial = CudaCvdv([6])
         ref_initial.initFromArray(torch_sim.state.reshape(-1))
         cuda_sim.ftQ2P(0)
         cuda_sim.ftP2Q(0)
@@ -476,8 +477,8 @@ class TestTwoModeGates:
     @pytest.mark.parametrize("theta", [pi/6, pi/4])
     def test_conditional_beam_splitter(self, theta):
         """Test conditional beam splitter CBS(θ)."""
-        cuda_sim = CVDV([2, 3, 3])
-        torch_sim = CVDVTorch([2, 3, 3], device='cuda')
+        cuda_sim = CudaCvdv([2, 3, 3])
+        torch_sim = TorchCvdv([2, 3, 3], device='cuda', dtype=np.complex128)
         sep = SeparableState([2, 3, 3])
         sep.setUniform(0)
         sep.setCoherent(1, 0.5)
@@ -497,7 +498,7 @@ class TestTwoModeGates:
         sep.setUniform(1)
         cuda_sim.initStateVector(sep)
         torch_sim.initStateVector(sep)
-        ref_initial = CVDV([3, 3])
+        ref_initial = CudaCvdv([3, 3])
         ref_initial.initFromArray(torch_sim.state.reshape(-1))
         cuda_sim.swap(0, 1)
         torch_sim.swap(0, 1)
@@ -512,7 +513,7 @@ class TestTwoModeGates:
         sep.setZero(1)
         cuda_sim.initStateVector(sep)
         torch_sim.initStateVector(sep)
-        ref_initial = CVDV([3, 3])
+        ref_initial = CudaCvdv([3, 3])
         ref_initial.initFromArray(torch_sim.state.reshape(-1))
         cuda_sim.swap(0, 1)
         cuda_sim.swap(0, 1)
@@ -539,8 +540,8 @@ class TestPhaseSpaceFunctions:
 
     def test_husimi_q_vacuum(self):
         """Test Husimi Q function for vacuum state."""
-        cuda_sim = CVDV([5])
-        torch_sim = CVDVTorch([5], device='cuda')
+        cuda_sim = CudaCvdv([5])
+        torch_sim = TorchCvdv([5], device='cuda', dtype=np.complex128)
         sep = SeparableState([5])
         sep.setFock(0, 0)
         cuda_sim.initStateVector(sep)
@@ -557,8 +558,8 @@ class TestPhaseSpaceFunctions:
 
     def test_husimi_q_coherent(self):
         """Test Husimi Q function for coherent state."""
-        cuda_sim = CVDV([6])
-        torch_sim = CVDVTorch([6], device='cuda')
+        cuda_sim = CudaCvdv([6])
+        torch_sim = TorchCvdv([6], device='cuda', dtype=np.complex128)
         sep = SeparableState([6])
         sep.setCoherent(0, 1.5 + 1.0j)
         cuda_sim.initStateVector(sep)
@@ -572,8 +573,8 @@ class TestPhaseSpaceFunctions:
 
     def test_wigner_on_grid_coherent(self):
         """CUDA vs Torch getWigner on-grid API for a coherent state."""
-        cuda_sim = CVDV([8])
-        torch_sim = CVDVTorch([8], device='cuda')
+        cuda_sim = CudaCvdv([8])
+        torch_sim = TorchCvdv([8], device='cuda', dtype=np.complex128)
         sep = SeparableState([8])
         sep.setCoherent(0, 1.0 + 0.5j)
         cuda_sim.initStateVector(sep)
@@ -587,8 +588,8 @@ class TestPhaseSpaceFunctions:
 
     def test_husimi_on_grid_coherent(self):
         """CUDA vs Torch getHusimiQ on-grid API for a coherent state."""
-        cuda_sim = CVDV([8])
-        torch_sim = CVDVTorch([8], device='cuda')
+        cuda_sim = CudaCvdv([8])
+        torch_sim = TorchCvdv([8], device='cuda', dtype=np.complex128)
         sep = SeparableState([8])
         sep.setCoherent(0, 1.0 + 0.5j)
         cuda_sim.initStateVector(sep)
@@ -668,8 +669,8 @@ class TestPhotonNumber:
 
     def _make_pair(self, nqubits=None):
         nq = nqubits if nqubits is not None else self.NQUBITS
-        cuda_sim = CVDV([nq])
-        torch_sim = CVDVTorch([nq], device='cuda')
+        cuda_sim = CudaCvdv([nq])
+        torch_sim = TorchCvdv([nq], device='cuda', dtype=np.complex128)
         return cuda_sim, torch_sim
 
     @pytest.mark.parametrize("alpha", [0.0, 1.0, 1.5 + 1.0j, -0.5 + 2.0j])
