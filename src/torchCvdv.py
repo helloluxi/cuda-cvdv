@@ -23,6 +23,9 @@ class TorchCvdv:
         self.device = torch.device(device)
         self.dtype = self._resolve_dtype(dtype)
         self.state: Any = None
+        # flwQbts[r] = total qubits in all registers AFTER r (last register = LSB in flat index)
+        self.flwQbts = [int(sum(self.qubit_counts[r + 1:])) for r in range(self.num_registers)]
+        self._pos_grids: dict = {}  # lazy cache: regIdx → position grid tensor
 
     @staticmethod
     def _resolve_dtype(dtype: Any):
@@ -117,22 +120,21 @@ class TorchCvdv:
         self.state = torch.flip(self.state, dims=[regIdx])
 
     def cp(self, targetReg: int, ctrlReg: int, ctrlQubit: int) -> None:
-        ctrl_dim = self.register_dims[ctrlReg]
-        n_ctrl = self.qubit_counts[ctrlReg]
-        perm = list(range(self.num_registers))
-        perm[0], perm[ctrlReg] = perm[ctrlReg], perm[0]
-        actual_target = targetReg if targetReg != 0 else ctrlReg
-        perm[1], perm[actual_target] = perm[actual_target], perm[1]
-        state = self.state.permute(*perm)
-        new_shape = [2] * n_ctrl + list(state.shape[1:])
-        state = state.reshape(new_shape)
-        qperm = list(range(n_ctrl))
-        qperm[0], qperm[ctrlQubit] = qperm[ctrlQubit], qperm[0]
-        state = state.permute(*qperm + list(range(n_ctrl, len(new_shape))))
-        state[1] = torch.flip(state[1], dims=[n_ctrl - 1])
-        state = state.permute(*[qperm.index(i) for i in range(n_ctrl)] + list(range(n_ctrl, len(state.shape))))
-        state = state.reshape([ctrl_dim] + list(state.shape[n_ctrl:]))
-        self.state = state.permute(*[perm.index(i) for i in range(self.num_registers)])
+        # Mirror CUDA kernelConditionalParity: flat-index swap, no reshape.
+        target_dim = self.register_dims[targetReg]
+        all_idx = torch.arange(self.total_size, device=self.device, dtype=torch.long)
+        ctrl_bit_pos = self.flwQbts[ctrlReg] + self.qubit_counts[ctrlReg] - 1 - ctrlQubit
+        ctrl_bit = (all_idx >> ctrl_bit_pos) & 1
+        target_local = (all_idx >> self.flwQbts[targetReg]) & (target_dim - 1)
+        flipped = (target_dim - 1) - target_local
+        # Process each pair only once (local < flipped) to avoid double-swap
+        active = (ctrl_bit == 1) & (target_local < flipped)
+        src = all_idx[active]
+        dst = src + (flipped[active] - target_local[active]) * (1 << self.flwQbts[targetReg])
+        flat = self.state.contiguous().reshape(-1).clone()
+        flat[src] = self.state.reshape(-1)[dst]
+        flat[dst] = self.state.reshape(-1)[src]
+        self.state = flat.reshape(self.state.shape)
 
     def swap(self, reg1: int, reg2: int) -> None:
         if self.qubit_counts[reg1] != self.qubit_counts[reg2]:
@@ -342,62 +344,67 @@ class TorchCvdv:
         return (q2 + p2 - 1.0) / 2.0
 
     def getWigner(self, regIdx: int) -> npt.NDArray[np.float64]:
+        # Vectorized on GPU — mirrors CUDA kernelBuildWignerRow + kernelFinalizeWigner.
         dim = self.register_dims[regIdx]
         dx = self.grid_steps[regIdx]
-        psi = self._get_reduced_state_cpu(regIdx)
-        fft_results = np.zeros((dim, dim), dtype=np.complex128)
-        for i in range(dim):
-            integrand = np.zeros(dim, dtype=np.complex128)
-            for k in range(dim):
-                kDisp = k - (dim - 1) // 2
-                iPy = i + kDisp
-                iMy = i - kDisp
-                if 0 <= iPy < dim and 0 <= iMy < dim:
-                    integrand[k] = np.conj(psi[iPy]) * psi[iMy]
-            fft_results[i, :] = np.fft.ifft(integrand) * dim
+        psi = self._get_reduced_state_gpu(regIdx)              # (dim,) complex, on device
+        i_idx = torch.arange(dim, device=self.device, dtype=torch.long)
+        k_idx = torch.arange(dim, device=self.device, dtype=torch.long)
+        kDisp = k_idx - (dim - 1) // 2                        # (dim,)
+        raw_iPy = i_idx[:, None] + kDisp[None, :]             # (dim, dim)
+        raw_iMy = i_idx[:, None] - kDisp[None, :]
+        valid = (raw_iPy >= 0) & (raw_iPy < dim) & (raw_iMy >= 0) & (raw_iMy < dim)
+        iPy = raw_iPy.clamp(0, dim - 1)
+        iMy = raw_iMy.clamp(0, dim - 1)
+        integrand = torch.where(valid, torch.conj(psi[iPy]) * psi[iMy],
+                                torch.zeros(1, dtype=self.dtype, device=self.device))
+        fft_results = torch.fft.ifft(integrand, dim=1) * dim  # (dim, dim)
         dp = pi / (dim * dx)
-        wigner = np.zeros((dim, dim), dtype=np.float64)
-        for jc in range(dim):
-            k_fft = (jc + dim // 2) % dim
-            pj = (jc - dim / 2) * dp
-            phase_corr = np.exp(-1j * pj * (dim - 1) * dx)
-            for i in range(dim):
-                wigner[jc, i] = np.real(phase_corr * fft_results[i, k_fft]) * dx / pi
-        return wigner
+        jc = torch.arange(dim, device=self.device, dtype=torch.long)
+        k_fft = (jc + dim // 2) % dim
+        pj = (jc.double() - dim / 2) * dp
+        phase_corr = torch.exp(torch.tensor(-1j * (dim - 1) * dx, dtype=self.dtype, device=self.device) * pj.to(self.dtype))
+        # fft_results.T[k_fft] → shape (dim_jc, dim_i): result[jc,i] = fft_results[i, k_fft[jc]]
+        wigner = (phase_corr[:, None] * fft_results.T[k_fft]).real * (dx / pi)
+        return wigner.cpu().numpy()
 
     def getHusimiQ(self, regIdx: int) -> npt.NDArray[np.float64]:
+        # Vectorized on GPU — mirrors CUDA kernelBuildHusimiRows + kernelFinalizeHusimi.
         dim = self.register_dims[regIdx]
         dx = self.grid_steps[regIdx]
-        psi = self._get_reduced_state_cpu(regIdx)
-        x_grid = np.array([(k - (dim - 1) / 2) * dx for k in range(dim)])
-        accum = np.zeros((dim, dim), dtype=np.float64)
-        for qi in range(dim):
-            sample_q = (qi - (dim - 1) / 2) * dx
-            window = (pi ** (-0.25)) * np.exp(-0.5 * (x_grid - sample_q) ** 2) * np.sqrt(dx)
-            h = psi * window
-            H = np.fft.fft(h)
-            accum[qi, :] += np.abs(H) ** 2
-        husimiQ = np.zeros((dim, dim), dtype=np.float64)
-        for jc in range(dim):
-            k_fft = (jc + dim // 2) % dim
-            for qi in range(dim):
-                husimiQ[jc, qi] = accum[qi, k_fft] / pi
-        return husimiQ
+        psi = self._get_reduced_state_gpu(regIdx)              # (dim,) complex, on device
+        x_grid = self._tPositionGrid(regIdx).to(self.dtype)    # (dim,) cached
+        # Gaussian window for all q-samples at once: shape (dim_q, dim_x)
+        window = (pi ** -0.25) * torch.exp(
+            -0.5 * (x_grid[None, :] - x_grid[:, None]) ** 2
+        ) * sqrt(dx)                                           # real, broadcast
+        h = psi[None, :] * window.to(self.dtype)               # (dim, dim)
+        H = torch.fft.fft(h, dim=1)                            # (dim, dim)
+        accum = torch.abs(H) ** 2                              # (dim, dim)
+        k_fft = (torch.arange(dim, device=self.device) + dim // 2) % dim
+        husimiQ = accum[:, k_fft].T / pi                       # (dim, dim)
+        return husimiQ.cpu().numpy()
 
-    def _get_reduced_state_cpu(self, regIdx: int) -> npt.NDArray[np.complex128]:
+    def _get_reduced_state_gpu(self, regIdx: int):
+        """Return the marginal amplitude sqrt(rho_diag) for `regIdx` as a 1-D GPU tensor."""
         if self.num_registers == 1:
-            return self.state.detach().cpu().numpy()
+            return self.state.reshape(-1)
         perm = list(range(self.num_registers))
         perm[0], perm[regIdx] = perm[regIdx], perm[0]
         state = self.state.permute(*perm)
         rho_diag = torch.sum(torch.abs(state) ** 2, dim=tuple(range(1, self.num_registers)))
-        return torch.sqrt(rho_diag).detach().cpu().numpy()
+        return torch.sqrt(rho_diag)
+
+    def _get_reduced_state_cpu(self, regIdx: int) -> npt.NDArray[np.complex128]:
+        return self._get_reduced_state_gpu(regIdx).detach().cpu().numpy()
 
     def _tPositionGrid(self, regIdx: int):
-        dim = self.register_dims[regIdx]
-        dx = self.grid_steps[regIdx]
-        idx = torch.arange(dim, device=self.device, dtype=torch.float64)
-        return (idx - (dim - 1) * 0.5) * dx
+        if regIdx not in self._pos_grids:
+            dim = self.register_dims[regIdx]
+            dx = self.grid_steps[regIdx]
+            idx = torch.arange(dim, device=self.device, dtype=torch.float64)
+            self._pos_grids[regIdx] = (idx - (dim - 1) * 0.5) * dx
+        return self._pos_grids[regIdx]
 
     def _tApplyPhase(self, regIdx: int, phase) -> None:
         shape = [1] * self.num_registers
@@ -405,22 +412,20 @@ class TorchCvdv:
         self.state = self.state * phase.reshape(shape)
 
     def _tApplyQubitGate(self, regIdx: int, targetQubit: int, gate_matrix) -> None:
-        dim = self.register_dims[regIdx]
-        n_q = self.qubit_counts[regIdx]
-        perm = list(range(self.num_registers))
-        perm[0], perm[regIdx] = perm[regIdx], perm[0]
-        state = self.state.permute(*perm)
-        other_dims = list(state.shape[1:])
-        state = state.reshape([2] * n_q + other_dims)
-        qperm = list(range(n_q))
-        qperm[0], qperm[targetQubit] = qperm[targetQubit], qperm[0]
-        state = state.permute(*qperm + list(range(n_q, len(state.shape))))
-        orig_shape = state.shape
-        state = gate_matrix @ state.reshape(2, -1)
-        state = state.reshape(orig_shape)
-        state = state.permute(*[qperm.index(i) for i in range(n_q)] + list(range(n_q, len(state.shape))))
-        state = state.reshape([dim] + other_dims)
-        self.state = state.permute(*[perm.index(i) for i in range(self.num_registers)])
+        # Mirror CUDA qubitPairIndices: work on the flat index, no reshaping.
+        # globalBit = flwQbts[r] + qbts[r] - 1 - qubitIdx  (qubit 0 = MSB of register)
+        global_bit = self.flwQbts[regIdx] + self.qubit_counts[regIdx] - 1 - targetQubit
+        mask = 1 << global_bit
+        pair_idx = torch.arange(self.total_size // 2, device=self.device, dtype=torch.long)
+        # Insert a 0-bit at global_bit to get idx0; set that bit to get idx1
+        idx0 = ((pair_idx >> global_bit) << (global_bit + 1)) | (pair_idx & (mask - 1))
+        idx1 = idx0 | mask
+        flat = self.state.contiguous().reshape(-1)
+        s0, s1 = flat[idx0], flat[idx1]   # gather — creates independent tensors
+        flat = flat.clone()
+        flat[idx0] = gate_matrix[0, 0] * s0 + gate_matrix[0, 1] * s1
+        flat[idx1] = gate_matrix[1, 0] * s0 + gate_matrix[1, 1] * s1
+        self.state = flat.reshape(self.state.shape)
 
     def _tApplyCondPhaseQ(self, targetReg: int, ctrlReg: int, ctrlQubit: int, coeff) -> None:
         q = self._tPositionGrid(targetReg)
@@ -435,51 +440,31 @@ class TorchCvdv:
         self._apply_conditional_phase_vectors(targetReg, ctrlReg, ctrlQubit, phase_p, phase_m)
 
     def _apply_conditional_phase_vectors(self, targetReg: int, ctrlReg: int, ctrlQubit: int, phase_p, phase_m) -> None:
-        ctrl_dim = self.register_dims[ctrlReg]
-        n_ctrl = self.qubit_counts[ctrlReg]
-        perm = list(range(self.num_registers))
-        perm[0], perm[ctrlReg] = perm[ctrlReg], perm[0]
-        actual_target = targetReg if targetReg != 0 else ctrlReg
-        perm[1], perm[actual_target] = perm[actual_target], perm[1]
-        state = self.state.permute(*perm)
-        state = state.reshape([2] * n_ctrl + list(state.shape[1:]))
-        qperm = list(range(n_ctrl))
-        qperm[0], qperm[ctrlQubit] = qperm[ctrlQubit], qperm[0]
-        state = state.permute(*qperm + list(range(n_ctrl, len(state.shape))))
-        pshape = [1] * len(state[0].shape)
-        pshape[n_ctrl - 1] = -1
-        state[0] = state[0] * phase_p.reshape(pshape)
-        state[1] = state[1] * phase_m.reshape(pshape)
-        state = state.permute(*[qperm.index(i) for i in range(n_ctrl)] + list(range(n_ctrl, len(state.shape))))
-        state = state.reshape([ctrl_dim] + list(state.shape[n_ctrl:]))
-        self.state = state.permute(*[perm.index(i) for i in range(self.num_registers)])
+        # Mirror CUDA kernelCPhaseX / kernelCPhaseX2: single pass on flat index, no reshape.
+        all_idx = torch.arange(self.total_size, device=self.device, dtype=torch.long)
+        # Local index within target register selects which phase value to apply
+        target_local = (all_idx >> self.flwQbts[targetReg]) & (self.register_dims[targetReg] - 1)
+        # Ctrl qubit bit in flat index
+        ctrl_bit_pos = self.flwQbts[ctrlReg] + self.qubit_counts[ctrlReg] - 1 - ctrlQubit
+        ctrl_bit = (all_idx >> ctrl_bit_pos) & 1
+        # |0⟩ ctrl → phase_p,  |1⟩ ctrl → phase_m  (Z operator convention)
+        phase = torch.where(ctrl_bit == 0, phase_p[target_local], phase_m[target_local])
+        self.state = (self.state.reshape(-1) * phase).reshape(self.state.shape)
 
     def _tApplyCondQ1Q2(self, reg1: int, reg2: int, ctrlReg: int, ctrlQubit: int, coeff) -> None:
+        # Mirror CUDA kernelCPhaseXX: single pass on flat index, no reshape.
         q1 = self._tPositionGrid(reg1)
         q2 = self._tPositionGrid(reg2)
-        pm_p = torch.exp(1j * coeff * q1[:, None] * q2[None, :]).to(self.dtype)
-        pm_m = torch.exp(-1j * coeff * q1[:, None] * q2[None, :]).to(self.dtype)
-        ctrl_dim = self.register_dims[ctrlReg]
-        n_ctrl = self.qubit_counts[ctrlReg]
-        perm = list(range(self.num_registers))
-        perm[0], perm[ctrlReg] = perm[ctrlReg], perm[0]
-        actual_reg1 = reg1 if reg1 != 0 else ctrlReg
-        perm[1], perm[actual_reg1] = perm[actual_reg1], perm[1]
-        actual_reg2_idx = perm.index(reg2)
-        perm[2], perm[actual_reg2_idx] = perm[actual_reg2_idx], perm[2]
-        state = self.state.permute(*perm)
-        state = state.reshape([2] * n_ctrl + list(state.shape[1:]))
-        qperm = list(range(n_ctrl))
-        qperm[0], qperm[ctrlQubit] = qperm[ctrlQubit], qperm[0]
-        state = state.permute(*qperm + list(range(n_ctrl, len(state.shape))))
-        shape_p = [1] * len(state[0].shape)
-        shape_p[n_ctrl - 1] = self.register_dims[reg1]
-        shape_p[n_ctrl] = self.register_dims[reg2]
-        state[0] = state[0] * pm_p.reshape(shape_p)
-        state[1] = state[1] * pm_m.reshape(shape_p)
-        state = state.permute(*[qperm.index(i) for i in range(n_ctrl)] + list(range(n_ctrl, len(state.shape))))
-        state = state.reshape([ctrl_dim] + list(state.shape[n_ctrl:]))
-        self.state = state.permute(*[perm.index(i) for i in range(self.num_registers)])
+        all_idx = torch.arange(self.total_size, device=self.device, dtype=torch.long)
+        local1 = (all_idx >> self.flwQbts[reg1]) & (self.register_dims[reg1] - 1)
+        local2 = (all_idx >> self.flwQbts[reg2]) & (self.register_dims[reg2] - 1)
+        ctrl_bit_pos = self.flwQbts[ctrlReg] + self.qubit_counts[ctrlReg] - 1 - ctrlQubit
+        ctrl_bit = (all_idx >> ctrl_bit_pos) & 1
+        phase_val = (coeff * q1[local1] * q2[local2]).to(self.dtype)
+        phase = torch.where(ctrl_bit == 0,
+                            torch.exp(1j * phase_val),
+                            torch.exp(-1j * phase_val))
+        self.state = (self.state.reshape(-1) * phase).reshape(self.state.shape)
 
     def plotWigner(self, regIdx: int, bound: float = 5.0, cmap: str = "RdBu", figsize: Tuple[int, int] = (7, 6), show: bool = True) -> Tuple[Any, Any]:
         import matplotlib.pyplot as plt
