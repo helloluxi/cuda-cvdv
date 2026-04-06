@@ -10,11 +10,7 @@ import os
 import numpy as np
 import numpy.typing as npt
 from numpy import pi, sqrt
-
-try:
-    import torch
-except ImportError:  # pragma: no cover
-    torch = None
+import torch
 
 from .separable import SeparableState
 
