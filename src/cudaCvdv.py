@@ -6,7 +6,6 @@ from typing import List, Tuple, Optional, Any
 import ctypes
 from ctypes import c_int, c_double, c_size_t, POINTER
 import os
-import subprocess
 
 import numpy as np
 import numpy.typing as npt
@@ -33,11 +32,6 @@ def _get_lib() -> ctypes.CDLL:
 
 def _compile_and_load() -> ctypes.CDLL:
     lib_path = os.path.join(build_dir, "libcvdv.so")
-    dev_mode = os.environ.get("CVDV_DEV", "0") not in ("0", "")
-    if dev_mode:
-        result = subprocess.run(["make", "-C", project_dir, "build"], capture_output=True, text=True)
-        if result.returncode != 0:
-            raise RuntimeError(f"Build failed:\n{result.stderr}")
     if not os.path.exists(lib_path):
         raise RuntimeError(f"Library not found at {lib_path}. Run `make build` first.")
 
