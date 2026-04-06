@@ -50,9 +50,19 @@ typedef struct {
     cufftHandle wPlan;
     int wPlanCvDim;
     bool wPlanValid;
-    cufftHandle hPlan;
+    cufftHandle hPlan;         // batch of sliceCount*N IFFTs (direction at exec time)
     int hPlanCvDim;
+    int hPlanSliceCount;
     bool hPlanValid;
+    cufftHandle hFwdPlan;      // batch of sliceCount forward FFTs for all ψ_s
+    int hFwdPlanSliceCount;
+    bool hFwdPlanValid;
+
+    // Cached analytic Gaussian kernel G[k] = FFT{g}[k] for Husimi
+    cuDoubleComplex* dHusimiG;
+    int hGCvDim;
+    double hGDx;
+    bool hGValid;
 } CVDVContext;
 
 // Lightweight struct for passing separable-state device pointers into CUDA
@@ -625,33 +635,81 @@ __global__ void kernelFinalizeWigner(double* wigner, const cuDoubleComplex* dFFT
 }
 
 // ============ Native Grid Husimi Q Function ============
-// Build h_{i,slice}[k] for all q-rows for one other-register slice
-__global__ void kernelBuildHusimiRows(cuDoubleComplex* dBuf, const cuDoubleComplex* state,
-                                      int regIdx, double dx, int cvDim, size_t sliceIdx,
-                                      const int* qbts, const int* flwQbts) {
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= cvDim * cvDim) return;
-    int qIdx = tid / cvDim;
-    int xIdx = tid % cvDim;
-    double sample_q = gridX(qIdx, cvDim, dx);  // native grid point
-    double x = gridX(xIdx, cvDim, dx);
-    double amplitude = PI_POW_NEG_QUARTER * exp(-0.5 * (x - sample_q) * (x - sample_q)) * sqrt(dx);
-    // same bitmask indexing as kernelBuildHusimiWindowed:
-    int qbtsAfterCV = flwQbts[regIdx];
-    size_t qbtsAfterCVMask = (1 << qbtsAfterCV) - 1;
-    cuDoubleComplex psi = state[(sliceIdx & qbtsAfterCVMask) | ((size_t)xIdx << flwQbts[regIdx]) |
-                                ((sliceIdx & ~qbtsAfterCVMask) << qbts[regIdx])];
-    dBuf[qIdx * cvDim + xIdx] = cuCmul(psi, make_cuDoubleComplex(amplitude, 0.0));
+
+// Compute G[k] = DFT{g_0}[k] analytically.
+// g_0 is the Gaussian kernel with peak at index 0 (not centered at (N-1)/2),
+// so that the circular convolution in kernelFillHusimiA gives the correct
+// windowed FFT.  G[k] is real and uses the "fftfreq" signed-frequency so that
+// negative-frequency bins (k > N/2) are handled correctly.
+//   g_0[m] = π^{-1/4} sqrt(dx) exp(-½ (m·dx)²)
+//   G[k]   = sqrt(2) π^{1/4} / sqrt(dx) · exp(-½ p_eff²)  (real, no phase)
+// where p_eff = 2π·k_signed / (N·dx),  k_signed = k for k≤N/2, k-N otherwise.
+__global__ void kernelComputeHusimiG(cuDoubleComplex* dG, int N, double dx) {
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k >= N) return;
+    int k_signed = (k <= N / 2) ? k : k - N;  // fftfreq: centre the frequency axis
+    double p_eff = 2.0 * M_PI * k_signed / ((double)N * dx);
+    double mag   = pow(M_PI, 0.25) * sqrt(2.0 / dx) * exp(-0.5 * p_eff * p_eff);
+    dG[k] = make_cuDoubleComplex(mag, 0.0);
 }
 
-// fftshift + normalize accumulated power
+// Extract all slices from the interleaved state into dPsiAll[s * cvDim + xIdx].
+// Total threads: sliceCount * cvDim.
+__global__ void kernelExtractAllSlices(cuDoubleComplex* dPsiAll, const cuDoubleComplex* state,
+                                       int regIdx, int cvDim, int sliceCount,
+                                       const int* qbts, const int* flwQbts) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= sliceCount * cvDim) return;
+    int s    = tid / cvDim;
+    int xIdx = tid % cvDim;
+    int qbtsAfterCV = flwQbts[regIdx];
+    size_t qbtsAfterCVMask = (1 << qbtsAfterCV) - 1;
+    size_t sliceIdx = (size_t)s;
+    dPsiAll[tid] = state[(sliceIdx & qbtsAfterCVMask) | ((size_t)xIdx << flwQbts[regIdx]) |
+                         ((sliceIdx & ~qbtsAfterCVMask) << qbts[regIdx])];
+}
+
+// Fill all circulant A matrices at once.
+// dBufAll[s * N*N + m * N + k] = PsiAll[s * N + (m+k)%N] * G[k]
+// Total threads: sliceCount * N * N.
+__global__ void kernelFillAllCirculants(cuDoubleComplex* dBufAll, const cuDoubleComplex* dPsiAll,
+                                        const cuDoubleComplex* dG, int N, int sliceCount) {
+    size_t tid = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= (size_t)sliceCount * N * N) return;
+    int s = (int)(tid / ((size_t)N * N));
+    int m = (int)((tid % ((size_t)N * N)) / N);
+    int k = (int)(tid % N);
+    dBufAll[tid] = cuCmul(dPsiAll[s * N + ((m + k) & (N - 1))], dG[k]);
+}
+
+// Reduce dBufAll[S * N*N] over the slice axis into dAccum[N*N].
+// dAccum[tid] = sum_s |dBufAll[s * N*N + tid]|²
+// Total threads: N * N.
+__global__ void kernelReduceHusimiPower(double* dAccum, const cuDoubleComplex* dBufAll,
+                                        int N2, int sliceCount) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= N2) return;
+    double sum = 0.0;
+    for (int s = 0; s < sliceCount; s++) {
+        cuDoubleComplex h = dBufAll[(size_t)s * N2 + tid];
+        sum += cuCreal(h) * cuCreal(h) + cuCimag(h) * cuCimag(h);
+    }
+    dAccum[tid] = sum;
+}
+
+// fftshift + normalize accumulated power.
+// dAccum layout: [m * cvDim + j] where m = FFT p-bin, j = q-index.
+// Output layout: [jc * cvDim + qIdx] where jc = centered p-index.
+// Divides by PI·N² to correct for cuFFT's unnormalized IFFT (factor N per IFFT
+// call, squared because we accumulate |H|²).
 __global__ void kernelFinalizeHusimi(double* outQ, const double* dAccum, int cvDim) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= cvDim * cvDim) return;
-    int jc = tid / cvDim;    // centered p-index (row of output)
+    int jc   = tid / cvDim;  // centered p-index (row of output)
     int qIdx = tid % cvDim;  // q-index (col of output)
-    int k_fft = (jc + cvDim / 2) % cvDim;
-    outQ[tid] = dAccum[qIdx * cvDim + k_fft] / PI;
+    int m    = (jc + cvDim / 2) % cvDim;  // FFT bin (un-shifted p-index)
+    double N2 = (double)cvDim * (double)cvDim;
+    outQ[tid] = dAccum[m * cvDim + qIdx] / (PI * N2);
 }
 
 // Accumulate |H[k]|² from FFT output into accumulation buffer
@@ -854,6 +912,13 @@ CVDVContext* cvdvCreate(int numReg, int* numQubits) {
     ctx->ftPlans = nullptr;
     ctx->wPlanValid = false;
     ctx->hPlanValid = false;
+    ctx->hPlanSliceCount = 0;
+    ctx->hFwdPlanValid = false;
+    ctx->hFwdPlanSliceCount = 0;
+    ctx->dHusimiG = nullptr;
+    ctx->hGCvDim = 0;
+    ctx->hGDx = 0.0;
+    ctx->hGValid = false;
 
     // If no registers specified, return empty context
     if (numReg == 0 || numQubits == nullptr) {
@@ -942,6 +1007,13 @@ void cvdvDestroy(CVDVContext* ctx) {
     }
     if (ctx->hPlanValid) {
         cufftDestroy(ctx->hPlan);
+    }
+    if (ctx->hFwdPlanValid) {
+        cufftDestroy(ctx->hFwdPlan);
+    }
+    if (ctx->dHusimiG != nullptr) {
+        cudaFree(ctx->dHusimiG);
+        ctx->dHusimiG = nullptr;
     }
 
     // Free managed memory
@@ -1777,50 +1849,92 @@ void cvdvGetWigner(CVDVContext* ctx, int regIdx, double* wignerOut) {
 void cvdvGetHusimiQ(CVDVContext* ctx, int regIdx, double* husimiOut) {
     if (!ctx) return;
     if (regIdx < 0 || regIdx >= ctx->gNumReg) return;
-    size_t cvDim = 1 << ctx->gQbts[regIdx];
+    int cvDim = 1 << ctx->gQbts[regIdx];
     double dx = ctx->gGridSteps[regIdx];
-    size_t sliceCount = 1 << (ctx->gTotalQbt - ctx->gQbts[regIdx]);
+    int sliceCount = 1 << (ctx->gTotalQbt - ctx->gQbts[regIdx]);
+    int N2 = cvDim * cvDim;
 
-    cuDoubleComplex* dBuf;
-    double* dAccum;
-    checkCudaErrors(cudaMalloc(&dBuf, cvDim * cvDim * sizeof(cuDoubleComplex)));
-    checkCudaErrors(cudaMalloc(&dAccum, cvDim * cvDim * sizeof(double)));
-    checkCudaErrors(cudaMemset(dAccum, 0, cvDim * cvDim * sizeof(double)));
-
-    // Fixed plan: batch = cvDim rows (only recreated when cvDim changes)
-    if (!ctx->hPlanValid || ctx->hPlanCvDim != (int)cvDim) {
+    // --- Lazy plan: batch of sliceCount*N IFFTs ---
+    if (!ctx->hPlanValid || ctx->hPlanCvDim != cvDim || ctx->hPlanSliceCount != sliceCount) {
         if (ctx->hPlanValid) cufftDestroy(ctx->hPlan);
-        cufftResult planRes = cufftPlan1d(&ctx->hPlan, cvDim, CUFFT_Z2Z, cvDim);
-        if (planRes != CUFFT_SUCCESS) {
-            fprintf(stderr, "cuFFT hPlan creation failed: %d\n", planRes);
-            cudaFree(dBuf);
-            cudaFree(dAccum);
-            ctx->hPlanValid = false;
+        cufftResult r = cufftPlan1d(&ctx->hPlan, cvDim, CUFFT_Z2Z, sliceCount * cvDim);
+        if (r != CUFFT_SUCCESS) {
+            fprintf(stderr, "cuFFT hPlan creation failed: %d\n", r);
             return;
         }
-        ctx->hPlanCvDim = (int)cvDim;
-        ctx->hPlanValid = true;
+        ctx->hPlanCvDim    = cvDim;
+        ctx->hPlanSliceCount = sliceCount;
+        ctx->hPlanValid    = true;
     }
 
-    int grid1 = (cvDim * cvDim + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
-    for (size_t sliceIdx = 0; sliceIdx < sliceCount; sliceIdx++) {
-        kernelBuildHusimiRows<<<grid1, CUDA_BLOCK_SIZE>>>(dBuf, ctx->dState, regIdx, dx, cvDim,
-                                                          sliceIdx, ctx->gQbts, ctx->gFlwQbts);
-        cufftExecZ2Z(ctx->hPlan, dBuf, dBuf, CUFFT_FORWARD);
-        kernelAccumHusimiPower<<<grid1, CUDA_BLOCK_SIZE>>>(dAccum, dBuf, cvDim * cvDim);
+    // --- Lazy plan: batch of sliceCount forward FFTs ---
+    if (!ctx->hFwdPlanValid || ctx->hFwdPlanSliceCount != sliceCount || ctx->hPlanCvDim != cvDim) {
+        if (ctx->hFwdPlanValid) cufftDestroy(ctx->hFwdPlan);
+        cufftResult r = cufftPlan1d(&ctx->hFwdPlan, cvDim, CUFFT_Z2Z, sliceCount);
+        if (r != CUFFT_SUCCESS) {
+            fprintf(stderr, "cuFFT hFwdPlan creation failed: %d\n", r);
+            return;
+        }
+        ctx->hFwdPlanSliceCount = sliceCount;
+        ctx->hFwdPlanValid      = true;
     }
+
+    // --- Lazy G[k]: analytic Gaussian kernel in frequency domain ---
+    if (!ctx->hGValid || ctx->hGCvDim != cvDim || ctx->hGDx != dx) {
+        if (ctx->dHusimiG != nullptr) cudaFree(ctx->dHusimiG);
+        checkCudaErrors(cudaMalloc(&ctx->dHusimiG, cvDim * sizeof(cuDoubleComplex)));
+        int gGrid = (cvDim + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
+        kernelComputeHusimiG<<<gGrid, CUDA_BLOCK_SIZE>>>(ctx->dHusimiG, cvDim, dx);
+        checkCudaErrors(cudaDeviceSynchronize());
+        ctx->hGCvDim = cvDim;
+        ctx->hGDx    = dx;
+        ctx->hGValid = true;
+    }
+
+    // --- Per-call buffers ---
+    // dPsiAll: [S × N] all slices, then overwritten with Ψ_s after batch FFT
+    // dBufAll: [S × N × N] all circulant A matrices, then H[s,m,j] after batch IFFT
+    cuDoubleComplex* dPsiAll;
+    cuDoubleComplex* dBufAll;
+    double* dAccum;
+    checkCudaErrors(cudaMalloc(&dPsiAll, (size_t)sliceCount * cvDim * sizeof(cuDoubleComplex)));
+    checkCudaErrors(cudaMalloc(&dBufAll, (size_t)sliceCount * N2 * sizeof(cuDoubleComplex)));
+    checkCudaErrors(cudaMalloc(&dAccum,  (size_t)N2 * sizeof(double)));
+
+    size_t gridSN  = ((size_t)sliceCount * cvDim + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
+    size_t gridSN2 = ((size_t)sliceCount * N2 + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
+    int gridN2     = (N2 + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
+
+    // Step 1: extract all slices into dPsiAll[s * N + xIdx]
+    kernelExtractAllSlices<<<gridSN, CUDA_BLOCK_SIZE>>>(
+        dPsiAll, ctx->dState, regIdx, cvDim, sliceCount, ctx->gQbts, ctx->gFlwQbts);
+
+    // Step 2: batch forward FFT of all S slices → Ψ_s in dPsiAll
+    cufftExecZ2Z(ctx->hFwdPlan, dPsiAll, dPsiAll, CUFFT_FORWARD);
+
+    // Step 3: fill all S circulant A[s,m,k] = Ψ_s[(m+k)%N] * G[k]
+    kernelFillAllCirculants<<<gridSN2, CUDA_BLOCK_SIZE>>>(
+        dBufAll, dPsiAll, ctx->dHusimiG, cvDim, sliceCount);
+
+    // Step 4: batch IFFT of all S*N rows → H[s,m,j]
+    cufftExecZ2Z(ctx->hPlan, dBufAll, dBufAll, CUFFT_INVERSE);
+
+    // Step 5: reduce over slices → dAccum[m*N + j] = Σ_s |H[s,m,j]|²
+    kernelReduceHusimiPower<<<gridN2, CUDA_BLOCK_SIZE>>>(dAccum, dBufAll, N2, sliceCount);
+
     checkCudaErrors(cudaDeviceSynchronize());
 
     double* dHusimiQ;
-    checkCudaErrors(cudaMalloc(&dHusimiQ, cvDim * cvDim * sizeof(double)));
-    kernelFinalizeHusimi<<<grid1, CUDA_BLOCK_SIZE>>>(dHusimiQ, dAccum, cvDim);
+    checkCudaErrors(cudaMalloc(&dHusimiQ, (size_t)N2 * sizeof(double)));
+    kernelFinalizeHusimi<<<gridN2, CUDA_BLOCK_SIZE>>>(dHusimiQ, dAccum, cvDim);
     checkCudaErrors(cudaDeviceSynchronize());
 
-    checkCudaErrors(cudaMemcpy(husimiOut, dHusimiQ, cvDim * cvDim * sizeof(double),
-                                    cudaMemcpyDeviceToHost));
+    checkCudaErrors(cudaMemcpy(husimiOut, dHusimiQ, (size_t)N2 * sizeof(double),
+                               cudaMemcpyDeviceToHost));
     cudaFree(dHusimiQ);
     cudaFree(dAccum);
-    cudaFree(dBuf);
+    cudaFree(dBufAll);
+    cudaFree(dPsiAll);
 }
 
 void cvdvMeasureMultiple(CVDVContext* ctx, const int* regIdxs, int numRegs, double* probsOut) {
