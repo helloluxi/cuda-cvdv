@@ -1,4 +1,4 @@
-.PHONY: build test clean help bench bench-state-transfer bench-api bench-kernel bench-all
+.PHONY: build test clean help bench bench-state-transfer bench-api bench-kernel save-bench
 
 help:
 	@echo "CVDV Quantum Simulator - Build & Test Commands"
@@ -29,7 +29,7 @@ clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name "*.pyc" -delete 2>/dev/null || true
 
-bench: bench-all
+bench: build bench-state-transfer bench-api bench-kernel
 
 bench-state-transfer:
 	@bash ./benchmarks/state_transfer/run.sh
@@ -40,4 +40,6 @@ bench-api:
 bench-kernel:
 	@bash ./benchmarks/kernel_profiling/run.sh
 
-bench-all: bench-state-transfer bench-api bench-kernel
+save-bench:
+	@bash ./benchmarks/api_timing/save.sh
+	@bash ./benchmarks/kernel_profiling/save.sh
