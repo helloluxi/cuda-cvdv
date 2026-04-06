@@ -82,9 +82,9 @@ def run_comparison(dv_qubits=4, cvdv_cv_qubits=[10, 11, 12], bosonic_cv_qubits=N
     # Generate comparison plot
     plot_comparison(all_configs, cvdv_times, bosonic_times if has_bosonic else None)
     
-    # Generate state visualizations for the last config
+    # Generate state visualizations for a smaller CVDV config to keep memory bounded.
     if cvdv_cv_qubits:
-        last_cvdv_config = cvdv_cv_qubits[-1]
+        last_cvdv_config = min(cvdv_cv_qubits)
         print(f"\n{'='*70}")
         print(f"Generating CVDV state visualization for CV={last_cvdv_config} qubits...")
         print(f"{'='*70}")

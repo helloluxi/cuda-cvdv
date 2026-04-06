@@ -31,3 +31,42 @@ CUDA-CVDV scales efficiently to dimension **16384** (14 qubits) in **12.4 ms**, 
 ```
 
 Results saved to `benchmarks/state_transfer/results/` (`benchmark_results.json` + plots).
+
+## C API Timing
+
+Micro-benchmark for per-operation C API runtime (plus optional Torch-CUDA baseline), with committed-vs-current comparison.
+
+```bash
+./benchmarks/api_timing/run.sh
+```
+
+Promote current timings to committed baseline:
+
+```bash
+./benchmarks/api_timing/save.sh
+```
+
+## Kernel Profiling (Nsight Compute)
+
+Kernel-level Nsight Compute profiling pipeline with per-kernel regression table.
+
+```bash
+./benchmarks/kernel_profiling/run.sh
+```
+
+Promote current profiling CSV baseline:
+
+```bash
+./benchmarks/kernel_profiling/save.sh
+```
+
+## Unified Make Targets
+
+Run individual tasks or all benchmarks:
+
+```bash
+make bench-state-transfer
+make bench-api
+make bench-kernel
+make bench-all
+```

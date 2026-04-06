@@ -82,7 +82,8 @@ examples/
   qcst.ipynb           # Quantum coherent state transform demo
 benchmarks/
   state_transfer/      # CV-to-DV state transfer vs bosonic-qiskit
-profiling/             # Nsight profiling scripts + CSV comparison tool
+  api_timing/          # C API micro-benchmark + baseline comparison
+  kernel_profiling/    # Nsight profiling scripts + CSV comparison tool
 analysis/              # Error analysis scripts (gate errors, Trotter bounds)
 CMakeLists.txt         # Build configuration
 Makefile               # Build & test commands

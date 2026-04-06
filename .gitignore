@@ -66,3 +66,8 @@ benchmarks/results/test_*
 # Environment
 .venv
 .envrc
+
+# Benchmark artifacts
+benchmarks/api_timing/current/
+benchmarks/kernel_profiling/current/
+benchmarks/kernel_profiling/workload

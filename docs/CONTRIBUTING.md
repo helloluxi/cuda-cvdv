@@ -67,10 +67,10 @@ tests/
   test_core.py         # CUDA backend correctness (inner product checks)
   test_consistency.py  # CUDA vs torch-cuda vs torch-cpu cross-validation
 analysis/              # Standalone error analysis scripts (not part of the library)
-benchmarks/            # Timing benchmarks vs bosonic-qiskit
-profiling/
-  run.sh               # ncu kernel profiling → report.md
-  compare.py           # diff two ncu CSV reports
+benchmarks/
+  state_transfer/      # End-to-end benchmark vs bosonic-qiskit
+  api_timing/          # C API micro-benchmark + baseline comparison
+  kernel_profiling/    # ncu kernel profiling + CSV diff
 docs/
   api.md               # Full API reference
   CONTRIBUTING.md      # This file
@@ -78,16 +78,16 @@ docs/
 
 ## Profiling with Nsight
 
-Profile first — optimize second. Scripts live in `profiles/`; output files (`.ncu-rep`, `.nsys-rep`, `.csv`) are git-ignored.
+Profile first — optimize second. Scripts live in `benchmarks/kernel_profiling/`; output files (`.ncu-rep`, `.nsys-rep`, `.csv`) are benchmark artifacts.
 
 ### Workflow
 
 ```
-1. Profile + compare  →  ./profiling/run.sh          (prints speedup table to console)
-2. Inspect kernels    →  ncu-ui profiling/current/results.ncu-rep
+1. Profile + compare  →  ./benchmarks/kernel_profiling/run.sh          (prints speedup table to console)
+2. Inspect kernels    →  ncu-ui benchmarks/kernel_profiling/current/results.ncu-rep
 3. Make one change    →  edit src/cvdv.cu, make build
-4. Re-profile         →  ./profiling/run.sh
-5. If improved        →  ./profiling/save.sh          (then git add profiling/committed/results.csv)
+4. Re-profile         →  ./benchmarks/kernel_profiling/run.sh
+5. If improved        →  ./benchmarks/kernel_profiling/save.sh          (then git add benchmarks/kernel_profiling/committed/results.csv)
 ```
 
 `ncu` serialises kernels — do not use it for wall-clock comparisons.

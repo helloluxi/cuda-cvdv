@@ -1,5 +1,5 @@
 """
-profiling/bench.py
+benchmarks/api_timing/bench.py
 Python-level C API timing for CVDV, with PyTorch-CUDA baseline column.
 
 Times each C API call using time.perf_counter with cudaDeviceSynchronize
@@ -8,9 +8,9 @@ Also times the equivalent torch-cuda operation for each gate (where applicable)
 and reports a "vs Torch" speedup column.
 
 Usage:
-  python profiling/bench.py            # time + compare vs committed baseline
-  python profiling/bench.py --no-save  # time only, skip writing CSV
-  python profiling/bench.py --no-torch # skip torch-cuda baseline
+  python benchmarks/api_timing/bench.py            # time + compare vs committed baseline
+  python benchmarks/api_timing/bench.py --no-save  # time only, skip writing CSV
+  python benchmarks/api_timing/bench.py --no-torch # skip torch-cuda baseline
 """
 
 import sys, os, ctypes, math, shutil
@@ -18,11 +18,11 @@ import numpy as np
 from ctypes import c_int, c_double, POINTER
 from time import perf_counter
 
-PROFILING_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_DIR      = os.path.dirname(PROFILING_DIR)
+BENCH_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_DIR  = os.path.dirname(os.path.dirname(BENCH_DIR))
 BUILD_DIR     = os.path.join(REPO_DIR, 'build')
-CURRENT_CSV   = os.path.join(PROFILING_DIR, 'current',   'bench.csv')
-COMMITTED_CSV = os.path.join(PROFILING_DIR, 'committed', 'bench.csv')
+CURRENT_CSV   = os.path.join(BENCH_DIR, 'current',   'bench.csv')
+COMMITTED_CSV = os.path.join(BENCH_DIR, 'committed', 'bench.csv')
 
 N_WARMUP = 1
 N_RUNS   = 10
@@ -95,12 +95,10 @@ def _load_cvdv():
     lib.cvdvConditionalBeamSplitter.restype   = None
     lib.cvdvGetNorm.argtypes                  = [ctypes.c_void_p]
     lib.cvdvGetNorm.restype                   = c_double
-    lib.cvdvGetWignerFullMode.argtypes        = [ctypes.c_void_p, c_int, POINTER(c_double),
-                                                  c_int, c_double, c_double]
-    lib.cvdvGetWignerFullMode.restype         = None
-    lib.cvdvGetHusimiQFullMode.argtypes       = [ctypes.c_void_p, c_int, POINTER(c_double),
-                                                  c_int, c_double, c_double]
-    lib.cvdvGetHusimiQFullMode.restype        = None
+    lib.cvdvGetWigner.argtypes                = [ctypes.c_void_p, c_int, POINTER(c_double)]
+    lib.cvdvGetWigner.restype                 = None
+    lib.cvdvGetHusimiQ.argtypes               = [ctypes.c_void_p, c_int, POINTER(c_double)]
+    lib.cvdvGetHusimiQ.restype                = None
     lib.cvdvMeasure.argtypes                  = [ctypes.c_void_p, c_int, POINTER(c_double)]
     lib.cvdvMeasure.restype                   = None
     return lib
@@ -292,10 +290,10 @@ def run_bench(lib, cuda):
     # readout
     rec('cvdvGetNorm',                 lib.cvdvGetNorm)
 
-    N = 51
-    buf = (c_double * (N * N))()
-    rec('cvdvGetWignerFullMode',       lib.cvdvGetWignerFullMode,      c_int(1), buf, c_int(N), c_double(5.0), c_double(5.0))
-    rec('cvdvGetHusimiQFullMode',      lib.cvdvGetHusimiQFullMode,     c_int(1), buf, c_int(N), c_double(5.0), c_double(5.0))
+    cv_dim = 1 << 10
+    buf = (c_double * (cv_dim * cv_dim))()
+    rec('cvdvGetWigner',               lib.cvdvGetWigner,              c_int(1), buf)
+    rec('cvdvGetHusimiQ',              lib.cvdvGetHusimiQ,             c_int(1), buf)
 
     dim = 1 << 10
     probs = (c_double * dim)()

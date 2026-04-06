@@ -52,7 +52,7 @@ def run_cvdv_transfer_experiment(n_dv_qubits=4, cv_qubits=12, lam=0.29, return_p
         sep_initial.setCat(1, cat_states)
         sim_initial.initStateVector(sep_initial)
         probs_dv_initial = sim_initial.m(0)
-        wigner_cv_initial = sim_initial.getWignerFullMode(1, wignerN=201, wXMax=5, wPMax=5)
+        wigner_cv_initial = sim_initial.getWigner(1)
 
     # Initialize system
     sim = CudaCvdv([n_dv_qubits, cv_qubits])
@@ -86,7 +86,7 @@ def run_cvdv_transfer_experiment(n_dv_qubits=4, cv_qubits=12, lam=0.29, return_p
     result = {'time': t_total}
     
     if return_plots:
-        wigner_cv_final = sim.getWignerFullMode(1, wignerN=201, wXMax=5, wPMax=5)
+        wigner_cv_final = sim.getWigner(1)
         result['plots'] = {
             'probs_dv_initial': probs_dv_initial,
             'wigner_cv_initial': wigner_cv_initial,

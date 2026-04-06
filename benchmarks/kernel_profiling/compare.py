@@ -2,9 +2,9 @@
 import sys, os, math, shutil
 import pandas as pd
 
-PROFILING_DIR = os.path.dirname(os.path.abspath(__file__))
-COMMITTED_CSV = os.path.join(PROFILING_DIR, 'committed', 'results.csv')
-CURRENT_CSV   = os.path.join(PROFILING_DIR, 'current',   'results.csv')
+BENCH_DIR = os.path.dirname(os.path.abspath(__file__))
+COMMITTED_CSV = os.path.join(BENCH_DIR, 'committed', 'results.csv')
+CURRENT_CSV   = os.path.join(BENCH_DIR, 'current',   'results.csv')
 
 # ── Set to your GPU's peak memory bandwidth in GB/s to get BW% column.
 # Examples: A100 SXM = 2000, H100 SXM = 3350, RTX 4090 = 1008, RTX 3090 = 936
@@ -125,7 +125,7 @@ def print_table(rows, has_baseline):
 
 def main():
     if not os.path.exists(CURRENT_CSV):
-        print('No current results. Run: sudo env PATH="$PATH" ./profiling/run.sh')
+        print('No current results. Run: sudo env PATH="$PATH" ./benchmarks/kernel_profiling/run.sh')
         sys.exit(1)
 
     current = load_csv(CURRENT_CSV)
