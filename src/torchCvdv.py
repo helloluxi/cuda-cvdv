@@ -300,20 +300,21 @@ class TorchCvdv:
         dx = self.grid_steps[regIdx]
         return (np.arange(dim) - (dim - 1) * 0.5) * dx
 
-    def m(self, regIdx: int) -> npt.NDArray[np.float64]:
+    def m(self, *regIdxs) -> "float | npt.NDArray[np.float64]":
+        if len(regIdxs) == 1 and isinstance(regIdxs[0], (list, tuple)):
+            regIdxs = tuple(regIdxs[0])
+        if not regIdxs:
+            return float(torch.sqrt(torch.sum(torch.abs(self.state) ** 2)).cpu().item())
+        regs = list(regIdxs)
         probs = torch.abs(self.state) ** 2
-        dims_to_sum = [i for i in range(self.num_registers) if i != regIdx]
+        dims_to_sum = [i for i in range(self.num_registers) if i not in regs]
         for d in sorted(dims_to_sum, reverse=True):
             probs = torch.sum(probs, dim=d)
-        return probs.detach().cpu().numpy()
-
-    def jointMeasure(self, reg1Idx: int, reg2Idx: int) -> npt.NDArray[np.float64]:
-        probs = torch.abs(self.state) ** 2
-        dims_to_sum = [i for i in range(self.num_registers) if i not in [reg1Idx, reg2Idx]]
-        for d in sorted(dims_to_sum, reverse=True):
-            probs = torch.sum(probs, dim=d)
-        if reg1Idx > reg2Idx:
-            probs = probs.transpose(0, 1)
+        # After summing, remaining dims are in ascending sorted order; permute to match regs order
+        sorted_regs = sorted(regs)
+        perm = [sorted_regs.index(r) for r in regs]
+        if perm != list(range(len(regs))):
+            probs = probs.permute(*perm)
         return probs.detach().cpu().numpy()
 
     def getFidelity(self, sep: "SeparableState") -> float:
@@ -328,9 +329,6 @@ class TorchCvdv:
         ref_flat = ref.reshape(-1)
         inner = torch.sum(torch.conj(ref_flat) * self.state.reshape(-1))
         return float(torch.abs(inner).item() ** 2)
-
-    def getNorm(self) -> float:
-        return float(torch.sqrt(torch.sum(torch.abs(self.state) ** 2)).cpu().item())
 
     def getPhotonNumber(self, regIdx: int) -> float:
         x = self._tPositionGrid(regIdx)

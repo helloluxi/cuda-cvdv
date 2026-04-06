@@ -282,15 +282,15 @@ class TestFourierTransforms:
 class TestMeasurements:
     """Test consistency of measurement and observable calculations."""
     
-    def test_getNorm_normalized_states(self, medium_register_pair):
+    def test_norm_normalized_states(self, medium_register_pair):
         """Test that both backends produce normalized states."""
         cuda_sim, torch_sim = medium_register_pair
         sep = SeparableState([6])
         sep.setCoherent(0, 1.2)
         cuda_sim.initStateVector(sep)
         torch_sim.initStateVector(sep)
-        cuda_norm = cuda_sim.getNorm()
-        torch_norm = torch_sim.getNorm()
+        cuda_norm = cuda_sim.m()
+        torch_norm = torch_sim.m()
         assert abs(cuda_norm - 1.0) < TIGHT_ATOL
         assert abs(torch_norm - 1.0) < TIGHT_ATOL
         np.testing.assert_allclose(cuda_norm, torch_norm, atol=TIGHT_ATOL, rtol=TIGHT_RTOL)
@@ -617,8 +617,8 @@ class TestMeasurementExtensions:
         torch_sim.initStateVector(sep)
         cuda_sim.h(0, 0)
         torch_sim.h(0, 0)
-        cuda_joint = cuda_sim.jointMeasure(0, 1)
-        torch_joint = torch_sim.jointMeasure(0, 1)
+        cuda_joint = cuda_sim.m(0, 1)
+        torch_joint = torch_sim.m(0, 1)
         np.testing.assert_allclose(cuda_joint, torch_joint, atol=TIGHT_ATOL, rtol=TIGHT_RTOL)
         assert abs(np.sum(cuda_joint) - 1.0) < TIGHT_ATOL
         assert abs(np.sum(torch_joint) - 1.0) < TIGHT_ATOL

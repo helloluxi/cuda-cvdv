@@ -7,7 +7,7 @@ A high-performance CUDA library for simulating hybrid continuous-variable (CV) a
 ## Todo List
 
 - **Kernel optimizations**
-  - [ ] `kernelComputeJointMeasure` — full multi-register index reconstruction in inner loop; scattered reads → 3–5× but low priority (not on critical path)
+  - [ ] `kernelMeasureMultiple` — full multi-register index reconstruction in inner loop; scattered reads → 3–5× but low priority (not on critical path)
 
 - **Algorithmic improvements**
   - [ ] Lazy Gaussian transformation by changing quadrature meta if applicable

@@ -99,8 +99,8 @@ def _load_cvdv():
     lib.cvdvGetWigner.restype                 = None
     lib.cvdvGetHusimiQ.argtypes               = [ctypes.c_void_p, c_int, POINTER(c_double)]
     lib.cvdvGetHusimiQ.restype                = None
-    lib.cvdvMeasure.argtypes                  = [ctypes.c_void_p, c_int, POINTER(c_double)]
-    lib.cvdvMeasure.restype                   = None
+    lib.cvdvMeasureMultiple.argtypes          = [ctypes.c_void_p, POINTER(c_int), c_int, POINTER(c_double)]
+    lib.cvdvMeasureMultiple.restype           = None
     return lib
 
 
@@ -229,9 +229,9 @@ def run_torch_bench():
     rec('cvdvConditionalSqueeze',      'cs',         1, 0, 0, 0.5)
     rec('cvdvConditionalParity',       'cp',         1, 0, 0)
     rec('cvdvConditionalBeamSplitter', 'cbs',        1, 2, 0, 0, 0.5)
-    rec('cvdvGetNorm',                 'getNorm')
+    rec('cvdvGetNorm',                 'm')
     # Wigner/Husimi torch backend uses CPU numpy loops — not a GPU op, skip
-    rec('cvdvMeasure',                 'm',          1)
+    rec('cvdvMeasureMultiple',         'm',          1)
 
     return results
 
@@ -297,7 +297,8 @@ def run_bench(lib, cuda):
 
     dim = 1 << 10
     probs = (c_double * dim)()
-    rec('cvdvMeasure',                 lib.cvdvMeasure,                c_int(1), probs)
+    regs_c = (c_int * 1)(1)
+    rec('cvdvMeasureMultiple',         lib.cvdvMeasureMultiple,        regs_c, c_int(1), probs)
 
     return results
 

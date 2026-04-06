@@ -664,54 +664,58 @@ __global__ void kernelAccumHusimiPower(
     dAccum[tid] += absSquare(dFFTOut[tid]);
 }
 
-// Compute probability of joint measurement for two registers by summing over
-// all other registers
-__global__ void kernelComputeJointMeasure(double* outJointProb, const cuDoubleComplex* state,
-                                          int reg1Idx, int reg2Idx, size_t totalSize, int numReg,
-                                          const int* qbts, const int* flwQbts) {
-    // Each thread computes one joint probability P(local1, local2)
-    size_t pairIdx = blockIdx.x * blockDim.x + threadIdx.x;
-    size_t totalPairs = 1 << (qbts[reg1Idx] + qbts[reg2Idx]);
+// Compute joint marginal probabilities for an arbitrary set of registers.
+// Each thread owns one output cell (one combination of local indices across
+// the selected registers) and sums |ψ|² over all "other" register configs.
+// regIdxs[0..numRegs-1] are the selected registers in argument order;
+// output is laid out with regIdxs[0] as the slowest-varying axis.
+__global__ void kernelMeasureMultiple(double* outProb, const cuDoubleComplex* state,
+                                      const int* regIdxs, int numRegs,
+                                      size_t totalSize, int numReg,
+                                      const int* qbts, const int* flwQbts) {
+    // Compute total output size and per-register dims for selected registers
+    size_t outSize = 1;
+    for (int i = 0; i < numRegs; i++) outSize <<= qbts[regIdxs[i]];
 
-    if (pairIdx >= totalPairs) return;
+    size_t outIdx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (outIdx >= outSize) return;
 
-    // Extract local indices for the two registers from pairIdx
-    size_t local1 = pairIdx / (1 << qbts[reg2Idx]);
-    size_t local2 = pairIdx % (1 << qbts[reg2Idx]);
+    // Decode outIdx into per-selected-register local indices (regIdxs[0] slowest)
+    size_t localIdxs[32];  // max 32 registers
+    size_t tmp = outIdx;
+    for (int i = numRegs - 1; i >= 0; i--) {
+        size_t regDim = 1 << qbts[regIdxs[i]];
+        localIdxs[i] = tmp % regDim;
+        tmp /= regDim;
+    }
 
-    // Sum over all configurations of other registers
+    // Sum over all configurations of the non-selected registers
+    size_t otherSize = totalSize / outSize;
+
     double prob = 0.0;
-
-    // Total dimension of all other registers
-    size_t otherSize = totalSize >> (qbts[reg1Idx] + qbts[reg2Idx]);
-
     for (size_t otherIdx = 0; otherIdx < otherSize; otherIdx++) {
-        // Reconstruct global index from local indices and otherIdx
         size_t globalIdx = 0;
         size_t remainingOther = otherIdx;
-
-        // Build global index by processing registers from first to last
         for (int r = 0; r < numReg; r++) {
+            // Check if r is a selected register
+            int selPos = -1;
+            for (int i = 0; i < numRegs; i++) {
+                if (regIdxs[i] == r) { selPos = i; break; }
+            }
             size_t localIdx;
-            if (r == reg1Idx) {
-                localIdx = local1;
-            } else if (r == reg2Idx) {
-                localIdx = local2;
+            if (selPos >= 0) {
+                localIdx = localIdxs[selPos];
             } else {
-                // Extract this register's contribution from remainingOther
                 size_t regDim = 1 << qbts[r];
                 localIdx = remainingOther % regDim;
                 remainingOther /= regDim;
             }
-
-            // Add contribution to global index (last register varies fastest)
             globalIdx += localIdx << flwQbts[r];
         }
-
         prob += absSquare(state[globalIdx]);
     }
 
-    outJointProb[pairIdx] = prob;
+    outProb[outIdx] = prob;
 }
 
 // Kernel to compute <x²> expectation for a register: sum |state[i]|² *
@@ -1819,38 +1823,44 @@ void cvdvGetHusimiQ(CVDVContext* ctx, int regIdx, double* husimiOut) {
     cudaFree(dBuf);
 }
 
-void cvdvJointMeasure(CVDVContext* ctx, int reg1Idx, int reg2Idx, double* jointProbsOut) {
-    if (!ctx) return;
-    if (reg1Idx < 0 || reg1Idx >= ctx->gNumReg || reg2Idx < 0 || reg2Idx >= ctx->gNumReg) {
-        fprintf(stderr, "Invalid register indices: %d, %d\n", reg1Idx, reg2Idx);
-        return;
-    }
-    if (reg1Idx == reg2Idx) {
-        fprintf(stderr, "Register indices must be different for joint measurement\n");
-        return;
+void cvdvMeasureMultiple(CVDVContext* ctx, const int* regIdxs, int numRegs, double* probsOut) {
+    if (!ctx || !regIdxs || numRegs <= 0) return;
+    for (int i = 0; i < numRegs; i++) {
+        if (regIdxs[i] < 0 || regIdxs[i] >= ctx->gNumReg) {
+            fprintf(stderr, "Invalid register index: %d\n", regIdxs[i]);
+            return;
+        }
     }
 
-    // Get register dimensions from managed memory (direct CPU access)
-    size_t totalPairs = 1 << (ctx->gQbts[reg1Idx] + ctx->gQbts[reg2Idx]);
+    // Compute output size = product of selected register dims
+    size_t outSize = 1;
+    for (int i = 0; i < numRegs; i++) {
+        int qbts_h;
+        checkCudaErrors(cudaMemcpy(&qbts_h, ctx->gQbts + regIdxs[i], sizeof(int), cudaMemcpyDeviceToHost));
+        outSize <<= qbts_h;
+    }
 
-    // Allocate device memory for joint probabilities
-    double* dJointProb;
-    checkCudaErrors(cudaMalloc(&dJointProb, totalPairs * sizeof(double)));
+    // Upload regIdxs to device
+    int* dRegIdxs;
+    checkCudaErrors(cudaMalloc(&dRegIdxs, numRegs * sizeof(int)));
+    checkCudaErrors(cudaMemcpy(dRegIdxs, regIdxs, numRegs * sizeof(int), cudaMemcpyHostToDevice));
 
-    // Launch kernel
-    int grid = min((int)((totalPairs + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE), CUDA_BLOCK_SIZE);
+    double* dProbs;
+    checkCudaErrors(cudaMalloc(&dProbs, outSize * sizeof(double)));
+    checkCudaErrors(cudaMemset(dProbs, 0, outSize * sizeof(double)));
 
-    kernelComputeJointMeasure<<<grid, CUDA_BLOCK_SIZE>>>(dJointProb, ctx->dState, reg1Idx, reg2Idx,
-                                                         (1 << ctx->gTotalQbt), ctx->gNumReg,
-                                                         ctx->gQbts, ctx->gFlwQbts);
+    int grid = (int)((outSize + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE);
+    kernelMeasureMultiple<<<grid, CUDA_BLOCK_SIZE>>>(dProbs, ctx->dState,
+                                                     dRegIdxs, numRegs,
+                                                     (size_t)1 << ctx->gTotalQbt,
+                                                     ctx->gNumReg,
+                                                     ctx->gQbts, ctx->gFlwQbts);
+    checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
 
-    // Copy result to CPU
-    checkCudaErrors(cudaMemcpy(jointProbsOut, dJointProb, totalPairs * sizeof(double),
-                                    cudaMemcpyDeviceToHost));
-
-    // Clean up
-    cudaFree(dJointProb);
+    checkCudaErrors(cudaMemcpy(probsOut, dProbs, outSize * sizeof(double), cudaMemcpyDeviceToHost));
+    cudaFree(dProbs);
+    cudaFree(dRegIdxs);
 }
 
 // Copy a full flat state from an existing CUDA device pointer (e.g. a torch
@@ -1886,33 +1896,6 @@ void cvdvGetState(CVDVContext* ctx, double* realOut, double* imagOut) {
     delete[] hState;
 }
 
-// CUDA kernel to compute marginal probabilities for a register
-// Sums |amplitude|^2 over all other registers
-// Optimized with warp-level reduction to avoid bank conflicts
-__global__ void kernelMeasure(double* probabilities, const cuDoubleComplex* state, int regShift,
-                              int regMask, int regDim, size_t totalSize) {
-    extern __shared__ double sProbs[];
-
-    // Initialize shared memory
-    for (int i = threadIdx.x; i < regDim; i += blockDim.x) sProbs[i] = 0.0;
-    __syncthreads();
-
-    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    size_t stride = (size_t)blockDim.x * gridDim.x;
-
-    // Each thread accumulates contributions for different register values
-    // Use thread-local accumulator to reduce atomic contention
-    for (size_t i = idx; i < totalSize; i += stride) {
-        cuDoubleComplex amp = state[i];
-        double ampSq = cuCreal(amp) * cuCreal(amp) + cuCimag(amp) * cuCimag(amp);
-        int regVal = (i >> regShift) & regMask;
-        atomicAdd(&sProbs[regVal], ampSq);
-    }
-    __syncthreads();
-
-    // Write block results to global memory
-    for (int i = threadIdx.x; i < regDim; i += blockDim.x) atomicAdd(&probabilities[i], sProbs[i]);
-}
 
 #pragma endregion
 
@@ -1956,41 +1939,6 @@ double cvdvGetRegisterDx(CVDVContext* ctx, int regIdx) {
     return dx;
 }
 
-void cvdvMeasure(CVDVContext* ctx, int regIdx, double* probabilitiesOut) {
-    if (!ctx) return;
-    if (regIdx < 0 || regIdx >= ctx->gNumReg) {
-        fprintf(stderr, "Invalid register index: %d\n", regIdx);
-        return;
-    }
-    if (ctx->dState == nullptr) {
-        fprintf(stderr, "State not initialized\n");
-        return;
-    }
-
-    size_t regDim = 1 << ctx->gQbts[regIdx];
-    size_t totalSize = 1ULL << ctx->gTotalQbt;
-    int regShift = ctx->gFlwQbts[regIdx];
-    int regMask = (int)(regDim - 1);
-
-    // Allocate and zero-initialize device probabilities
-    double* dProbs;
-    checkCudaErrors(cudaMalloc(&dProbs, regDim * sizeof(double)));
-    checkCudaErrors(cudaMemset(dProbs, 0, regDim * sizeof(double)));
-
-    // Parallelize over full state vector
-    int numBlocks = (totalSize + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
-    numBlocks = min(numBlocks, 1024);
-
-    size_t sharedMemSize = regDim * sizeof(double);
-    kernelMeasure<<<numBlocks, CUDA_BLOCK_SIZE, sharedMemSize>>>(dProbs, ctx->dState, regShift,
-                                                                 regMask, (int)regDim, totalSize);
-    checkCudaErrors(cudaGetLastError());
-    checkCudaErrors(cudaDeviceSynchronize());
-
-    // Copy results back to host
-    checkCudaErrors(cudaMemcpy(probabilitiesOut, dProbs, regDim * sizeof(double), cudaMemcpyDeviceToHost));
-    checkCudaErrors(cudaFree(dProbs));
-}
 
 // Helper: build device pointer-of-pointers from a host array of numReg device
 // ptrs, run kernelComputeInnerProduct, reduce, free, and return the complex

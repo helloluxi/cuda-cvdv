@@ -58,10 +58,10 @@ def _compile_and_load() -> ctypes.CDLL:
     lib.cvdvFtP2Q.argtypes = [ctypes.c_void_p, c_int]
     lib.cvdvGetWigner.argtypes = [ctypes.c_void_p, c_int, POINTER(c_double)]
     lib.cvdvGetHusimiQ.argtypes = [ctypes.c_void_p, c_int, POINTER(c_double)]
-    lib.cvdvJointMeasure.argtypes = [ctypes.c_void_p, c_int, c_int, POINTER(c_double)]
+    lib.cvdvMeasureMultiple.argtypes = [ctypes.c_void_p, POINTER(c_int), c_int, POINTER(c_double)]
+    lib.cvdvMeasureMultiple.restype = None
     lib.cvdvGetState.argtypes = [ctypes.c_void_p, POINTER(c_double), POINTER(c_double)]
     lib.cvdvGetState.restype = None
-    lib.cvdvMeasure.argtypes = [ctypes.c_void_p, c_int, POINTER(c_double)]
     lib.cvdvGetFidelity.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), c_int, POINTER(c_double)]
     lib.cvdvGetNorm.argtypes = [ctypes.c_void_p]
     lib.cvdvGetNorm.restype = c_double
@@ -140,17 +140,18 @@ class CudaCvdv:
         dx = self.grid_steps[regIdx]
         return (np.arange(dim) - (dim - 1) * 0.5) * dx
 
-    def m(self, regIdx: int) -> npt.NDArray[np.float64]:
-        probs = np.zeros(self.register_dims[regIdx], dtype=np.float64)
-        _get_lib().cvdvMeasure(self.ctx, regIdx, probs.ctypes.data_as(POINTER(c_double)))
-        return probs
-
-    def jointMeasure(self, reg1Idx: int, reg2Idx: int) -> npt.NDArray[np.float64]:
-        dim1 = self.register_dims[reg1Idx]
-        dim2 = self.register_dims[reg2Idx]
-        out = np.zeros(dim1 * dim2, dtype=np.float64)
-        _get_lib().cvdvJointMeasure(self.ctx, reg1Idx, reg2Idx, out.ctypes.data_as(POINTER(c_double)))
-        return out.reshape((dim1, dim2))
+    def m(self, *regIdxs) -> "float | npt.NDArray[np.float64]":
+        if len(regIdxs) == 1 and isinstance(regIdxs[0], (list, tuple)):
+            regIdxs = tuple(regIdxs[0])
+        if not regIdxs:
+            return float(_get_lib().cvdvGetNorm(self.ctx))
+        regs = list(regIdxs)
+        out_size = int(np.prod([self.register_dims[r] for r in regs]))
+        out = np.zeros(out_size, dtype=np.float64)
+        regs_c = (c_int * len(regs))(*regs)
+        _get_lib().cvdvMeasureMultiple(self.ctx, regs_c, c_int(len(regs)),
+                                       out.ctypes.data_as(POINTER(c_double)))
+        return out.reshape(tuple(self.register_dims[r] for r in regs))
 
     def initFromArray(self, arr) -> None:
         if torch is None:
@@ -172,9 +173,6 @@ class CudaCvdv:
         fid_out = c_double(0.0)
         _get_lib().cvdvGetFidelity(self.ctx, ptr_arr, c_int(self.num_registers), ctypes.byref(fid_out))
         return float(fid_out.value)
-
-    def getNorm(self) -> float:
-        return float(_get_lib().cvdvGetNorm(self.ctx))
 
     def getPhotonNumber(self, regIdx: int) -> float:
         return float(_get_lib().cvdvGetPhotonNumber(self.ctx, c_int(regIdx)))

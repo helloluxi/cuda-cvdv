@@ -8,7 +8,7 @@ All reduction kernels in `cvdv.cu` have been refactored to use **modern warp-lev
 1. `kernelComputeRegisterNorm` - Computes norm of a single register
 2. `kernelExpectX2` - Computes ⟨x²⟩ expectation value
 3. `kernelComputeNorm` - Computes total state norm
-4. `kernelMeasure` - Computes marginal probabilities (already optimized)
+4. `kernelMeasureMultiple` - Computes joint marginal probabilities for N registers
 
 ---
 

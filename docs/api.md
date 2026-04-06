@@ -99,12 +99,12 @@ CV operation conditioned on a DV qubit (applies $+$ or $-$ version based on qubi
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `m(regIdx)` | `ndarray (dim,)` float | Probability distribution over grid; collapses state |
-| `jointMeasure(reg1, reg2)` | `ndarray (d1, d2)` float | Joint probability of two registers |
+| `m()` | float | $\|\Psi\|$ (should be 1.0) |
+| `m(i)` | `ndarray (dim_i,)` float | Marginal probability distribution for register `i` |
+| `m(i, j, ...)` or `m([i, j, ...])` | `ndarray (d_i, d_j, ...)` float | Joint probability over selected registers |
 | `getState()` | `ndarray` complex128 | Full state vector (all registers, flattened) |
 | `getXGrid(regIdx)` | `ndarray (dim,)` float | Position grid $x_k$ for register |
 | `getFidelity(sep)` | float | $|\langle\psi_\text{sep}|\Psi\rangle|^2$ with a `SeparableState` |
-| `getNorm()` | float | $\|\Psi\|$ (should be 1.0) |
 | `info()` | — | Print register sizes and VRAM usage |
 
 ### Phase-Space Distributions
