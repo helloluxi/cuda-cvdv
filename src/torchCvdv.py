@@ -345,7 +345,9 @@ class TorchCvdv:
         # Vectorized on GPU — mirrors CUDA kernelBuildWignerRow + kernelFinalizeWigner.
         dim = self.register_dims[regIdx]
         dx = self.grid_steps[regIdx]
-        psi = self._get_reduced_state_gpu(regIdx)              # (dim,) complex, on device
+        slices = self._get_target_slices_gpu(regIdx)
+        state_xs = slices.transpose(0, 1)
+        rho = state_xs @ torch.conj(state_xs).transpose(0, 1)
         i_idx = torch.arange(dim, device=self.device, dtype=torch.long)
         k_idx = torch.arange(dim, device=self.device, dtype=torch.long)
         kDisp = k_idx - (dim - 1) // 2                        # (dim,)
@@ -354,8 +356,8 @@ class TorchCvdv:
         valid = (raw_iPy >= 0) & (raw_iPy < dim) & (raw_iMy >= 0) & (raw_iMy < dim)
         iPy = raw_iPy.clamp(0, dim - 1)
         iMy = raw_iMy.clamp(0, dim - 1)
-        integrand = torch.where(valid, torch.conj(psi[iPy]) * psi[iMy],
-                                torch.zeros(1, dtype=self.dtype, device=self.device))
+        integrand = torch.where(valid, rho[iMy, iPy],
+                                torch.zeros((dim, dim), dtype=self.dtype, device=self.device))
         fft_results = torch.fft.ifft(integrand, dim=1) * dim  # (dim, dim)
         dp = pi / (dim * dx)
         jc = torch.arange(dim, device=self.device, dtype=torch.long)
@@ -370,31 +372,37 @@ class TorchCvdv:
         # Vectorized on GPU — mirrors CUDA kernelBuildHusimiRows + kernelFinalizeHusimi.
         dim = self.register_dims[regIdx]
         dx = self.grid_steps[regIdx]
-        psi = self._get_reduced_state_gpu(regIdx)              # (dim,) complex, on device
-        x_grid = self._tPositionGrid(regIdx).to(self.dtype)    # (dim,) cached
+        slices = self._get_target_slices_gpu(regIdx)
+        x_grid = self._tPositionGrid(regIdx)
         # Gaussian window for all q-samples at once: shape (dim_q, dim_x)
         window = (pi ** -0.25) * torch.exp(
             -0.5 * (x_grid[None, :] - x_grid[:, None]) ** 2
         ) * sqrt(dx)                                           # real, broadcast
-        h = psi[None, :] * window.to(self.dtype)               # (dim, dim)
-        H = torch.fft.fft(h, dim=1)                            # (dim, dim)
-        accum = torch.abs(H) ** 2                              # (dim, dim)
+        accum = torch.zeros((dim, dim), dtype=torch.float64, device=self.device)
+        complex_bytes = torch.empty((), dtype=self.dtype).element_size()
+        chunk_budget = 16 * 1024 * 1024
+        bytes_per_chunk = max(1, 2 * dim * dim * complex_bytes)
+        chunk_size = max(1, min(slices.shape[0], chunk_budget // bytes_per_chunk))
+        for start in range(0, slices.shape[0], chunk_size):
+            chunk = slices[start:start + chunk_size]
+            h = chunk[:, None, :] * window[None, :, :].to(self.dtype)
+            H = torch.fft.fft(h, dim=2)
+            accum = accum + torch.sum(torch.abs(H) ** 2, dim=0)
         k_fft = (torch.arange(dim, device=self.device) + dim // 2) % dim
         husimiQ = accum[:, k_fft].T / pi                       # (dim, dim)
         return husimiQ.cpu().numpy()
 
-    def _get_reduced_state_gpu(self, regIdx: int):
-        """Return the marginal amplitude sqrt(rho_diag) for `regIdx` as a 1-D GPU tensor."""
+    def _get_target_slices_gpu(self, regIdx: int):
+        """Return all target-register slices as a 2-D GPU tensor with shape (num_slices, dim)."""
         if self.num_registers == 1:
-            return self.state.reshape(-1)
+            return self.state.reshape(1, -1)
         perm = list(range(self.num_registers))
         perm[0], perm[regIdx] = perm[regIdx], perm[0]
-        state = self.state.permute(*perm)
-        rho_diag = torch.sum(torch.abs(state) ** 2, dim=tuple(range(1, self.num_registers)))
-        return torch.sqrt(rho_diag)
+        state = self.state.permute(*perm).contiguous()
+        return state.reshape(self.register_dims[regIdx], -1).transpose(0, 1)
 
-    def _get_reduced_state_cpu(self, regIdx: int) -> npt.NDArray[np.complex128]:
-        return self._get_reduced_state_gpu(regIdx).detach().cpu().numpy()
+    def _get_target_slices_cpu(self, regIdx: int) -> npt.NDArray[np.complex128]:
+        return self._get_target_slices_gpu(regIdx).detach().cpu().numpy()
 
     def _tPositionGrid(self, regIdx: int):
         if regIdx not in self._pos_grids:

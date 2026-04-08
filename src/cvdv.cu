@@ -66,11 +66,12 @@ typedef struct {
     cufftHandle wPlan;
     int wPlanCvDim;
     bool wPlanValid;
-    cufftHandle hPlan;      // batch of N IFFTs (direction set at exec time)
-    int hPlanCvDim;
-    bool hPlanValid;
-    cufftHandle hSinglePlan;  // single forward FFT for per-slice ψ
-    bool hSinglePlanValid;
+    // Batched Husimi plans: forward FFT (batch=chunkSize) and inverse FFT (batch=chunkSize*N)
+    cufftHandle hBatchFwdPlan;
+    cufftHandle hBatchInvPlan;
+    int hBatchCvDim;
+    int hBatchChunkSize;
+    bool hBatchPlanValid;
 
     // Cached analytic Gaussian kernel G[k] = FFT{g}[k] for Husimi
     cuDoubleComplex* dHusimiG;
@@ -674,27 +675,36 @@ __global__ void kernelComputeHusimiG(cuDoubleComplex* dG, int N, double dx) {
     dG[k] = make_cuDoubleComplex(mag, 0.0);
 }
 
-// Extract ψ_s[xIdx] for one slice into a contiguous length-N buffer.
-__global__ void kernelExtractSlicePsi(cuDoubleComplex* dPsi, const cuDoubleComplex* state,
-                                      int regIdx, int cvDim, size_t sliceIdx,
+// Extract chunkSize slices at once into a contiguous [chunkSize × cvDim] buffer.
+// tid = sliceOffset * cvDim + xIdx
+__global__ void kernelExtractChunkPsi(cuDoubleComplex* dAllPsi, const cuDoubleComplex* state,
+                                      int regIdx, int cvDim, size_t sliceBase, int chunkSize,
                                       const int* qbts, const int* flwQbts) {
-    int xIdx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (xIdx >= cvDim) return;
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= chunkSize * cvDim) return;
+    int s    = tid / cvDim;
+    int xIdx = tid % cvDim;
+    size_t sliceIdx = sliceBase + s;
     int qbtsAfterCV = flwQbts[regIdx];
-    size_t qbtsAfterCVMask = (1 << qbtsAfterCV) - 1;
-    dPsi[xIdx] = state[(sliceIdx & qbtsAfterCVMask) | ((size_t)xIdx << flwQbts[regIdx]) |
-                       ((sliceIdx & ~qbtsAfterCVMask) << qbts[regIdx])];
+    size_t qbtsAfterCVMask = ((size_t)1 << qbtsAfterCV) - 1;
+    dAllPsi[tid] = state[(sliceIdx & qbtsAfterCVMask) |
+                         ((size_t)xIdx << flwQbts[regIdx]) |
+                         ((sliceIdx & ~qbtsAfterCVMask) << qbts[regIdx])];
 }
 
-// Fill circulant A[m, k] = Psi_s[(m+k) % N] * G[k] for all (m, k).
-// After batch IFFT over k, row m gives H_s[m, j] where j is the q-index.
-__global__ void kernelFillHusimiA(cuDoubleComplex* dBuf, const cuDoubleComplex* dPsi,
-                                   const cuDoubleComplex* dG, int N) {
+// Fill circulant A[s, m, k] = Psi_s[(m+k) % N] * G[k] for all slices in chunk.
+// dAllPsi layout: [chunkSize × N], dBuf layout: [chunkSize × N × N].
+// After batch IFFT over k (for each (s, m)), dBuf[s, m, j] = H_s[m, j].
+// Budget ensures chunkSize*N*N ≤ 1M, so 32-bit tid is safe (avoids expensive 64-bit div).
+__global__ void kernelFillHusimiABatched(cuDoubleComplex* dBuf, const cuDoubleComplex* dAllPsi,
+                                          const cuDoubleComplex* dG, int N, int chunkSize) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= N * N) return;
-    int m = tid / N;
-    int k = tid % N;
-    dBuf[tid] = cuCmul(dPsi[(m + k) & (N - 1)], dG[k]);
+    if (tid >= chunkSize * N * N) return;
+    int s   = tid / (N * N);
+    int rem = tid % (N * N);
+    int m   = rem / N;
+    int k   = rem % N;
+    dBuf[tid] = cuCmul(dAllPsi[s * N + ((m + k) & (N - 1))], dG[k]);
 }
 
 // fftshift + normalize accumulated power.
@@ -712,14 +722,18 @@ __global__ void kernelFinalizeHusimi(double* outQ, const double* dAccum, int cvD
     outQ[tid] = dAccum[m * cvDim + qIdx] / (PI * N2);
 }
 
-// Accumulate |H[k]|² from FFT output into accumulation buffer
-__global__ void kernelAccumHusimiPower(
-    double* dAccum,                  // [qN x cvDim], accumulated across slices
-    const cuDoubleComplex* dFFTOut,  // [qN x cvDim], post-FFT for one slice
-    int totalElements) {
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= totalElements) return;
-    dAccum[tid] += absSquare(dFFTOut[tid]);
+// Reduce |H_s[m,j]|² over all slices s in the chunk and accumulate into dAccum.
+// Each thread handles one (m, j) position, loops over chunkSize slices.
+// dBuf layout: [chunkSize × N × N], dAccum layout: [N × N].
+// No atomics needed since one thread owns each output position.
+__global__ void kernelAccumHusimiPowerChunked(
+    double* dAccum, const cuDoubleComplex* dBuf, int N2, int chunkSize) {
+    int pos = blockIdx.x * blockDim.x + threadIdx.x;
+    if (pos >= N2) return;
+    double sum = 0.0;
+    for (int s = 0; s < chunkSize; s++)
+        sum += absSquare(dBuf[(size_t)s * N2 + pos]);
+    dAccum[pos] += sum;
 }
 
 // Kernel to compute element-wise |ψ|² for cuTENSOR reduction
@@ -867,8 +881,9 @@ CVDVContext* cvdvCreate(int numReg, int* numQubits) {
     ctx->gTotalQbt = 0;
     ctx->ftPlans = nullptr;
     ctx->wPlanValid = false;
-    ctx->hPlanValid = false;
-    ctx->hSinglePlanValid = false;
+    ctx->hBatchPlanValid = false;
+    ctx->hBatchCvDim = 0;
+    ctx->hBatchChunkSize = 0;
     ctx->dHusimiG = nullptr;
     ctx->hGCvDim = 0;
     ctx->hGDx = 0.0;
@@ -963,11 +978,9 @@ void cvdvDestroy(CVDVContext* ctx) {
     if (ctx->wPlanValid) {
         cufftDestroy(ctx->wPlan);
     }
-    if (ctx->hPlanValid) {
-        cufftDestroy(ctx->hPlan);
-    }
-    if (ctx->hSinglePlanValid) {
-        cufftDestroy(ctx->hSinglePlan);
+    if (ctx->hBatchPlanValid) {
+        cufftDestroy(ctx->hBatchFwdPlan);
+        cufftDestroy(ctx->hBatchInvPlan);
     }
     if (ctx->dHusimiG != nullptr) {
         cudaFree(ctx->dHusimiG);
@@ -1834,30 +1847,18 @@ void cvdvGetHusimiQ(CVDVContext* ctx, int regIdx, double* husimiOut) {
     if (regIdx < 0 || regIdx >= ctx->gNumReg) return;
     int cvDim = 1 << ctx->gQbts[regIdx];
     double dx = ctx->gGridSteps[regIdx];
-    size_t sliceCount = 1 << (ctx->gTotalQbt - ctx->gQbts[regIdx]);
+    int sliceCount = 1 << (ctx->gTotalQbt - ctx->gQbts[regIdx]);
 
-    // --- Lazy plan: batch of N IFFTs (used for inverse direction now) ---
-    if (!ctx->hPlanValid || ctx->hPlanCvDim != cvDim) {
-        if (ctx->hPlanValid) cufftDestroy(ctx->hPlan);
-        cufftResult r = cufftPlan1d(&ctx->hPlan, cvDim, CUFFT_Z2Z, cvDim);
-        if (r != CUFFT_SUCCESS) {
-            fprintf(stderr, "cuFFT hPlan creation failed: %d\n", r);
-            return;
-        }
-        ctx->hPlanCvDim = cvDim;
-        ctx->hPlanValid = true;
-    }
-
-    // --- Lazy plan: single forward FFT for per-slice ψ ---
-    if (!ctx->hSinglePlanValid || ctx->hPlanCvDim != cvDim) {
-        if (ctx->hSinglePlanValid) cufftDestroy(ctx->hSinglePlan);
-        cufftResult r = cufftPlan1d(&ctx->hSinglePlan, cvDim, CUFFT_Z2Z, 1);
-        if (r != CUFFT_SUCCESS) {
-            fprintf(stderr, "cuFFT hSinglePlan creation failed: %d\n", r);
-            return;
-        }
-        ctx->hSinglePlanValid = true;
-    }
+    // --- Compute chunk size: largest power-of-2 that keeps dBuf ≤ 16 MB ---
+    // 16 MB ≈ half the L2 cache on high-end GPUs, so fill→IFFT→accum stay L2-resident.
+    // For N=1024 (bytesPerSlice=16MB) this gives chunk=1 (same as old serial loop).
+    // Smaller N (e.g. 256) gets chunk=16 and 16× fewer kernel launches.
+    const size_t CHUNK_BUF_BUDGET = (size_t)16 * 1024 * 1024;
+    size_t bytesPerSlice = (size_t)cvDim * cvDim * sizeof(cuDoubleComplex);
+    int chunkSize = 1;
+    while (chunkSize * 2 <= sliceCount &&
+           (size_t)(chunkSize * 2) * bytesPerSlice <= CHUNK_BUF_BUDGET)
+        chunkSize *= 2;
 
     // --- Lazy G[k]: analytic Gaussian kernel in frequency domain ---
     if (!ctx->hGValid || ctx->hGCvDim != cvDim || ctx->hGDx != dx) {
@@ -1871,45 +1872,70 @@ void cvdvGetHusimiQ(CVDVContext* ctx, int regIdx, double* husimiOut) {
         ctx->hGValid = true;
     }
 
+    // --- Lazy batched plans: forward (batch=chunkSize) and inverse (batch=chunkSize*N) ---
+    if (!ctx->hBatchPlanValid || ctx->hBatchCvDim != cvDim || ctx->hBatchChunkSize != chunkSize) {
+        if (ctx->hBatchPlanValid) {
+            cufftDestroy(ctx->hBatchFwdPlan);
+            cufftDestroy(ctx->hBatchInvPlan);
+        }
+        cufftResult rf = cufftPlan1d(&ctx->hBatchFwdPlan, cvDim, CUFFT_Z2Z, chunkSize);
+        cufftResult ri = cufftPlan1d(&ctx->hBatchInvPlan, cvDim, CUFFT_Z2Z, chunkSize * cvDim);
+        if (rf != CUFFT_SUCCESS || ri != CUFFT_SUCCESS) {
+            fprintf(stderr, "cuFFT Husimi batch plan creation failed: %d %d\n", rf, ri);
+            return;
+        }
+        ctx->hBatchCvDim    = cvDim;
+        ctx->hBatchChunkSize = chunkSize;
+        ctx->hBatchPlanValid = true;
+    }
+
     // --- Per-call buffers ---
-    cuDoubleComplex* dPsi;   // length-N slice buffer
-    cuDoubleComplex* dBuf;   // N×N working buffer: A[m,k] then H[m,j]
-    double* dAccum;          // N×N accumulator layout: [m*N + j]
-    checkCudaErrors(cudaMalloc(&dPsi,   cvDim * sizeof(cuDoubleComplex)));
-    checkCudaErrors(cudaMalloc(&dBuf,   (size_t)cvDim * cvDim * sizeof(cuDoubleComplex)));
-    checkCudaErrors(cudaMalloc(&dAccum, (size_t)cvDim * cvDim * sizeof(double)));
-    checkCudaErrors(cudaMemset(dAccum, 0, (size_t)cvDim * cvDim * sizeof(double)));
+    size_t N2 = (size_t)cvDim * cvDim;
+    cuDoubleComplex* dChunkPsi;  // [chunkSize × N] extraction buffer
+    cuDoubleComplex* dChunkBuf;  // [chunkSize × N × N] circulant / IFFT work buffer
+    double* dAccum;              // [N × N] accumulated |H|²
+    checkCudaErrors(cudaMalloc(&dChunkPsi, (size_t)chunkSize * cvDim * sizeof(cuDoubleComplex)));
+    checkCudaErrors(cudaMalloc(&dChunkBuf, (size_t)chunkSize * N2 * sizeof(cuDoubleComplex)));
+    checkCudaErrors(cudaMalloc(&dAccum,    N2 * sizeof(double)));
+    checkCudaErrors(cudaMemset(dAccum, 0,  N2 * sizeof(double)));
 
-    int gridN  = (cvDim + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
-    int gridN2 = ((size_t)cvDim * cvDim + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
+    int gridChunkN  = ((size_t)chunkSize * cvDim + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
+    int gridChunkN2 = ((size_t)chunkSize * N2 + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
+    int gridN2      = (N2 + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
 
-    // IMPORTANT TODO: batch kernel
-    for (size_t sliceIdx = 0; sliceIdx < sliceCount; sliceIdx++) {
-        // Step 1: extract ψ_s into contiguous dPsi
-        kernelExtractSlicePsi<<<gridN, CUDA_BLOCK_SIZE>>>(
-            dPsi, ctx->dState, regIdx, cvDim, sliceIdx, ctx->gQbts, ctx->gFlwQbts);
-        // Step 2: forward FFT → Ψ_s in dPsi
-        cufftExecZ2Z(ctx->hSinglePlan, dPsi, dPsi, CUFFT_FORWARD);
-        // Step 3: fill circulant A[m,k] = Ψ_s[(m+k)%N] * G[k]
-        kernelFillHusimiA<<<gridN2, CUDA_BLOCK_SIZE>>>(dBuf, dPsi, ctx->dHusimiG, cvDim);
-        // Step 4: batch IFFT over k for each row m → H_s[m, j]
-        cufftExecZ2Z(ctx->hPlan, dBuf, dBuf, CUFFT_INVERSE);
-        // Step 5: accumulate |H_s|²
-        kernelAccumHusimiPower<<<gridN2, CUDA_BLOCK_SIZE>>>(dAccum, dBuf, cvDim * cvDim);
+    // Process slices in chunks — sliceCount and chunkSize are both powers-of-2
+    for (int sliceBase = 0; sliceBase < sliceCount; sliceBase += chunkSize) {
+        // Step 1: extract chunkSize slices at once → dChunkPsi [chunkSize × N]
+        kernelExtractChunkPsi<<<gridChunkN, CUDA_BLOCK_SIZE>>>(
+            dChunkPsi, ctx->dState, regIdx, cvDim, sliceBase, chunkSize,
+            ctx->gQbts, ctx->gFlwQbts);
+
+        // Step 2: batched forward FFT of all chunkSize slices at once
+        cufftExecZ2Z(ctx->hBatchFwdPlan, dChunkPsi, dChunkPsi, CUFFT_FORWARD);
+
+        // Step 3: fill circulant A[s, m, k] = Ψ_s[(m+k)%N] * G[k] for all (s, m, k)
+        kernelFillHusimiABatched<<<gridChunkN2, CUDA_BLOCK_SIZE>>>(
+            dChunkBuf, dChunkPsi, ctx->dHusimiG, cvDim, chunkSize);
+
+        // Step 4: batched IFFT over k for each (s, m) → H_s[m, j]; batch = chunkSize * N
+        cufftExecZ2Z(ctx->hBatchInvPlan, dChunkBuf, dChunkBuf, CUFFT_INVERSE);
+
+        // Step 5: reduce |H_s[m,j]|² over s in chunk and accumulate into dAccum[m*N+j]
+        kernelAccumHusimiPowerChunked<<<gridN2, CUDA_BLOCK_SIZE>>>(dAccum, dChunkBuf, N2, chunkSize);
     }
     checkCudaErrors(cudaDeviceSynchronize());
 
     double* dHusimiQ;
-    checkCudaErrors(cudaMalloc(&dHusimiQ, (size_t)cvDim * cvDim * sizeof(double)));
+    checkCudaErrors(cudaMalloc(&dHusimiQ, N2 * sizeof(double)));
     kernelFinalizeHusimi<<<gridN2, CUDA_BLOCK_SIZE>>>(dHusimiQ, dAccum, cvDim);
     checkCudaErrors(cudaDeviceSynchronize());
 
-    checkCudaErrors(cudaMemcpy(husimiOut, dHusimiQ, (size_t)cvDim * cvDim * sizeof(double),
+    checkCudaErrors(cudaMemcpy(husimiOut, dHusimiQ, N2 * sizeof(double),
                                cudaMemcpyDeviceToHost));
     cudaFree(dHusimiQ);
     cudaFree(dAccum);
-    cudaFree(dBuf);
-    cudaFree(dPsi);
+    cudaFree(dChunkBuf);
+    cudaFree(dChunkPsi);
 }
 
 void cvdvMeasureMultiple(CVDVContext* ctx, const int* regIdxs, int numRegs, double* probsOut) {

@@ -95,6 +95,10 @@ def _load_cvdv():
     lib.cvdvConditionalBeamSplitter.restype   = None
     lib.cvdvGetNorm.argtypes                  = [ctypes.c_void_p]
     lib.cvdvGetNorm.restype                   = c_double
+    lib.cvdvGetPhotonNumber.argtypes          = [ctypes.c_void_p, c_int]
+    lib.cvdvGetPhotonNumber.restype           = c_double
+    lib.cvdvFtP2Q.argtypes                    = [ctypes.c_void_p, c_int]
+    lib.cvdvFtP2Q.restype                     = None
     lib.cvdvGetWigner.argtypes                = [ctypes.c_void_p, c_int, POINTER(c_double)]
     lib.cvdvGetWigner.restype                 = None
     lib.cvdvGetHusimiQ.argtypes               = [ctypes.c_void_p, c_int, POINTER(c_double)]
@@ -212,26 +216,29 @@ def run_torch_bench():
         del sim
         results[c_name] = t
 
-    rec('cvdvDisplacement',            'd',          1, 1.0+0.5j)
-    rec('cvdvRotation',                'r',          1, 0.3)
-    rec('cvdvSqueeze',                 's',          1, 0.5)
-    rec('cvdvPhaseSquare',             'sheer',      1, 0.1)
-    rec('cvdvPhaseCubic',              'phaseCubic', 1, 0.05)
-    rec('cvdvFtQ2P',                   'ftQ2P',      1)
-    rec('cvdvQ1Q2Gate',                'q1q2',       1, 2, 0.3)
-    rec('cvdvBeamSplitter',            'bs',         1, 2, 0.5)
-    rec('cvdvSwapRegisters',           'swap',       1, 2)
-    rec('cvdvHadamard',                'h',          0, 0)
-    rec('cvdvPauliRotation',           'rx',         0, 0, 0.5)
-    rec('cvdvParity',                  'p',          1)
-    rec('cvdvConditionalDisplacement', 'cd',         1, 0, 0, 1.0+0.5j)
-    rec('cvdvConditionalRotation',     'cr',         1, 0, 0, 0.3)
-    rec('cvdvConditionalSqueeze',      'cs',         1, 0, 0, 0.5)
-    rec('cvdvConditionalParity',       'cp',         1, 0, 0)
-    rec('cvdvConditionalBeamSplitter', 'cbs',        1, 2, 0, 0, 0.5)
+    rec('cvdvDisplacement',            'd',              1, 1.0+0.5j)
+    rec('cvdvRotation',                'r',              1, 0.3)
+    rec('cvdvSqueeze',                 's',              1, 0.5)
+    rec('cvdvPhaseSquare',             'sheer',          1, 0.1)
+    rec('cvdvPhaseCubic',              'phaseCubic',     1, 0.05)
+    rec('cvdvFtQ2P',                   'ftQ2P',          1)
+    rec('cvdvFtP2Q',                   'ftP2Q',          1)
+    rec('cvdvQ1Q2Gate',                'q1q2',           1, 2, 0.3)
+    rec('cvdvBeamSplitter',            'bs',             1, 2, 0.5)
+    rec('cvdvSwapRegisters',           'swap',           1, 2)
+    rec('cvdvHadamard',                'h',              0, 0)
+    rec('cvdvPauliRotation',           'rx',             0, 0, 0.5)
+    rec('cvdvParity',                  'p',              1)
+    rec('cvdvConditionalDisplacement', 'cd',             1, 0, 0, 1.0+0.5j)
+    rec('cvdvConditionalRotation',     'cr',             1, 0, 0, 0.3)
+    rec('cvdvConditionalSqueeze',      'cs',             1, 0, 0, 0.5)
+    rec('cvdvConditionalParity',       'cp',             1, 0, 0)
+    rec('cvdvConditionalBeamSplitter', 'cbs',            1, 2, 0, 0, 0.5)
     rec('cvdvGetNorm',                 'm')
-    # Wigner/Husimi torch backend uses CPU numpy loops — not a GPU op, skip
-    rec('cvdvMeasureMultiple',         'm',          1)
+    rec('cvdvGetPhotonNumber',         'getPhotonNumber', 1)
+    rec('cvdvGetWigner',               'getWigner',       1)
+    rec('cvdvGetHusimiQ',              'getHusimiQ',      1)
+    rec('cvdvMeasureMultiple',         'm',               1)
 
     return results
 
@@ -269,6 +276,7 @@ def run_bench(lib, cuda):
     rec('cvdvPhaseSquare',             lib.cvdvPhaseSquare,            c_int(1), c_double(0.1))
     rec('cvdvPhaseCubic',              lib.cvdvPhaseCubic,             c_int(1), c_double(0.05))
     rec('cvdvFtQ2P',                   lib.cvdvFtQ2P,                  c_int(1))
+    rec('cvdvFtP2Q',                   lib.cvdvFtP2Q,                  c_int(1))
 
     # two-mode CV
     rec('cvdvQ1Q2Gate',                lib.cvdvQ1Q2Gate,               c_int(1), c_int(2), c_double(0.3))
@@ -289,6 +297,7 @@ def run_bench(lib, cuda):
 
     # readout
     rec('cvdvGetNorm',                 lib.cvdvGetNorm)
+    rec('cvdvGetPhotonNumber',         lib.cvdvGetPhotonNumber,        c_int(1))
 
     cv_dim = 1 << 10
     buf = (c_double * (cv_dim * cv_dim))()
