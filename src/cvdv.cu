@@ -3,6 +3,7 @@
 #include <cuComplex.h>
 #include <cuda_runtime.h>
 #include <cufft.h>
+#include <cutensor.h>
 
 #include <cmath>
 #include <cstdio>
@@ -10,6 +11,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <map>
+#include <vector>
 
 #pragma region Error Checking and Constants
 
@@ -31,6 +34,19 @@ constexpr int CUDA_BLOCK_SIZE = 256;  // Default CUDA block size for RTX 4070 La
 #pragma endregion
 
 #pragma region Global State
+
+// Cached cuTENSOR plan for a specific register selection in MeasureMultiple.
+// Keyed by the regIdxs vector; stored in a heap-allocated std::map.
+struct MeasurePlan {
+    cutensorTensorDescriptor_t  descIn;
+    cutensorTensorDescriptor_t  descOut;
+    cutensorOperationDescriptor_t opDesc;
+    cutensorPlanPreference_t    planPref;
+    cutensorPlan_t              plan;
+    void*                       dWorkspace;
+    uint64_t                    workspaceSize;
+    size_t                      outSize;
+};
 
 // Context structure to enable multiple instances
 typedef struct {
@@ -61,6 +77,13 @@ typedef struct {
     int hGCvDim;
     double hGDx;
     bool hGValid;
+
+    // Cached cuTENSOR handle and buffers for MeasureMultiple (lazy-init)
+    cutensorHandle_t ctHandle;
+    bool ctHandleValid;
+    double* dMeasureProbs;       // |ψ|² scratch, size = totalSize
+    double* dMeasureOut;         // marginal output scratch, size = totalSize
+    void*   measurePlanCache;    // heap-allocated std::map<std::vector<int>, MeasurePlan>*
 } CVDVContext;
 
 // Lightweight struct for passing separable-state device pointers into CUDA
@@ -699,58 +722,14 @@ __global__ void kernelAccumHusimiPower(
     dAccum[tid] += absSquare(dFFTOut[tid]);
 }
 
-// Compute joint marginal probabilities for an arbitrary set of registers.
-// Each thread owns one output cell (one combination of local indices across
-// the selected registers) and sums |ψ|² over all "other" register configs.
-// regIdxs[0..numRegs-1] are the selected registers in argument order;
-// output is laid out with regIdxs[0] as the slowest-varying axis.
-__global__ void kernelMeasureMultiple(double* outProb, const cuDoubleComplex* state,
-                                      const int* regIdxs, int numRegs,
-                                      size_t totalSize, int numReg,
-                                      const int* qbts, const int* flwQbts) {
-    // Compute total output size and per-register dims for selected registers
-    size_t outSize = 1;
-    for (int i = 0; i < numRegs; i++) outSize <<= qbts[regIdxs[i]];
-
-    size_t outIdx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    if (outIdx >= outSize) return;
-
-    // Decode outIdx into per-selected-register local indices (regIdxs[0] slowest)
-    size_t localIdxs[32];  // max 32 registers
-    size_t tmp = outIdx;
-    for (int i = numRegs - 1; i >= 0; i--) {
-        size_t regDim = 1 << qbts[regIdxs[i]];
-        localIdxs[i] = tmp % regDim;
-        tmp /= regDim;
+// Kernel to compute element-wise |ψ|² for cuTENSOR reduction
+__global__ void kernelAbsSquareInPlace(double* __restrict__ out, 
+                                        const cuDoubleComplex* __restrict__ in,
+                                        size_t n) {
+    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    for (size_t i = idx; i < n; i += blockDim.x * gridDim.x) {
+        out[i] = absSquare(in[i]);
     }
-
-    // Sum over all configurations of the non-selected registers
-    size_t otherSize = totalSize / outSize;
-
-    double prob = 0.0;
-    for (size_t otherIdx = 0; otherIdx < otherSize; otherIdx++) {
-        size_t globalIdx = 0;
-        size_t remainingOther = otherIdx;
-        for (int r = 0; r < numReg; r++) {
-            // Check if r is a selected register
-            int selPos = -1;
-            for (int i = 0; i < numRegs; i++) {
-                if (regIdxs[i] == r) { selPos = i; break; }
-            }
-            size_t localIdx;
-            if (selPos >= 0) {
-                localIdx = localIdxs[selPos];
-            } else {
-                size_t regDim = 1 << qbts[r];
-                localIdx = remainingOther % regDim;
-                remainingOther /= regDim;
-            }
-            globalIdx += localIdx << flwQbts[r];
-        }
-        prob += absSquare(state[globalIdx]);
-    }
-
-    outProb[outIdx] = prob;
 }
 
 // Kernel to compute <x²> expectation for a register: sum |state[i]|² *
@@ -894,6 +873,10 @@ CVDVContext* cvdvCreate(int numReg, int* numQubits) {
     ctx->hGCvDim = 0;
     ctx->hGDx = 0.0;
     ctx->hGValid = false;
+    ctx->ctHandleValid = false;
+    ctx->dMeasureProbs = nullptr;
+    ctx->dMeasureOut = nullptr;
+    ctx->measurePlanCache = nullptr;
 
     // If no registers specified, return empty context
     if (numReg == 0 || numQubits == nullptr) {
@@ -989,6 +972,31 @@ void cvdvDestroy(CVDVContext* ctx) {
     if (ctx->dHusimiG != nullptr) {
         cudaFree(ctx->dHusimiG);
         ctx->dHusimiG = nullptr;
+    }
+    if (ctx->measurePlanCache != nullptr) {
+        auto* cache = static_cast<std::map<std::vector<int>, MeasurePlan>*>(ctx->measurePlanCache);
+        for (auto& [key, mp] : *cache) {
+            if (mp.dWorkspace) cudaFree(mp.dWorkspace);
+            cutensorDestroyPlan(mp.plan);
+            cutensorDestroyPlanPreference(mp.planPref);
+            cutensorDestroyOperationDescriptor(mp.opDesc);
+            cutensorDestroyTensorDescriptor(mp.descIn);
+            cutensorDestroyTensorDescriptor(mp.descOut);
+        }
+        delete cache;
+        ctx->measurePlanCache = nullptr;
+    }
+    if (ctx->ctHandleValid) {
+        cutensorDestroy(ctx->ctHandle);
+        ctx->ctHandleValid = false;
+    }
+    if (ctx->dMeasureProbs != nullptr) {
+        cudaFree(ctx->dMeasureProbs);
+        ctx->dMeasureProbs = nullptr;
+    }
+    if (ctx->dMeasureOut != nullptr) {
+        cudaFree(ctx->dMeasureOut);
+        ctx->dMeasureOut = nullptr;
     }
 
     // Free managed memory
@@ -1913,35 +1921,140 @@ void cvdvMeasureMultiple(CVDVContext* ctx, const int* regIdxs, int numRegs, doub
         }
     }
 
-    // Compute output size = product of selected register dims
-    size_t outSize = 1;
-    for (int i = 0; i < numRegs; i++) {
-        int qbts_h;
-        checkCudaErrors(cudaMemcpy(&qbts_h, ctx->gQbts + regIdxs[i], sizeof(int), cudaMemcpyDeviceToHost));
-        outSize <<= qbts_h;
+    size_t totalSize = (size_t)1 << ctx->gTotalQbt;
+
+    // Lazy-init cuTENSOR handle (once per context lifetime)
+    if (!ctx->ctHandleValid) {
+        cutensorStatus_t initStatus = cutensorCreate(&ctx->ctHandle);
+        if (initStatus != CUTENSOR_STATUS_SUCCESS) {
+            fprintf(stderr, "cuTENSOR init failed: %d\n", initStatus);
+            return;
+        }
+        ctx->ctHandleValid = true;
     }
 
-    // Upload regIdxs to device
-    int* dRegIdxs;
-    checkCudaErrors(cudaMalloc(&dRegIdxs, numRegs * sizeof(int)));
-    checkCudaErrors(cudaMemcpy(dRegIdxs, regIdxs, numRegs * sizeof(int), cudaMemcpyHostToDevice));
+    // Lazy-init scratch buffers (both sized to totalSize — worst-case output)
+    if (ctx->dMeasureProbs == nullptr) {
+        checkCudaErrors(cudaMalloc(&ctx->dMeasureProbs, totalSize * sizeof(double)));
+        checkCudaErrors(cudaMalloc(&ctx->dMeasureOut, totalSize * sizeof(double)));
+    }
 
-    double* dProbs;
-    checkCudaErrors(cudaMalloc(&dProbs, outSize * sizeof(double)));
-    checkCudaErrors(cudaMemset(dProbs, 0, outSize * sizeof(double)));
+    // Lazy-init plan cache
+    if (ctx->measurePlanCache == nullptr) {
+        ctx->measurePlanCache = new std::map<std::vector<int>, MeasurePlan>();
+    }
+    auto* cache = static_cast<std::map<std::vector<int>, MeasurePlan>*>(ctx->measurePlanCache);
 
-    int grid = (int)((outSize + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE);
-    kernelMeasureMultiple<<<grid, CUDA_BLOCK_SIZE>>>(dProbs, ctx->dState,
-                                                     dRegIdxs, numRegs,
-                                                     (size_t)1 << ctx->gTotalQbt,
-                                                     ctx->gNumReg,
-                                                     ctx->gQbts, ctx->gFlwQbts);
-    checkCudaErrors(cudaGetLastError());
-    checkCudaErrors(cudaDeviceSynchronize());
+    // Look up cached plan by regIdxs key, build on miss
+    std::vector<int> key(regIdxs, regIdxs + numRegs);
+    auto it = cache->find(key);
+    if (it == cache->end()) {
+        // Fetch qbts/flwQbts via explicit memcpy — managed memory may have
+        // migrated to device after GPU kernels ran; direct CPU reads are unsafe.
+        std::vector<int> qbts(ctx->gNumReg), flwQbts(ctx->gNumReg);
+        checkCudaErrors(cudaMemcpy(qbts.data(), ctx->gQbts,
+                                   ctx->gNumReg * sizeof(int), cudaMemcpyDeviceToHost));
+        checkCudaErrors(cudaMemcpy(flwQbts.data(), ctx->gFlwQbts,
+                                   ctx->gNumReg * sizeof(int), cudaMemcpyDeviceToHost));
+        std::vector<int64_t> extents(ctx->gNumReg), strides(ctx->gNumReg);
+        for (int r = 0; r < ctx->gNumReg; r++) {
+            extents[r] = 1LL << qbts[r];
+            strides[r] = 1LL << flwQbts[r];
+        }
+        std::vector<int64_t> outExtents(numRegs), outStrides(numRegs);
+        size_t outSize = 1;
+        for (int i = 0; i < numRegs; i++) {
+            outExtents[i] = extents[regIdxs[i]];
+            outSize *= outExtents[i];
+        }
+        // Column-major strides: first selected register varies fastest (stride 1).
+        // The Python wrapper does reshape(shape[::-1]).T expecting this layout.
+        outStrides[0] = 1;
+        for (int i = 1; i < numRegs; i++)
+            outStrides[i] = outStrides[i - 1] * outExtents[i - 1];
 
-    checkCudaErrors(cudaMemcpy(probsOut, dProbs, outSize * sizeof(double), cudaMemcpyDeviceToHost));
-    cudaFree(dProbs);
-    cudaFree(dRegIdxs);
+        std::vector<int32_t> modesIn(ctx->gNumReg), modesOut(numRegs);
+        for (int i = 0; i < ctx->gNumReg; i++) modesIn[i] = i;
+        for (int i = 0; i < numRegs; i++) modesOut[i] = regIdxs[i];
+
+        MeasurePlan mp{};
+        mp.outSize = outSize;
+        cutensorHandle_t h = ctx->ctHandle;
+        cutensorStatus_t status;
+        uint32_t alignment = 256;
+        cutensorComputeDescriptor_t computeDesc = CUTENSOR_COMPUTE_DESC_64F;
+
+        status = cutensorCreateTensorDescriptor(h, &mp.descIn, (uint32_t)ctx->gNumReg,
+                                                extents.data(), strides.data(),
+                                                CUDA_R_64F, alignment);
+        if (status != CUTENSOR_STATUS_SUCCESS) {
+            fprintf(stderr, "cuTENSOR input desc failed: %d\n", status); return;
+        }
+        status = cutensorCreateTensorDescriptor(h, &mp.descOut, (uint32_t)numRegs,
+                                                outExtents.data(), outStrides.data(),
+                                                CUDA_R_64F, alignment);
+        if (status != CUTENSOR_STATUS_SUCCESS) {
+            fprintf(stderr, "cuTENSOR output desc failed: %d\n", status);
+            cutensorDestroyTensorDescriptor(mp.descIn); return;
+        }
+        status = cutensorCreateReduction(h, &mp.opDesc,
+                                         mp.descIn,  modesIn.data(),  CUTENSOR_OP_IDENTITY,
+                                         mp.descOut, modesOut.data(), CUTENSOR_OP_IDENTITY,
+                                         mp.descOut, modesOut.data(),
+                                         CUTENSOR_OP_ADD, computeDesc);
+        if (status != CUTENSOR_STATUS_SUCCESS) {
+            fprintf(stderr, "cuTENSOR reduction desc failed: %d\n", status);
+            cutensorDestroyTensorDescriptor(mp.descIn);
+            cutensorDestroyTensorDescriptor(mp.descOut); return;
+        }
+        status = cutensorCreatePlanPreference(h, &mp.planPref,
+                                              CUTENSOR_ALGO_DEFAULT, CUTENSOR_JIT_MODE_NONE);
+        if (status != CUTENSOR_STATUS_SUCCESS) {
+            fprintf(stderr, "cuTENSOR plan pref failed: %d\n", status);
+            cutensorDestroyOperationDescriptor(mp.opDesc);
+            cutensorDestroyTensorDescriptor(mp.descIn);
+            cutensorDestroyTensorDescriptor(mp.descOut); return;
+        }
+        mp.workspaceSize = 0;
+        cutensorEstimateWorkspaceSize(h, mp.opDesc, mp.planPref,
+                                      CUTENSOR_WORKSPACE_DEFAULT, &mp.workspaceSize);
+        status = cutensorCreatePlan(h, &mp.plan, mp.opDesc, mp.planPref, mp.workspaceSize);
+        if (status != CUTENSOR_STATUS_SUCCESS) {
+            fprintf(stderr, "cuTENSOR plan failed: %d\n", status);
+            cutensorDestroyPlanPreference(mp.planPref);
+            cutensorDestroyOperationDescriptor(mp.opDesc);
+            cutensorDestroyTensorDescriptor(mp.descIn);
+            cutensorDestroyTensorDescriptor(mp.descOut); return;
+        }
+        mp.dWorkspace = nullptr;
+        if (mp.workspaceSize > 0)
+            checkCudaErrors(cudaMalloc(&mp.dWorkspace, mp.workspaceSize));
+
+        (*cache)[key] = mp;
+        it = cache->find(key);
+    }
+    const MeasurePlan& mp = it->second;
+
+    // Step 1: Compute |ψ|² into scratch buffer
+    int gridSize = (int)((totalSize + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE);
+    kernelAbsSquareInPlace<<<gridSize, CUDA_BLOCK_SIZE>>>(ctx->dMeasureProbs, ctx->dState, totalSize);
+
+    // Zero output before reduction: cuTENSOR beta=0 only writes positions with
+    // non-zero contributions, leaving stale values in zero-probability slots.
+    checkCudaErrors(cudaMemset(ctx->dMeasureOut, 0, mp.outSize * sizeof(double)));
+
+    // Step 2: cuTENSOR reduction
+    const double one = 1.0, zero = 0.0;
+    cutensorStatus_t status = cutensorReduce(ctx->ctHandle, mp.plan,
+                                             &one, ctx->dMeasureProbs,
+                                             &zero, ctx->dMeasureOut, ctx->dMeasureOut,
+                                             mp.dWorkspace, mp.workspaceSize, 0);
+    if (status != CUTENSOR_STATUS_SUCCESS)
+        fprintf(stderr, "cuTENSOR reduction failed: %d\n", status);
+
+    checkCudaErrors(cudaStreamSynchronize(0));
+    checkCudaErrors(cudaMemcpy(probsOut, ctx->dMeasureOut, mp.outSize * sizeof(double),
+                               cudaMemcpyDeviceToHost));
 }
 
 // Copy a full flat state from an existing CUDA device pointer (e.g. a torch

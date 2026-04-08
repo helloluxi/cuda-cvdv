@@ -151,7 +151,11 @@ class CudaCvdv:
         regs_c = (c_int * len(regs))(*regs)
         _get_lib().cvdvMeasureMultiple(self.ctx, regs_c, c_int(len(regs)),
                                        out.ctypes.data_as(POINTER(c_double)))
-        return out.reshape(tuple(self.register_dims[r] for r in regs))
+        # cuTENSOR outputs column-major, transpose to row-major
+        shape = tuple(self.register_dims[r] for r in regs)
+        if len(shape) == 1:
+            return out.reshape(shape)
+        return out.reshape(shape[::-1]).T
 
     def initFromArray(self, arr) -> None:
         if torch is None:
