@@ -6,8 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 import numpy as np
 from numpy import pi, sqrt
-from src.cudaCvdv import CudaCvdv
-from src.separable import SeparableState
+from src import CudaCvdv, SeparableState
 
 class TestCoreOperations:
     """Test core quantum operations using inner product validation."""

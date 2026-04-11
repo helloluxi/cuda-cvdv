@@ -10,26 +10,8 @@
 #include <cuda_runtime.h>
 #include <cuComplex.h>
 
-// ── CVDVContext — mirrors src/cvdv.cu (no public header available) ────────
-typedef struct {
-    cuDoubleComplex* dState;
-    int*    gQbts;
-    int*    gFlwQbts;
-    double* gGridSteps;
-    int     gNumReg;
-    int     gTotalQbt;
-} CVDVContext;
-
-// ── C API forward declarations ────────────────────────────────────────────
-extern "C" {
-    CVDVContext* cvdvCreate(int numReg, int* numQubits);
-    void cvdvDestroy(CVDVContext* ctx);
-    void cvdvInitFromSeparable(CVDVContext* ctx, void** devicePtrs, int numReg);
-
-    // readout
-    void cvdvGetWigner(CVDVContext*, int reg, double* out);
-    void cvdvGetHusimiQ(CVDVContext*, int reg, double* out);
-}
+// Public API header — opaque CVDVContext* + all extern "C" signatures
+#include "../../src/cuda/api.h"
 
 // ── state initialisation helpers ──────────────────────────────────────────
 static const double TWO_PI = 6.28318530717958647692;

@@ -7,9 +7,7 @@ from numpy import pi, sqrt
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.cudaCvdv import CudaCvdv
-from src.separable import SeparableState
-from src.torchCvdv import TorchCvdv
+from src import CudaCvdv, SeparableState, TorchCvdv
 
 
 class TestTorchPhaseSpaceClosedForm:

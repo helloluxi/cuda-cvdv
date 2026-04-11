@@ -1,17 +1,9 @@
 repos:
   - repo: local
     hooks:
-      - id: cuda-build
-        name: Build CUDA Library
-        entry: make build
-        language: system
-        pass_filenames: false
-        always_run: true
-        verbose: true
-      
       - id: pytest-tests
         name: Run Unit Tests
-        entry: pytest tests/ -v
+        entry: make test
         language: system
         pass_filenames: false
         always_run: true

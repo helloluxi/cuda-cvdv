@@ -16,9 +16,17 @@ if(NOT CUTENSOR_INCLUDE_DIR OR NOT CUTENSOR_LIBRARY)
     message(FATAL_ERROR "cuTENSOR not found. Install: sudo apt-get install libcutensor2-dev-cuda-13")
 endif()
 
-add_library(cvdv SHARED src/cvdv.cu)
+add_library(cvdv SHARED
+    src/cuda/context.cu
+    src/cuda/gates.cu
+    src/cuda/cv.cu
+    src/cuda/measure.cu
+)
 
-target_include_directories(cvdv PRIVATE ${CUTENSOR_INCLUDE_DIR})
+target_include_directories(cvdv PRIVATE
+    src/cuda/
+    ${CUTENSOR_INCLUDE_DIR}
+)
 target_link_libraries(cvdv PRIVATE
     CUDA::cudart
     CUDA::cufft

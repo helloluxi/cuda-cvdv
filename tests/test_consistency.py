@@ -15,9 +15,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.cudaCvdv import CudaCvdv
-from src.torchCvdv import TorchCvdv
-from src.separable import SeparableState
+from src import CudaCvdv, TorchCvdv, SeparableState
 
 
 def _fidelity(cuda_sim, torch_sim) -> float:
