@@ -41,6 +41,7 @@ Makefile.generated
 
 # AI Assistant Files
 ai/
+AGENTS.md
 
 # Symlinks
 .claude

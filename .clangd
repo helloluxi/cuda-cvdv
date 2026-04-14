@@ -1,0 +1,30 @@
+CompileFlags:
+  Add:
+    - --cuda-gpu-arch=sm_89
+    - --cuda-path=/usr/local/cuda-13.1
+    - --no-cuda-version-check
+    - -I/usr/local/cuda-13.1/targets/x86_64-linux/include
+    - -I/usr/include/libcutensor/13
+    - -Isrc/cuda
+    - -std=gnu++17
+  Remove:
+    - -forward-unknown-to-host-compiler
+    - --options-file
+    - --generate-code*
+    - -arch=*
+    - -Xcompiler=*
+    - -rdc=*
+    - -x
+    - cu
+    - --diag_suppress=*
+
+Diagnostics:
+  Suppress:
+    - ovl_no_viable_function_in_call
+    - no_member_template
+    - no_member
+    - expected_lparen_after_type
+    - expected
+    - auto_var_requires_init
+    - expected_semi_declaration
+    - undeclared_var_use
