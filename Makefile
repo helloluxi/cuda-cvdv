@@ -1,5 +1,6 @@
 .PHONY: build test clean help bench bench-state-transfer bench-api bench-kernel \
-       bench-measure bench-measure-ct profile-measure nsys-profile-measure save-bench
+       bench-measure bench-measure-ct profile-measure nsys-profile-measure \
+       bench-husimi profile-husimi save-bench
 
 help:
 	@echo "CVDV Quantum Simulator - Build & Test Commands"
@@ -13,6 +14,8 @@ help:
 	@echo "  make bench-measure            - Run measure-kernel benchmark (custom)"
 	@echo "  make bench-measure-ct         - Run measure-kernel benchmark (cuTENSOR)"
 	@echo "  make profile-measure          - NCU targeted sections (fast, 4 passes)"
+	@echo "  make bench-husimi             - Compare Husimi overlap vs Wigner routes"
+	@echo "  make profile-husimi           - NCU targeted profile for Husimi routes"
 	@echo "  make nsys-profile-measure     - nsys timeline: CPU+GPU CUDA API timing"
 	@echo "  make bench-all           - Run all benchmark tasks"
 	@echo ""
@@ -54,6 +57,23 @@ bench-measure: build
 
 bench-measure-ct: build
 	@python benchmarks/measure_kernels/bench_measure.py --cutensor
+
+bench-husimi: build
+	@python benchmarks/wigner_husimi/bench_husimi.py
+
+profile-husimi: build
+	@mkdir -p benchmarks/wigner_husimi/current
+	ncu --target-processes all \
+	    --launch-skip $(or $(SKIP),3) --launch-count 1 \
+	    --section SpeedOfLight --section Occupancy \
+	    --section MemoryWorkloadAnalysis --section SchedulerStatistics \
+	    -o benchmarks/wigner_husimi/current/ncu_targeted -f \
+	    python benchmarks/wigner_husimi/profile_husimi.py
+	@echo ""
+	@echo "── Roofline summary ──────────────────────────────────────────"
+	ncu --import benchmarks/wigner_husimi/current/ncu_targeted.ncu-rep \
+	    --print-summary per-kernel 2>/dev/null || true
+	@echo "View: ncu-ui benchmarks/wigner_husimi/current/ncu_targeted.ncu-rep"
 
 # Targeted NCU profile (4 passes, fast — use for roofline classification first)
 profile-measure: build

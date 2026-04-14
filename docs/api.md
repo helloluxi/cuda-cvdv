@@ -109,22 +109,16 @@ CV operation conditioned on a DV qubit (applies $+$ or $-$ version based on qubi
 
 ### Phase-Space Distributions
 
-**On-grid API** (recommended — snaps to native grid, no interpolation):
-
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `getWigner(regIdx, bound)` | `ndarray (N, N)` | Wigner function, $x \in [-\text{bound}, +\text{bound}]$, p snapped to $\Delta p$ bins |
-| `getHusimiQ(regIdx, bound)` | `ndarray (N, N)` | Husimi Q function |
+| `getWigner(regIdx)` | `ndarray (dim, dim)` | Wigner function on full native grid |
+| `getWigner(regIdx, bound)` | `ndarray (N, N)` | Wigner clipped to $q, p \in [-\text{bound}, +\text{bound}]$ |
+| `getHusimiQ(regIdx)` | `ndarray (dim, dim)` | Husimi Q function on full native grid |
+| `getHusimiQ(regIdx, bound)` | `ndarray (N, N)` | Husimi Q clipped to $q, p \in [-\text{bound}, +\text{bound}]$ |
+| `plotWigner(regIdx, bound, cmap, figsize, show)` | `(fig, ax)` | Plot Wigner function (default `bound=5.0`) |
+| `plotHusimiQ(regIdx, bound, cmap, figsize, show)` | `(fig, ax)` | Plot Husimi Q function (default `bound=5.0`) |
 
-`N = round(2·bound/dx) + 1` where `dx = sqrt(2π / dim)`.
-
-**Full-control API:**
-
-| Method | Description |
-|--------|-------------|
-| `getWignerFullMode(regIdx, wignerN, wXMax, wPMax)` | Wigner on a `wignerN×wignerN` grid over `[-wXMax,wXMax] × [-wPMax,wPMax]` |
-| `getWignerSingleSlice(regIdx, slice_indices, wignerN, wXMax, wPMax)` | Wigner with other registers fixed at given indices |
-| `getHusimiQFullMode(regIdx, qN, qMax, pMax)` | Husimi Q on a `qN×qN` grid |
+When `bound` is given, the output is clipped to grid points within $[-\text{bound}, +\text{bound}]$ on both axes. The Wigner p-axis uses spacing $\Delta p_W = \pi / (N \cdot dx)$; the Husimi p-axis uses $\Delta p_H = 2\pi / (N \cdot dx) = dx$.
 
 **Normalization conventions:**
 
@@ -132,14 +126,6 @@ CV operation conditioned on a DV qubit (applies $+$ or $-$ version based on qubi
 - Husimi peak: $Q(q_0, p_0) = \frac{1}{\pi} e^{-\frac{1}{2}(q-q_0)^2 - \frac{1}{2}(p-p_0)^2}$
 
 where $q_0 = \sqrt{2}\,\text{Re}\,\alpha$, $p_0 = \sqrt{2}\,\text{Im}\,\alpha$.
-
-### Plotting
-
-Requires `pip install ".[viz]"`.
-
-| Method | Description |
-|--------|-------------|
-| `plotWigner(regIdx, slice_indices, wignerN, wignerMax, cmap, figsize, show)` | Plot Wigner function; returns `(fig, ax)` |
 
 ---
 

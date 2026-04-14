@@ -47,6 +47,8 @@ void   cvdvQ1Q2Gate(CVDVContext* ctx, int reg1, int reg2, double coeff);
 
 void   cvdvGetWigner(CVDVContext* ctx, int regIdx, double* wignerOut);
 void   cvdvGetHusimiQ(CVDVContext* ctx, int regIdx, double* husimiOut);
+void   cvdvGetHusimiQOverlap(CVDVContext* ctx, int regIdx, double* husimiOut);
+void   cvdvGetHusimiQWigner(CVDVContext* ctx, int regIdx, double* husimiOut);
 
 void   cvdvMeasureMultiple(CVDVContext* ctx, const int* regIdxs, int numRegs,
                             double* probsOut);

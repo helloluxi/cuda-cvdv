@@ -341,7 +341,7 @@ class TorchCvdv:
         self.ftP2Q(regIdx)
         return (q2 + p2 - 1.0) / 2.0
 
-    def getWigner(self, regIdx: int) -> npt.NDArray[np.float64]:
+    def getWigner(self, regIdx: int, bound: float | None = None) -> npt.NDArray[np.float64]:
         # Vectorized on GPU — mirrors CUDA kernelBuildWignerRow + kernelFinalizeWigner.
         dim = self.register_dims[regIdx]
         dx = self.grid_steps[regIdx]
@@ -366,9 +366,14 @@ class TorchCvdv:
         phase_corr = torch.exp(torch.tensor(-1j * (dim - 1) * dx, dtype=self.dtype, device=self.device) * pj.to(self.dtype))
         # fft_results.T[k_fft] → shape (dim_jc, dim_i): result[jc,i] = fft_results[i, k_fft[jc]]
         wigner = (phase_corr[:, None] * fft_results.T[k_fft]).real * (dx / pi)
-        return wigner.cpu().numpy()
+        W = wigner.cpu().numpy()
+        if bound is None:
+            return W
+        x_vals = (np.arange(dim) - (dim - 1) / 2) * dx
+        p_vals = (np.arange(dim) - dim / 2) * dp
+        return W[np.ix_(np.abs(p_vals) <= bound, np.abs(x_vals) <= bound)]
 
-    def getHusimiQ(self, regIdx: int) -> npt.NDArray[np.float64]:
+    def getHusimiQ(self, regIdx: int, bound: float | None = None) -> npt.NDArray[np.float64]:
         # Vectorized on GPU — mirrors CUDA kernelBuildHusimiRows + kernelFinalizeHusimi.
         dim = self.register_dims[regIdx]
         dx = self.grid_steps[regIdx]
@@ -390,7 +395,13 @@ class TorchCvdv:
             accum = accum + torch.sum(torch.abs(H) ** 2, dim=0)
         k_fft = (torch.arange(dim, device=self.device) + dim // 2) % dim
         husimiQ = accum[:, k_fft].T / pi                       # (dim, dim)
-        return husimiQ.cpu().numpy()
+        Q = husimiQ.cpu().numpy()
+        if bound is None:
+            return Q
+        dp = 2 * pi / (dim * dx)
+        q_vals = (np.arange(dim) - (dim - 1) / 2) * dx
+        p_vals = (np.arange(dim) - dim / 2) * dp
+        return Q[np.ix_(np.abs(p_vals) <= bound, np.abs(q_vals) <= bound)]
 
     def _get_target_slices_gpu(self, regIdx: int):
         """Return all target-register slices as a 2-D GPU tensor with shape (num_slices, dim)."""

@@ -21,7 +21,7 @@ endif()
 add_library(cvdv SHARED
     src/cuda/context.cu
     src/cuda/gates.cu
-    src/cuda/cv.cu
+    src/cuda/bosonic.cu
     src/cuda/measure.cu
 )
 

@@ -58,6 +58,8 @@ def _compile_and_load() -> ctypes.CDLL:
     lib.cvdvFtP2Q.argtypes = [ctypes.c_void_p, c_int]
     lib.cvdvGetWigner.argtypes = [ctypes.c_void_p, c_int, POINTER(c_double)]
     lib.cvdvGetHusimiQ.argtypes = [ctypes.c_void_p, c_int, POINTER(c_double)]
+    lib.cvdvGetHusimiQOverlap.argtypes = [ctypes.c_void_p, c_int, POINTER(c_double)]
+    lib.cvdvGetHusimiQWigner.argtypes = [ctypes.c_void_p, c_int, POINTER(c_double)]
     lib.cvdvMeasureMultiple.argtypes = [ctypes.c_void_p, POINTER(c_int), c_int, POINTER(c_double)]
     lib.cvdvMeasureMultiple.restype = None
     lib.cvdvGetState.argtypes = [ctypes.c_void_p, POINTER(c_double), POINTER(c_double)]
@@ -181,17 +183,31 @@ class CudaCvdv:
     def getPhotonNumber(self, regIdx: int) -> float:
         return float(_get_lib().cvdvGetPhotonNumber(self.ctx, c_int(regIdx)))
 
-    def getWigner(self, regIdx: int) -> npt.NDArray[np.float64]:
+    def getWigner(self, regIdx: int, bound: float | None = None) -> npt.NDArray[np.float64]:
         dim = self.register_dims[regIdx]
         out = np.zeros(dim * dim, dtype=np.float64)
         _get_lib().cvdvGetWigner(self.ctx, regIdx, out.ctypes.data_as(POINTER(c_double)))
-        return out.reshape((dim, dim))
+        W = out.reshape((dim, dim))
+        if bound is None:
+            return W
+        dx = self.grid_steps[regIdx]
+        dp = np.pi / (dim * dx)
+        x_vals = (np.arange(dim) - (dim - 1) / 2) * dx
+        p_vals = (np.arange(dim) - dim / 2) * dp
+        return W[np.ix_(np.abs(p_vals) <= bound, np.abs(x_vals) <= bound)]
 
-    def getHusimiQ(self, regIdx: int) -> npt.NDArray[np.float64]:
+    def getHusimiQ(self, regIdx: int, bound: float | None = None) -> npt.NDArray[np.float64]:
         dim = self.register_dims[regIdx]
         out = np.zeros(dim * dim, dtype=np.float64)
         _get_lib().cvdvGetHusimiQ(self.ctx, regIdx, out.ctypes.data_as(POINTER(c_double)))
-        return out.reshape((dim, dim))
+        Q = out.reshape((dim, dim))
+        if bound is None:
+            return Q
+        dx = self.grid_steps[regIdx]
+        dp = 2 * np.pi / (dim * dx)
+        q_vals = (np.arange(dim) - (dim - 1) / 2) * dx
+        p_vals = (np.arange(dim) - dim / 2) * dp
+        return Q[np.ix_(np.abs(p_vals) <= bound, np.abs(q_vals) <= bound)]
 
     def plotWigner(self, regIdx: int, bound: float = 5.0, cmap: str = "RdBu", figsize: Tuple[int, int] = (7, 6), show: bool = True) -> Tuple[Any, Any]:
         import matplotlib.pyplot as plt

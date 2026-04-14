@@ -35,18 +35,38 @@ __global__ void kernelBuildWignerRow(cuDoubleComplex* dBuf, const cuDoubleComple
     dBuf[i * cvDim + k] = sum;
 }
 
-// Apply phase correction + fftshift, write N×N output
+// Apply phase correction + fftshift, write N×N real output
 __global__ void kernelFinalizeWigner(double* wigner, const cuDoubleComplex* dFFTOut, int cvDim,
                                      double dx) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= cvDim * cvDim) return;
-    int jc = tid / cvDim;  // centered p-index (row of output)
-    int i = tid % cvDim;   // x-index (col of output)
+    int jc = tid / cvDim;
+    int i = tid % cvDim;
     int k_fft = (jc + cvDim / 2) % cvDim;
     cuDoubleComplex G = dFFTOut[i * cvDim + k_fft];
     double pj = (jc - cvDim / 2.0) * PI / ((double)cvDim * dx);
     double phase = -pj * (cvDim - 1) * dx;
-    wigner[tid] = (cuCreal(G) * cos(phase) - cuCimag(G) * sin(phase)) * dx / PI;
+    double s, c;
+    sincos(phase, &s, &c);
+    wigner[tid] = (cuCreal(G) * c - cuCimag(G) * s) * dx / PI;
+}
+
+// Fused: phase correction + fftshift → complex output (for Husimi FFT2 route)
+// Avoids separate kernelRealToComplex pass
+__global__ void kernelFinalizeWignerComplex(cuDoubleComplex* out, const cuDoubleComplex* dFFTOut,
+                                            int cvDim, double dx) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= cvDim * cvDim) return;
+    int jc = tid / cvDim;
+    int i = tid % cvDim;
+    int k_fft = (jc + cvDim / 2) % cvDim;
+    cuDoubleComplex G = dFFTOut[i * cvDim + k_fft];
+    double pj = (jc - cvDim / 2.0) * PI / ((double)cvDim * dx);
+    double phase = -pj * (cvDim - 1) * dx;
+    double s, c;
+    sincos(phase, &s, &c);
+    double w = (cuCreal(G) * c - cuCimag(G) * s) * dx / PI;
+    out[tid] = make_cuDoubleComplex(w, 0.0);
 }
 
 // ============ Native Grid Husimi Q Function ============
@@ -127,5 +147,41 @@ __global__ void kernelAccumHusimiPowerChunked(
     for (int s = 0; s < chunkSize; s++)
         sum += absSquare(dBuf[(size_t)s * N2 + pos]);
     dAccum[pos] += sum;
+}
+
+__global__ void kernelRealToComplex(const double* in, cuDoubleComplex* out, int n2) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= n2) return;
+    out[tid] = make_cuDoubleComplex(in[tid], 0.0);
+}
+
+__global__ void kernelApplyHusimiGaussian2DFreq(cuDoubleComplex* spec, int N, double dx) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int n2 = N * N;
+    if (tid >= n2) return;
+
+    int pIdx = tid / N;
+    int qIdx = tid % N;
+    int kq = (qIdx <= N / 2) ? qIdx : (qIdx - N);
+    int kp = (pIdx <= N / 2) ? pIdx : (pIdx - N);
+
+    const double PI_LOCAL = 3.14159265358979323846;
+    double Lq = (double)N * dx;
+    double dp = PI_LOCAL / ((double)N * dx);
+    double Lp = (double)N * dp;
+    double wq = 2.0 * PI_LOCAL * (double)kq / Lq;
+    double wp = 2.0 * PI_LOCAL * (double)kp / Lp;
+    double g = exp(-0.25 * (wq * wq + wp * wp));
+
+    cuDoubleComplex v = spec[tid];
+    spec[tid] = make_cuDoubleComplex(cuCreal(v) * g, cuCimag(v) * g);
+}
+
+__global__ void kernelComplexToRealNormalizedClamp(const cuDoubleComplex* in, double* out, int n2,
+                                                   double normFactor) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= n2) return;
+    double v = cuCreal(in[tid]) / normFactor;
+    out[tid] = (v < 0.0) ? 0.0 : v;
 }
 
