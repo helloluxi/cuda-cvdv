@@ -50,6 +50,8 @@ void   cvdvGetHusimiQ(CVDVContext* ctx, int regIdx, double* husimiOut);
 
 void   cvdvMeasureMultiple(CVDVContext* ctx, const int* regIdxs, int numRegs,
                             double* probsOut);
+void   cvdvMeasureMultipleCT(CVDVContext* ctx, const int* regIdxs, int numRegs,
+                              double* probsOut);
 void   cvdvGetState(CVDVContext* ctx, double* realOut, double* imagOut);
 double cvdvGetNorm(CVDVContext* ctx);
 void   cvdvGetFidelity(CVDVContext* ctx, void** devicePtrs, int numReg, double* fidOut);

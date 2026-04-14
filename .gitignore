@@ -48,7 +48,12 @@ AGENTS.md
 .windsurf
 .cursor
 
+# Benchmarks output
+current/
+workload
+
 # Logs and Temporary Files
+.cache/
 *.log
 *.tmp
 *.temp

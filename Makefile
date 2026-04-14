@@ -1,4 +1,5 @@
-.PHONY: build test clean help bench bench-state-transfer bench-api bench-kernel save-bench
+.PHONY: build test clean help bench bench-state-transfer bench-api bench-kernel \
+       bench-measure bench-measure-ct profile-measure nsys-profile-measure save-bench
 
 help:
 	@echo "CVDV Quantum Simulator - Build & Test Commands"
@@ -9,7 +10,15 @@ help:
 	@echo "  make bench-state-transfer - Run state-transfer benchmark"
 	@echo "  make bench-api           - Run C API timing benchmark"
 	@echo "  make bench-kernel        - Run Nsight kernel profiling"
+	@echo "  make bench-measure            - Run measure-kernel benchmark (custom)"
+	@echo "  make bench-measure-ct         - Run measure-kernel benchmark (cuTENSOR)"
+	@echo "  make profile-measure          - NCU targeted sections (fast, 4 passes)"
+	@echo "  make nsys-profile-measure     - nsys timeline: CPU+GPU CUDA API timing"
 	@echo "  make bench-all           - Run all benchmark tasks"
+	@echo ""
+	@echo "Add new kernel targets: bench-<name> and profile-<name>"
+	@echo "  bench-<name>:    python benchmarks/<name>/bench_<name>.py"
+	@echo "  profile-<name>:  ncu ... python benchmarks/<name>/bench_<name>.py"
 	@echo "  make help     - Show this help message"
 
 build:
@@ -39,6 +48,57 @@ bench-api:
 
 bench-kernel:
 	@bash ./benchmarks/kernel_profiling/run.sh
+
+bench-measure: build
+	@python benchmarks/measure_kernels/bench_measure.py
+
+bench-measure-ct: build
+	@python benchmarks/measure_kernels/bench_measure.py --cutensor
+
+# Targeted NCU profile (4 passes, fast — use for roofline classification first)
+profile-measure: build
+	@mkdir -p benchmarks/measure_kernels/current
+	ncu --target-processes all \
+	    --launch-skip $(or $(SKIP),3) --launch-count 1 \
+	    --section SpeedOfLight --section Occupancy \
+	    --section MemoryWorkloadAnalysis --section SchedulerStatistics \
+	    -o benchmarks/measure_kernels/current/ncu_targeted -f \
+	    python benchmarks/measure_kernels/profile_measure.py
+	@echo ""
+	@echo "── Roofline summary ──────────────────────────────────────────"
+	ncu --import benchmarks/measure_kernels/current/ncu_targeted.ncu-rep \
+	    --print-summary per-kernel 2>/dev/null || true
+	@echo ""
+	@echo "To escalate to full profile:"
+	@echo "  ncu --set full --kernel-name 'regex:kernelAbsSquareReduce' \\"
+	@echo "      -o benchmarks/measure_kernels/current/ncu_full \\"
+	@echo "      python benchmarks/measure_kernels/profile_measure.py"
+	@echo "View: ncu-ui benchmarks/measure_kernels/current/ncu_targeted.ncu-rep"
+
+# nsys CUDA timeline profile (cheap, shows CPU/GPU overlap, memcpy, memset gaps)
+nsys-profile-measure: build
+	@mkdir -p benchmarks/measure_kernels/current
+	nsys profile \
+	    --gpu-metrics-devices=all \
+	    --trace=cuda,nvtx \
+	    -o benchmarks/measure_kernels/current/nsys_trace -f true \
+	    python benchmarks/measure_kernels/profile_measure.py
+	@echo ""
+	@echo "── GPU kernel summary ────────────────────────────────────────"
+	nsys stats --report cuda_gpu_kern_sum \
+	    benchmarks/measure_kernels/current/nsys_trace.nsys-rep 2>/dev/null | \
+	    grep -v "^Generating\|^Processing\|^NOTICE\|It is assumed\|Consider" || true
+	@echo ""
+	@echo "── CUDA API summary ──────────────────────────────────────────"
+	nsys stats --report cuda_api_sum \
+	    benchmarks/measure_kernels/current/nsys_trace.nsys-rep 2>/dev/null | \
+	    grep -v "^Generating\|^Processing\|^NOTICE\|It is assumed\|Consider" || true
+	@echo ""
+	@echo "── GPU memory op summary ─────────────────────────────────────"
+	nsys stats --report cuda_gpu_mem_time_sum \
+	    benchmarks/measure_kernels/current/nsys_trace.nsys-rep 2>/dev/null | \
+	    grep -v "^Generating\|^Processing\|^NOTICE\|It is assumed\|Consider" || true
+	@echo "View: nsys-ui benchmarks/measure_kernels/current/nsys_trace.nsys-rep"
 
 save-bench:
 	@bash ./benchmarks/api_timing/save.sh

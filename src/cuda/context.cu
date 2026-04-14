@@ -5,12 +5,13 @@
 extern "C" {
 
 CVDVContext* cvdvCreate(int numReg, int* numQubits) {
-    CVDVContext* ctx;
-    checkCudaErrors(cudaMallocManaged(&ctx, sizeof(CVDVContext)));
-    memset(ctx, 0, sizeof(CVDVContext));
+    CVDVContext* ctx = new CVDVContext{};  // CPU-only struct, never accessed by GPU kernels
     ctx->gQbts = nullptr;
     ctx->gFlwQbts = nullptr;
     ctx->gGridSteps = nullptr;
+    ctx->hQbts = nullptr;
+    ctx->hFlwQbts = nullptr;
+    ctx->hGridSteps = nullptr;
     ctx->gNumReg = 0;
     ctx->gTotalQbt = 0;
     ctx->ftPlans = nullptr;
@@ -22,10 +23,11 @@ CVDVContext* cvdvCreate(int numReg, int* numQubits) {
     ctx->hGCvDim = 0;
     ctx->hGDx = 0.0;
     ctx->hGValid = false;
-    ctx->ctHandleValid = false;
-    ctx->dMeasureProbs = nullptr;
     ctx->dMeasureOut = nullptr;
     ctx->measurePlanCache = nullptr;
+    ctx->ctHandleValid = false;
+    ctx->dMeasureProbs = nullptr;
+    ctx->measurePlanCacheCT = nullptr;
 
     // If no registers specified, return empty context
     if (numReg == 0 || numQubits == nullptr) {
@@ -35,37 +37,45 @@ CVDVContext* cvdvCreate(int numReg, int* numQubits) {
     // Allocate registers
     ctx->gNumReg = numReg;
 
-    // Allocate managed memory for register metadata
-    checkCudaErrors(cudaMallocManaged(&ctx->gQbts, numReg * sizeof(int)));
-    checkCudaErrors(cudaMallocManaged(&ctx->gFlwQbts, numReg * sizeof(int)));
-    checkCudaErrors(cudaMallocManaged(&ctx->gGridSteps, numReg * sizeof(double)));
+    // Allocate host + device copies of register metadata.
+    // Host arrays (hQbts etc.) for CPU-side reads; device arrays (gQbts etc.)
+    // for GPU kernel parameters.  No managed memory — eliminates UM runtime
+    // overhead that was adding ~2ms per CUDA API call.
+    size_t qbtsBytes  = numReg * sizeof(int);
+    size_t stepsBytes = numReg * sizeof(double);
+    ctx->hQbts      = new int[numReg];
+    ctx->hFlwQbts   = new int[numReg];
+    ctx->hGridSteps = new double[numReg];
+    checkCudaErrors(cudaMalloc(&ctx->gQbts,      qbtsBytes));
+    checkCudaErrors(cudaMalloc(&ctx->gFlwQbts,   qbtsBytes));
+    checkCudaErrors(cudaMalloc(&ctx->gGridSteps,  stepsBytes));
 
-    // Initialize metadata for each register
+    // Initialize metadata on host
     ctx->gTotalQbt = 0;
     for (int i = 0; i < numReg; i++) {
-        ctx->gQbts[i] = numQubits[i];
+        ctx->hQbts[i] = numQubits[i];
         ctx->gTotalQbt += numQubits[i];
-
-        // Calculate grid step using formula: dx = sqrt(2 * pi / regDim)
         size_t registerDim = 1 << numQubits[i];
-        ctx->gGridSteps[i] = sqrt(2.0 * PI / registerDim);
+        ctx->hGridSteps[i] = sqrt(2.0 * PI / registerDim);
     }
-
-    // Compute following qubit counts (sum of qubits after each register)
     for (int i = 0; i < numReg; i++) {
         int followQubits = 0;
-        for (int j = i + 1; j < numReg; j++) {
+        for (int j = i + 1; j < numReg; j++)
             followQubits += numQubits[j];
-        }
-        ctx->gFlwQbts[i] = followQubits;
+        ctx->hFlwQbts[i] = followQubits;
     }
+
+    // Upload to device
+    checkCudaErrors(cudaMemcpy(ctx->gQbts,      ctx->hQbts,      qbtsBytes,  cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(ctx->gFlwQbts,   ctx->hFlwQbts,   qbtsBytes,  cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(ctx->gGridSteps,  ctx->hGridSteps, stepsBytes, cudaMemcpyHostToDevice));
 
     // Build per-register cuFFT plans (parameters are fully determined now).
     ctx->ftPlans = (cufftHandle*)malloc(numReg * sizeof(cufftHandle));
     size_t totalSize = (size_t)1 << ctx->gTotalQbt;
     for (int i = 0; i < numReg; i++) {
-        int n = 1 << ctx->gQbts[i];
-        size_t regStride = (size_t)1 << ctx->gFlwQbts[i];
+        int n = 1 << ctx->hQbts[i];
+        size_t regStride = (size_t)1 << ctx->hFlwQbts[i];
         cufftResult planRes;
         if (regStride == 1) {
             int batch = (int)(totalSize / n);
@@ -123,6 +133,16 @@ void cvdvDestroy(CVDVContext* ctx) {
     if (ctx->measurePlanCache != nullptr) {
         auto* cache = static_cast<std::map<std::vector<int>, MeasurePlan>*>(ctx->measurePlanCache);
         for (auto& [key, mp] : *cache) {
+            if (mp.dSelQbts)    cudaFree(mp.dSelQbts);
+            if (mp.dSelFlwQbts) cudaFree(mp.dSelFlwQbts);
+            if (mp.dOutStrides) cudaFree(mp.dOutStrides);
+        }
+        delete cache;
+        ctx->measurePlanCache = nullptr;
+    }
+    if (ctx->measurePlanCacheCT != nullptr) {
+        auto* cache = static_cast<std::map<std::vector<int>, MeasurePlanCT>*>(ctx->measurePlanCacheCT);
+        for (auto& [key, mp] : *cache) {
             if (mp.dWorkspace) cudaFree(mp.dWorkspace);
             cutensorDestroyPlan(mp.plan);
             cutensorDestroyPlanPreference(mp.planPref);
@@ -131,7 +151,7 @@ void cvdvDestroy(CVDVContext* ctx) {
             cutensorDestroyTensorDescriptor(mp.descOut);
         }
         delete cache;
-        ctx->measurePlanCache = nullptr;
+        ctx->measurePlanCacheCT = nullptr;
     }
     if (ctx->ctHandleValid) {
         cutensorDestroy(ctx->ctHandle);
@@ -146,21 +166,15 @@ void cvdvDestroy(CVDVContext* ctx) {
         ctx->dMeasureOut = nullptr;
     }
 
-    // Free managed memory
-    if (ctx->gQbts != nullptr) {
-        checkCudaErrors(cudaFree(ctx->gQbts));
-        ctx->gQbts = nullptr;
-    }
-    if (ctx->gFlwQbts != nullptr) {
-        checkCudaErrors(cudaFree(ctx->gFlwQbts));
-        ctx->gFlwQbts = nullptr;
-    }
-    if (ctx->gGridSteps != nullptr) {
-        checkCudaErrors(cudaFree(ctx->gGridSteps));
-        ctx->gGridSteps = nullptr;
-    }
+    // Free device + host register metadata
+    if (ctx->gQbts)      { cudaFree(ctx->gQbts);      ctx->gQbts = nullptr; }
+    if (ctx->gFlwQbts)   { cudaFree(ctx->gFlwQbts);   ctx->gFlwQbts = nullptr; }
+    if (ctx->gGridSteps) { cudaFree(ctx->gGridSteps);  ctx->gGridSteps = nullptr; }
+    delete[] ctx->hQbts;      ctx->hQbts = nullptr;
+    delete[] ctx->hFlwQbts;   ctx->hFlwQbts = nullptr;
+    delete[] ctx->hGridSteps; ctx->hGridSteps = nullptr;
 
-    cudaFree(ctx);
+    delete ctx;
 }
 
 // Build the full tensor-product state from per-register device pointers.
@@ -183,7 +197,7 @@ void cvdvInitFromSeparable(CVDVContext* ctx, void** devicePtrs, int numReg) {
     // Download each register to host
     cuDoubleComplex** hTempRegs = new cuDoubleComplex*[numReg];
     for (int i = 0; i < numReg; i++) {
-        size_t regDim = 1 << ctx->gQbts[i];
+        size_t regDim = 1 << ctx->hQbts[i];
         hTempRegs[i] = new cuDoubleComplex[regDim];
         checkCudaErrors(cudaMemcpy(hTempRegs[i], reinterpret_cast<cuDoubleComplex*>(devicePtrs[i]),
                                    regDim * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost));
@@ -195,7 +209,7 @@ void cvdvInitFromSeparable(CVDVContext* ctx, void** devicePtrs, int numReg) {
         cuDoubleComplex product = make_cuDoubleComplex(1.0, 0.0);
         size_t idx = globalIdx;
         for (int reg = numReg - 1; reg >= 0; reg--) {
-            size_t regDim = 1 << ctx->gQbts[reg];
+            size_t regDim = 1 << ctx->hQbts[reg];
             size_t localIdx = idx % regDim;
             idx /= regDim;
             product = cuCmul(product, hTempRegs[reg][localIdx]);
@@ -221,18 +235,12 @@ void cvdvFree(CVDVContext* ctx) {
         cudaFree(ctx->dState);
         ctx->dState = nullptr;
     }
-    if (ctx->gQbts != nullptr) {
-        cudaFree(ctx->gQbts);
-        ctx->gQbts = nullptr;
-    }
-    if (ctx->gFlwQbts != nullptr) {
-        cudaFree(ctx->gFlwQbts);
-        ctx->gFlwQbts = nullptr;
-    }
-    if (ctx->gGridSteps != nullptr) {
-        cudaFree(ctx->gGridSteps);
-        ctx->gGridSteps = nullptr;
-    }
+    if (ctx->gQbts)      { cudaFree(ctx->gQbts);      ctx->gQbts = nullptr; }
+    if (ctx->gFlwQbts)   { cudaFree(ctx->gFlwQbts);   ctx->gFlwQbts = nullptr; }
+    if (ctx->gGridSteps) { cudaFree(ctx->gGridSteps);  ctx->gGridSteps = nullptr; }
+    delete[] ctx->hQbts;      ctx->hQbts = nullptr;
+    delete[] ctx->hFlwQbts;   ctx->hFlwQbts = nullptr;
+    delete[] ctx->hGridSteps; ctx->hGridSteps = nullptr;
     ctx->gNumReg = 0;
     ctx->gTotalQbt = 0;
 }
@@ -261,31 +269,19 @@ size_t cvdvGetTotalSize(CVDVContext* ctx) {
 }
 
 void cvdvGetRegisterInfo(CVDVContext* ctx, int* qubitCountsOut, double* gridStepsOut) {
-    if (!ctx) return;
-    if (ctx->gNumReg == 0) return;
-
-    checkCudaErrors(cudaMemcpy(qubitCountsOut, ctx->gQbts, ctx->gNumReg * sizeof(int),
-                                    cudaMemcpyDeviceToHost));
-    checkCudaErrors(cudaMemcpy(gridStepsOut, ctx->gGridSteps, ctx->gNumReg * sizeof(double),
-                                    cudaMemcpyDeviceToHost));
+    if (!ctx || ctx->gNumReg == 0) return;
+    memcpy(qubitCountsOut, ctx->hQbts, ctx->gNumReg * sizeof(int));
+    memcpy(gridStepsOut, ctx->hGridSteps, ctx->gNumReg * sizeof(double));
 }
 
 int cvdvGetRegisterDim(CVDVContext* ctx, int regIdx) {
-    if (!ctx) return -1;
-    if (regIdx < 0 || regIdx >= ctx->gNumReg) return -1;
-
-    int qubit_count;
-    checkCudaErrors(cudaMemcpy(&qubit_count, ctx->gQbts + regIdx, sizeof(int), cudaMemcpyDeviceToHost));
-    return 1 << qubit_count;
+    if (!ctx || regIdx < 0 || regIdx >= ctx->gNumReg) return -1;
+    return 1 << ctx->hQbts[regIdx];
 }
 
 double cvdvGetRegisterDx(CVDVContext* ctx, int regIdx) {
-    if (!ctx) return -1.0;
-    if (regIdx < 0 || regIdx >= ctx->gNumReg) return -1.0;
-
-    double dx;
-    checkCudaErrors(cudaMemcpy(&dx, ctx->gGridSteps + regIdx, sizeof(double), cudaMemcpyDeviceToHost));
-    return dx;
+    if (!ctx || regIdx < 0 || regIdx >= ctx->gNumReg) return -1.0;
+    return ctx->hGridSteps[regIdx];
 }
 
 }  // extern "C"

@@ -304,10 +304,24 @@ def run_bench(lib, cuda):
     rec('cvdvGetWigner',               lib.cvdvGetWigner,              c_int(1), buf)
     rec('cvdvGetHusimiQ',              lib.cvdvGetHusimiQ,             c_int(1), buf)
 
-    dim = 1 << 10
-    probs = (c_double * dim)()
-    regs_c = (c_int * 1)(1)
-    rec('cvdvMeasureMultiple',         lib.cvdvMeasureMultiple,        regs_c, c_int(1), probs)
+    # ── MeasureMultiple: sweep over register selections ─────────────────
+    # Single-register measurements (each register has different qubit count)
+    for ri, nq in enumerate([1, 10, 10]):
+        dim = 1 << nq
+        probs = (c_double * dim)()
+        regs_c = (c_int * 1)(ri)
+        rec(f'cvdvMeasureMultiple_reg{ri}', lib.cvdvMeasureMultiple, regs_c, c_int(1), probs)
+
+    # Multi-register measurements — use numpy for large buffers (heap, not stack)
+    probs2 = np.zeros(1 << 20, dtype=np.float64)   # reg1+reg2: 1024*1024 = 1M
+    regs2 = (c_int * 2)(1, 2)
+    rec('cvdvMeasureMultiple_reg1+2',  lib.cvdvMeasureMultiple, regs2, c_int(2),
+        probs2.ctypes.data_as(POINTER(c_double)))
+
+    probs3 = np.zeros((1<<1)*(1<<10)*(1<<10), dtype=np.float64)  # reg0+1+2: 2*1024*1024 = 2M
+    regs3 = (c_int * 3)(0, 1, 2)
+    rec('cvdvMeasureMultiple_reg0+1+2', lib.cvdvMeasureMultiple, regs3, c_int(3),
+        probs3.ctypes.data_as(POINTER(c_double)))
 
     return results
 

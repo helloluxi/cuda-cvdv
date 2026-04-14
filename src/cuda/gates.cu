@@ -25,8 +25,8 @@ void cvdvFtQ2P(CVDVContext* ctx, int regIdx) {
 
     size_t totalSize = 1 << ctx->gTotalQbt;
     int grid = (totalSize + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
-    size_t regDim = 1 << ctx->gQbts[regIdx];
-    double dx = ctx->gGridSteps[regIdx];
+    size_t regDim = 1 << ctx->hQbts[regIdx];
+    double dx = ctx->hGridSteps[regIdx];
 
     // Step 1: Pre-phase correction: exp(i*π(N-1)/N * j)
     // In position representation: exp(i*π(N-1)/(N*dx) * x)
@@ -35,7 +35,7 @@ void cvdvFtQ2P(CVDVContext* ctx, int regIdx) {
                                             ctx->gGridSteps, ctx->gFlwQbts, phaseCoeff);
 
     // Step 2: Forward FFT — use cached plan
-    size_t regStride = 1 << ctx->gFlwQbts[regIdx];
+    size_t regStride = 1 << ctx->hFlwQbts[regIdx];
     cufftHandle plan = ctx->ftPlans[regIdx];
 
     if (regStride == 1) {
@@ -46,11 +46,11 @@ void cvdvFtQ2P(CVDVContext* ctx, int regIdx) {
         }
     } else {
         // Strided case: loop over outer blocks (plan covers one block at a time)
-        size_t regBlockSize = regStride << ctx->gQbts[regIdx];
+        size_t regBlockSize = regStride << ctx->hQbts[regIdx];
         size_t outerDim = totalSize / regBlockSize;
         for (size_t o = 0; o < outerDim; o++) {
             cuDoubleComplex* blockStart =
-                ctx->dState + (o << (ctx->gFlwQbts[regIdx] + ctx->gQbts[regIdx]));
+                ctx->dState + (o << (ctx->hFlwQbts[regIdx] + ctx->hQbts[regIdx]));
             cufftResult result = cufftExecZ2Z(plan, blockStart, blockStart, CUFFT_FORWARD);
             if (result != CUFFT_SUCCESS) {
                 fprintf(stderr, "cuFFT forward execution failed: %d at block %zu\n", result, o);
@@ -89,8 +89,8 @@ void cvdvFtP2Q(CVDVContext* ctx, int regIdx) {
     // 4. Normalization: 1/√N
 
     int grid = ((1 << ctx->gTotalQbt) + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
-    size_t regDim = 1 << ctx->gQbts[regIdx];
-    double dx = ctx->gGridSteps[regIdx];
+    size_t regDim = 1 << ctx->hQbts[regIdx];
+    double dx = ctx->hGridSteps[regIdx];
 
     // Step 1: Pre-phase correction (negative phase): exp(-i*π(N-1)/N * j)
     // In momentum representation: exp(-i*π(N-1)/(N*dx) * p)
@@ -99,7 +99,7 @@ void cvdvFtP2Q(CVDVContext* ctx, int regIdx) {
                                             ctx->gGridSteps, ctx->gFlwQbts, phaseCoeff);
 
     // Step 2: Inverse FFT — use cached plan
-    size_t regStride = 1 << ctx->gFlwQbts[regIdx];
+    size_t regStride = 1 << ctx->hFlwQbts[regIdx];
     cufftHandle plan = ctx->ftPlans[regIdx];
 
     if (regStride == 1) {
@@ -109,11 +109,11 @@ void cvdvFtP2Q(CVDVContext* ctx, int regIdx) {
             exit(EXIT_FAILURE);
         }
     } else {
-        size_t regBlockSize = regStride << ctx->gQbts[regIdx];
+        size_t regBlockSize = regStride << ctx->hQbts[regIdx];
         size_t outerDim = (1 << ctx->gTotalQbt) / regBlockSize;
         for (size_t o = 0; o < outerDim; o++) {
             cuDoubleComplex* blockStart =
-                ctx->dState + (o << (ctx->gFlwQbts[regIdx] + ctx->gQbts[regIdx]));
+                ctx->dState + (o << (ctx->hFlwQbts[regIdx] + ctx->hQbts[regIdx]));
             cufftResult result = cufftExecZ2Z(plan, blockStart, blockStart, CUFFT_INVERSE);
             if (result != CUFFT_SUCCESS) {
                 fprintf(stderr, "cuFFT inverse execution failed: %d at block %zu\n", result, o);
@@ -271,7 +271,7 @@ void cvdvConditionalParity(CVDVContext* ctx, int targetReg, int ctrlReg, int ctr
         fprintf(stderr, "Invalid control register index: %d\n", ctrlReg);
         return;
     }
-    if (ctrlQubit < 0 || ctrlQubit >= ctx->gQbts[ctrlReg]) {
+    if (ctrlQubit < 0 || ctrlQubit >= ctx->hQbts[ctrlReg]) {
         fprintf(stderr, "Invalid control qubit index: %d\n", ctrlQubit);
         return;
     }
@@ -289,7 +289,7 @@ void cvdvSwapRegisters(CVDVContext* ctx, int reg1, int reg2) {
         fprintf(stderr, "Invalid register indices: %d, %d\n", reg1, reg2);
         return;
     }
-    if (ctx->gQbts[reg1] != ctx->gQbts[reg2]) {
+    if (ctx->hQbts[reg1] != ctx->hQbts[reg2]) {
         fprintf(stderr, "SWAP requires registers with same number of qubits\n");
         return;
     }
@@ -374,7 +374,7 @@ void cvdvConditionalRotation(CVDVContext* ctx, int targetReg, int ctrlReg, int c
         fprintf(stderr, "Invalid control register index: %d\n", ctrlReg);
         return;
     }
-    if (ctrlQubit < 0 || ctrlQubit >= ctx->gQbts[ctrlReg]) {
+    if (ctrlQubit < 0 || ctrlQubit >= ctx->hQbts[ctrlReg]) {
         fprintf(stderr, "Invalid control qubit index: %d\n", ctrlQubit);
         return;
     }
@@ -446,7 +446,7 @@ void cvdvConditionalSqueeze(CVDVContext* ctx, int targetReg, int ctrlReg, int ct
         fprintf(stderr, "Invalid control register index: %d\n", ctrlReg);
         return;
     }
-    if (ctrlQubit < 0 || ctrlQubit >= ctx->gQbts[ctrlReg]) {
+    if (ctrlQubit < 0 || ctrlQubit >= ctx->hQbts[ctrlReg]) {
         fprintf(stderr, "Invalid control qubit index: %d\n", ctrlQubit);
         return;
     }

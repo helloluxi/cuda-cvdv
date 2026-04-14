@@ -8,8 +8,8 @@ extern "C" {
 void cvdvGetWigner(CVDVContext* ctx, int regIdx, double* wignerOut) {
     if (!ctx) return;
     if (regIdx < 0 || regIdx >= ctx->gNumReg) return;
-    size_t cvDim = 1 << ctx->gQbts[regIdx];
-    double dx = ctx->gGridSteps[regIdx];
+    size_t cvDim = 1 << ctx->hQbts[regIdx];
+    double dx = ctx->hGridSteps[regIdx];
 
     cuDoubleComplex* dBuf;
     checkCudaErrors(cudaMalloc(&dBuf, cvDim * cvDim * sizeof(cuDoubleComplex)));
@@ -49,9 +49,9 @@ void cvdvGetWigner(CVDVContext* ctx, int regIdx, double* wignerOut) {
 void cvdvGetHusimiQ(CVDVContext* ctx, int regIdx, double* husimiOut) {
     if (!ctx) return;
     if (regIdx < 0 || regIdx >= ctx->gNumReg) return;
-    int cvDim = 1 << ctx->gQbts[regIdx];
-    double dx = ctx->gGridSteps[regIdx];
-    int sliceCount = 1 << (ctx->gTotalQbt - ctx->gQbts[regIdx]);
+    int cvDim = 1 << ctx->hQbts[regIdx];
+    double dx = ctx->hGridSteps[regIdx];
+    int sliceCount = 1 << (ctx->gTotalQbt - ctx->hQbts[regIdx]);
 
     // --- Compute chunk size: largest power-of-2 that keeps dBuf ≤ 16 MB ---
     // 16 MB ≈ half the L2 cache on high-end GPUs, so fill→IFFT→accum stay L2-resident.
