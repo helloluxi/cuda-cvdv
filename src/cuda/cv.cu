@@ -19,20 +19,14 @@ void cvdvGetWigner(CVDVContext* ctx, int regIdx, double* wignerOut) {
                                                      ctx->gNumReg, ctx->gQbts, ctx->gFlwQbts);
     checkCudaErrors(cudaDeviceSynchronize());
 
-    // Fixed plan: batch = cvDim rows (only recreated when cvDim changes)
-    if (!ctx->wPlanValid || ctx->wPlanCvDim != (int)cvDim) {
-        if (ctx->wPlanValid) cufftDestroy(ctx->wPlan);
-        cufftResult planRes = cufftPlan1d(&ctx->wPlan, cvDim, CUFFT_Z2Z, cvDim);
-        if (planRes != CUFFT_SUCCESS) {
-            fprintf(stderr, "cuFFT wPlan creation failed: %d\n", planRes);
-            cudaFree(dBuf);
-            ctx->wPlanValid = false;
-            return;
-        }
-        ctx->wPlanCvDim = (int)cvDim;
-        ctx->wPlanValid = true;
+    cufftHandle wPlan;
+    cufftResult planRes = cufftPlan1d(&wPlan, cvDim, CUFFT_Z2Z, cvDim);
+    if (planRes != CUFFT_SUCCESS) {
+        fprintf(stderr, "cuFFT wPlan creation failed: %d\n", planRes);
+        cudaFree(dBuf);
+        return;
     }
-    cufftExecZ2Z(ctx->wPlan, dBuf, dBuf, CUFFT_INVERSE);
+    cufftExecZ2Z(wPlan, dBuf, dBuf, CUFFT_INVERSE);
     checkCudaErrors(cudaDeviceSynchronize());
 
     double* dWigner;
@@ -44,6 +38,7 @@ void cvdvGetWigner(CVDVContext* ctx, int regIdx, double* wignerOut) {
                                     cudaMemcpyDeviceToHost));
     cudaFree(dWigner);
     cudaFree(dBuf);
+    cufftDestroy(wPlan);
 }
 
 void cvdvGetHusimiQ(CVDVContext* ctx, int regIdx, double* husimiOut) {
@@ -64,33 +59,21 @@ void cvdvGetHusimiQ(CVDVContext* ctx, int regIdx, double* husimiOut) {
            (size_t)(chunkSize * 2) * bytesPerSlice <= CHUNK_BUF_BUDGET)
         chunkSize *= 2;
 
-    // --- Lazy G[k]: analytic Gaussian kernel in frequency domain ---
-    if (!ctx->hGValid || ctx->hGCvDim != cvDim || ctx->hGDx != dx) {
-        if (ctx->dHusimiG != nullptr) cudaFree(ctx->dHusimiG);
-        checkCudaErrors(cudaMalloc(&ctx->dHusimiG, cvDim * sizeof(cuDoubleComplex)));
-        int gGrid = (cvDim + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
-        kernelComputeHusimiG<<<gGrid, CUDA_BLOCK_SIZE>>>(ctx->dHusimiG, cvDim, dx);
-        checkCudaErrors(cudaDeviceSynchronize());
-        ctx->hGCvDim = cvDim;
-        ctx->hGDx    = dx;
-        ctx->hGValid = true;
-    }
+    cuDoubleComplex* dHusimiG = nullptr;
+    checkCudaErrors(cudaMalloc(&dHusimiG, cvDim * sizeof(cuDoubleComplex)));
+    int gGrid = (cvDim + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE;
+    kernelComputeHusimiG<<<gGrid, CUDA_BLOCK_SIZE>>>(dHusimiG, cvDim, dx);
+    checkCudaErrors(cudaDeviceSynchronize());
 
-    // --- Lazy batched plans: forward (batch=chunkSize) and inverse (batch=chunkSize*N) ---
-    if (!ctx->hBatchPlanValid || ctx->hBatchCvDim != cvDim || ctx->hBatchChunkSize != chunkSize) {
-        if (ctx->hBatchPlanValid) {
-            cufftDestroy(ctx->hBatchFwdPlan);
-            cufftDestroy(ctx->hBatchInvPlan);
-        }
-        cufftResult rf = cufftPlan1d(&ctx->hBatchFwdPlan, cvDim, CUFFT_Z2Z, chunkSize);
-        cufftResult ri = cufftPlan1d(&ctx->hBatchInvPlan, cvDim, CUFFT_Z2Z, chunkSize * cvDim);
-        if (rf != CUFFT_SUCCESS || ri != CUFFT_SUCCESS) {
-            fprintf(stderr, "cuFFT Husimi batch plan creation failed: %d %d\n", rf, ri);
-            return;
-        }
-        ctx->hBatchCvDim    = cvDim;
-        ctx->hBatchChunkSize = chunkSize;
-        ctx->hBatchPlanValid = true;
+    cufftHandle hBatchFwdPlan;
+    cufftHandle hBatchInvPlan;
+    cufftResult rf = cufftPlan1d(&hBatchFwdPlan, cvDim, CUFFT_Z2Z, chunkSize);
+    cufftResult ri = cufftPlan1d(&hBatchInvPlan, cvDim, CUFFT_Z2Z, chunkSize * cvDim);
+    if (rf != CUFFT_SUCCESS || ri != CUFFT_SUCCESS) {
+        fprintf(stderr, "cuFFT Husimi batch plan creation failed: %d %d\n", rf, ri);
+        if (rf == CUFFT_SUCCESS) cufftDestroy(hBatchFwdPlan);
+        if (ri == CUFFT_SUCCESS) cufftDestroy(hBatchInvPlan);
+        return;
     }
 
     // --- Per-call buffers ---
@@ -115,14 +98,14 @@ void cvdvGetHusimiQ(CVDVContext* ctx, int regIdx, double* husimiOut) {
             ctx->gQbts, ctx->gFlwQbts);
 
         // Step 2: batched forward FFT of all chunkSize slices at once
-        cufftExecZ2Z(ctx->hBatchFwdPlan, dChunkPsi, dChunkPsi, CUFFT_FORWARD);
+        cufftExecZ2Z(hBatchFwdPlan, dChunkPsi, dChunkPsi, CUFFT_FORWARD);
 
         // Step 3: fill circulant A[s, m, k] = Ψ_s[(m+k)%N] * G[k] for all (s, m, k)
         kernelFillHusimiABatched<<<gridChunkN2, CUDA_BLOCK_SIZE>>>(
-            dChunkBuf, dChunkPsi, ctx->dHusimiG, cvDim, chunkSize);
+            dChunkBuf, dChunkPsi, dHusimiG, cvDim, chunkSize);
 
         // Step 4: batched IFFT over k for each (s, m) → H_s[m, j]; batch = chunkSize * N
-        cufftExecZ2Z(ctx->hBatchInvPlan, dChunkBuf, dChunkBuf, CUFFT_INVERSE);
+        cufftExecZ2Z(hBatchInvPlan, dChunkBuf, dChunkBuf, CUFFT_INVERSE);
 
         // Step 5: reduce |H_s[m,j]|² over s in chunk and accumulate into dAccum[m*N+j]
         kernelAccumHusimiPowerChunked<<<gridN2, CUDA_BLOCK_SIZE>>>(dAccum, dChunkBuf, N2, chunkSize);
@@ -140,6 +123,9 @@ void cvdvGetHusimiQ(CVDVContext* ctx, int regIdx, double* husimiOut) {
     cudaFree(dAccum);
     cudaFree(dChunkBuf);
     cudaFree(dChunkPsi);
+    cudaFree(dHusimiG);
+    cufftDestroy(hBatchInvPlan);
+    cufftDestroy(hBatchFwdPlan);
 }
 
 }  // extern "C"

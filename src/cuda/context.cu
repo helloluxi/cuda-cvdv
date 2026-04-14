@@ -15,19 +15,6 @@ CVDVContext* cvdvCreate(int numReg, int* numQubits) {
     ctx->gNumReg = 0;
     ctx->gTotalQbt = 0;
     ctx->ftPlans = nullptr;
-    ctx->wPlanValid = false;
-    ctx->hBatchPlanValid = false;
-    ctx->hBatchCvDim = 0;
-    ctx->hBatchChunkSize = 0;
-    ctx->dHusimiG = nullptr;
-    ctx->hGCvDim = 0;
-    ctx->hGDx = 0.0;
-    ctx->hGValid = false;
-    ctx->dMeasureOut = nullptr;
-    ctx->measurePlanCache = nullptr;
-    ctx->ctHandleValid = false;
-    ctx->dMeasureProbs = nullptr;
-    ctx->measurePlanCacheCT = nullptr;
 
     // If no registers specified, return empty context
     if (numReg == 0 || numQubits == nullptr) {
@@ -116,54 +103,6 @@ void cvdvDestroy(CVDVContext* ctx) {
         }
         free(ctx->ftPlans);
         ctx->ftPlans = nullptr;
-    }
-
-    // Free Wigner/Husimi plans
-    if (ctx->wPlanValid) {
-        cufftDestroy(ctx->wPlan);
-    }
-    if (ctx->hBatchPlanValid) {
-        cufftDestroy(ctx->hBatchFwdPlan);
-        cufftDestroy(ctx->hBatchInvPlan);
-    }
-    if (ctx->dHusimiG != nullptr) {
-        cudaFree(ctx->dHusimiG);
-        ctx->dHusimiG = nullptr;
-    }
-    if (ctx->measurePlanCache != nullptr) {
-        auto* cache = static_cast<std::map<std::vector<int>, MeasurePlan>*>(ctx->measurePlanCache);
-        for (auto& [key, mp] : *cache) {
-            if (mp.dSelQbts)    cudaFree(mp.dSelQbts);
-            if (mp.dSelFlwQbts) cudaFree(mp.dSelFlwQbts);
-            if (mp.dOutStrides) cudaFree(mp.dOutStrides);
-        }
-        delete cache;
-        ctx->measurePlanCache = nullptr;
-    }
-    if (ctx->measurePlanCacheCT != nullptr) {
-        auto* cache = static_cast<std::map<std::vector<int>, MeasurePlanCT>*>(ctx->measurePlanCacheCT);
-        for (auto& [key, mp] : *cache) {
-            if (mp.dWorkspace) cudaFree(mp.dWorkspace);
-            cutensorDestroyPlan(mp.plan);
-            cutensorDestroyPlanPreference(mp.planPref);
-            cutensorDestroyOperationDescriptor(mp.opDesc);
-            cutensorDestroyTensorDescriptor(mp.descIn);
-            cutensorDestroyTensorDescriptor(mp.descOut);
-        }
-        delete cache;
-        ctx->measurePlanCacheCT = nullptr;
-    }
-    if (ctx->ctHandleValid) {
-        cutensorDestroy(ctx->ctHandle);
-        ctx->ctHandleValid = false;
-    }
-    if (ctx->dMeasureProbs != nullptr) {
-        cudaFree(ctx->dMeasureProbs);
-        ctx->dMeasureProbs = nullptr;
-    }
-    if (ctx->dMeasureOut != nullptr) {
-        cudaFree(ctx->dMeasureOut);
-        ctx->dMeasureOut = nullptr;
     }
 
     // Free device + host register metadata

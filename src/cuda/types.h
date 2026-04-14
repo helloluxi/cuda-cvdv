@@ -6,6 +6,7 @@
 #include <cutensor.h>
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <ctime>
 #include <cstdlib>
@@ -72,32 +73,6 @@ typedef struct CVDVContext {
     // runtime arg to cufftExecZ2Z).
     cufftHandle* ftPlans;
 
-    // Cached plans for Wigner/Husimi - simplified native grid only
-    cufftHandle wPlan;
-    int wPlanCvDim;
-    bool wPlanValid;
-    // Batched Husimi plans: forward FFT (batch=chunkSize) and inverse FFT (batch=chunkSize*N)
-    cufftHandle hBatchFwdPlan;
-    cufftHandle hBatchInvPlan;
-    int hBatchCvDim;
-    int hBatchChunkSize;
-    bool hBatchPlanValid;
-
-    // Cached analytic Gaussian kernel G[k] = FFT{g}[k] for Husimi
-    cuDoubleComplex* dHusimiG;
-    int hGCvDim;
-    double hGDx;
-    bool hGValid;
-
-    // Cached buffers for MeasureMultiple (lazy-init)
-    double* dMeasureOut;         // marginal output scratch, size = totalSize
-    void*   measurePlanCache;    // heap-allocated std::map<std::vector<int>, MeasurePlan>*
-
-    // cuTENSOR baseline path (cvdvMeasureMultipleCT)
-    cutensorHandle_t ctHandle;
-    bool ctHandleValid;
-    double* dMeasureProbs;       // |ψ|² scratch, size = totalSize
-    void*   measurePlanCacheCT;  // heap-allocated std::map<std::vector<int>, MeasurePlanCT>*
 } CVDVContext;
 #define CVDV_TYPES_INCLUDED
 
