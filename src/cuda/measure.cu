@@ -6,62 +6,55 @@
 
 // ── static helpers ───────────────────────────────────────────────────────────
 
-// Helper: build device pointer-of-pointers from a host array of numReg device
-// ptrs, run kernelComputeInnerProduct, reduce, free, and return the complex sum.
+using DeviceComplexVec = cudapp::CudaVector<cuDoubleComplex, cudapp::CudaDeviceArena>;
+using DeviceDoubleVec = cudapp::CudaVector<double, cudapp::CudaDeviceArena>;
+using DeviceIntVec = cudapp::CudaVector<int, cudapp::CudaDeviceArena>;
+using DevicePtrVec = cudapp::CudaVector<cuDoubleComplex*, cudapp::CudaDeviceArena>;
+using DeviceLongLongVec = cudapp::CudaVector<int64_t, cudapp::CudaDeviceArena>;
+
 static cuDoubleComplex runInnerProductKernel(CVDVContext* ctx, void** devicePtrs, int numReg) {
-    // Upload pointer array to device
-    cuDoubleComplex** dRegArrayPtrs;
-    checkCudaErrors(cudaMalloc(&dRegArrayPtrs, numReg * sizeof(cuDoubleComplex*)));
-    // Copy host-side pointer values (each is a device ptr) to device memory
-    checkCudaErrors(cudaMemcpy(dRegArrayPtrs, devicePtrs, numReg * sizeof(cuDoubleComplex*),
+    DevicePtrVec dRegArrayPtrs(numReg);
+    checkCudaErrors(cudaMemcpy(dRegArrayPtrs.data(), devicePtrs, numReg * sizeof(cuDoubleComplex*),
                                     cudaMemcpyHostToDevice));
 
     size_t totalSize = 1 << ctx->gTotalQbt;
     int numBlocks = (int)((totalSize + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE);
     numBlocks = min(numBlocks, 1024);
 
-    cuDoubleComplex* dPartialSums;
-    checkCudaErrors(cudaMalloc(&dPartialSums, numBlocks * sizeof(cuDoubleComplex)));
+    DeviceComplexVec dPartialSums(numBlocks);
 
     size_t sharedMemSize = CUDA_BLOCK_SIZE * sizeof(cuDoubleComplex);
     kernelComputeInnerProduct<<<numBlocks, CUDA_BLOCK_SIZE, sharedMemSize>>>(
-        dPartialSums, ctx->dState, dRegArrayPtrs, numReg, ctx->gQbts, ctx->gFlwQbts, totalSize);
+        dPartialSums.data(), ctx->dState(), dRegArrayPtrs.data(), numReg, ctx->gpQbts(), ctx->gpFlwQbts(), totalSize);
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
 
-    cuDoubleComplex* hPartialSums = new cuDoubleComplex[numBlocks];
-    checkCudaErrors(cudaMemcpy(hPartialSums, dPartialSums, numBlocks * sizeof(cuDoubleComplex),
+    std::vector<cuDoubleComplex> hPartialSums(numBlocks);
+    checkCudaErrors(cudaMemcpy(hPartialSums.data(), dPartialSums.data(), numBlocks * sizeof(cuDoubleComplex),
                                     cudaMemcpyDeviceToHost));
     cuDoubleComplex result = make_cuDoubleComplex(0.0, 0.0);
     for (int i = 0; i < numBlocks; i++) result = cuCadd(result, hPartialSums[i]);
 
-    delete[] hPartialSums;
-    checkCudaErrors(cudaFree(dPartialSums));
-    checkCudaErrors(cudaFree(dRegArrayPtrs));
     return result;
 }
 
-// Internal: compute <x²> for a register using parallel reduction
 static double computeExpectX2(CVDVContext* ctx, int regIdx) {
     size_t totalSize = 1ULL << ctx->gTotalQbt;
     int numBlocks = (int)((totalSize + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE);
     numBlocks = min(numBlocks, 1024);
 
-    double* dPartialSums;
-    checkCudaErrors(cudaMalloc(&dPartialSums, numBlocks * sizeof(double)));
+    DeviceDoubleVec dPartialSums(numBlocks);
 
-    kernelExpectX2<<<numBlocks, CUDA_BLOCK_SIZE>>>(dPartialSums, ctx->dState, totalSize, regIdx,
-                                                   ctx->gQbts, ctx->gGridSteps, ctx->gFlwQbts);
+    kernelExpectX2<<<numBlocks, CUDA_BLOCK_SIZE>>>(dPartialSums.data(), ctx->dState(), totalSize, regIdx,
+                                                   ctx->gpQbts(), ctx->gpGridSteps(), ctx->gpFlwQbts());
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
 
-    double* hPartialSums = new double[numBlocks];
-    checkCudaErrors(cudaMemcpy(hPartialSums, dPartialSums, numBlocks * sizeof(double),
+    std::vector<double> hPartialSums(numBlocks);
+    checkCudaErrors(cudaMemcpy(hPartialSums.data(), dPartialSums.data(), numBlocks * sizeof(double),
                                     cudaMemcpyDeviceToHost));
     double result = 0.0;
     for (int i = 0; i < numBlocks; i++) result += hPartialSums[i];
-    delete[] hPartialSums;
-    checkCudaErrors(cudaFree(dPartialSums));
     return result;
 }
 
@@ -80,16 +73,14 @@ void cvdvMeasureMultiple(CVDVContext* ctx, const int* regIdxs, int numRegs, doub
 
     size_t totalSize = (size_t)1 << ctx->gTotalQbt;
 
-    // Per-call output scratch buffer (sized to totalSize — worst-case output)
-    double* dMeasureOut = nullptr;
-    checkCudaErrors(cudaMalloc(&dMeasureOut, totalSize * sizeof(double)));
+    DeviceDoubleVec dMeasureOut(totalSize);
 
     std::vector<int> qbts(ctx->gNumReg), flwQbts(ctx->gNumReg);
-    memcpy(qbts.data(), ctx->hQbts, ctx->gNumReg * sizeof(int));
-    memcpy(flwQbts.data(), ctx->hFlwQbts, ctx->gNumReg * sizeof(int));
+    memcpy(qbts.data(), ctx->hQbts.data(), ctx->gNumReg * sizeof(int));
+    memcpy(flwQbts.data(), ctx->hFlwQbts.data(), ctx->gNumReg * sizeof(int));
 
-    std::vector<long long> outExtents(numRegs);
-    std::vector<long long> outStrides(numRegs);
+    std::vector<int64_t> outExtents(numRegs);
+    std::vector<int64_t> outStrides(numRegs);
     size_t outSize = 1;
     for (int i = 0; i < numRegs; i++) {
         outExtents[i] = 1LL << qbts[regIdxs[i]];
@@ -105,40 +96,30 @@ void cvdvMeasureMultiple(CVDVContext* ctx, const int* regIdxs, int numRegs, doub
         selFlwQbts[i] = flwQbts[regIdxs[i]];
     }
 
-    MeasurePlan mp{};
-    mp.outSize = outSize;
-    checkCudaErrors(cudaMalloc(&mp.dSelQbts,    numRegs * sizeof(int)));
-    checkCudaErrors(cudaMalloc(&mp.dSelFlwQbts, numRegs * sizeof(int)));
-    checkCudaErrors(cudaMalloc(&mp.dOutStrides,  numRegs * sizeof(long long)));
-    checkCudaErrors(cudaMemcpy(mp.dSelQbts,    selQbts.data(),
-                               numRegs * sizeof(int),    cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(mp.dSelFlwQbts, selFlwQbts.data(),
-                               numRegs * sizeof(int),    cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(mp.dOutStrides,  outStrides.data(),
+    DeviceIntVec dSelQbts(numRegs);
+    DeviceIntVec dSelFlwQbts(numRegs);
+    DeviceLongLongVec dOutStrides(numRegs);
+    checkCudaErrors(cudaMemcpy(dSelQbts.data(), selQbts.data(),
+                               numRegs * sizeof(int), cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(dSelFlwQbts.data(), selFlwQbts.data(),
+                               numRegs * sizeof(int), cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(dOutStrides.data(), outStrides.data(),
                                numRegs * sizeof(long long), cudaMemcpyHostToDevice));
 
-    // Zero output before fused reduction (atomicAdd accumulates into it)
-    checkCudaErrors(cudaMemset(dMeasureOut, 0, mp.outSize * sizeof(double)));
+    checkCudaErrors(cudaMemset(dMeasureOut.data(), 0, outSize * sizeof(double)));
 
-    // Fused abs-square + reduce: single kernel reads complex state, computes
-    // |ψ|² on the fly, and atomically reduces into the output buffer.
     int gridSize = (int)((totalSize + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE);
     gridSize = min(gridSize, 1024);
-    size_t sharedMem = (mp.outSize <= MEASURE_SHARED_HIST_MAX)
-                           ? mp.outSize * sizeof(double) : 0;
+    size_t sharedMem = (outSize <= MEASURE_SHARED_HIST_MAX)
+                           ? outSize * sizeof(double) : 0;
     kernelAbsSquareReduce<<<gridSize, CUDA_BLOCK_SIZE, sharedMem>>>(
-        dMeasureOut, ctx->dState, totalSize,
-        mp.dSelQbts, mp.dSelFlwQbts, numRegs,
-        mp.dOutStrides, mp.outSize);
+        dMeasureOut.data(), ctx->dState(), totalSize,
+        dSelQbts.data(), dSelFlwQbts.data(), numRegs,
+        dOutStrides.data(), outSize);
     checkCudaErrors(cudaGetLastError());
 
-    checkCudaErrors(cudaMemcpy(probsOut, dMeasureOut, mp.outSize * sizeof(double),
+    checkCudaErrors(cudaMemcpy(probsOut, dMeasureOut.data(), outSize * sizeof(double),
                                cudaMemcpyDeviceToHost));
-
-    cudaFree(mp.dOutStrides);
-    cudaFree(mp.dSelFlwQbts);
-    cudaFree(mp.dSelQbts);
-    cudaFree(dMeasureOut);
 }
 
 void cvdvMeasureMultipleCT(CVDVContext* ctx, const int* regIdxs, int numRegs, double* probsOut) {
@@ -159,14 +140,12 @@ void cvdvMeasureMultipleCT(CVDVContext* ctx, const int* regIdxs, int numRegs, do
         return;
     }
 
-    double* dMeasureProbs = nullptr;
-    checkCudaErrors(cudaMalloc(&dMeasureProbs, totalSize * sizeof(double)));
-    double* dMeasureOut = nullptr;
-    checkCudaErrors(cudaMalloc(&dMeasureOut, totalSize * sizeof(double)));
+    DeviceDoubleVec dMeasureProbs(totalSize);
+    DeviceDoubleVec dMeasureOut(totalSize);
 
     std::vector<int> qbts(ctx->gNumReg), flwQbts(ctx->gNumReg);
-    memcpy(qbts.data(), ctx->hQbts, ctx->gNumReg * sizeof(int));
-    memcpy(flwQbts.data(), ctx->hFlwQbts, ctx->gNumReg * sizeof(int));
+    memcpy(qbts.data(), ctx->hQbts.data(), ctx->gNumReg * sizeof(int));
+    memcpy(flwQbts.data(), ctx->hFlwQbts.data(), ctx->gNumReg * sizeof(int));
 
     std::vector<long long> extents(ctx->gNumReg);
     std::vector<long long> strides(ctx->gNumReg);
@@ -175,15 +154,15 @@ void cvdvMeasureMultipleCT(CVDVContext* ctx, const int* regIdxs, int numRegs, do
         strides[r] = 1LL << flwQbts[r];
     }
     std::vector<int64_t> outExtents(numRegs);
-    std::vector<int64_t> outStrides(numRegs);
+    std::vector<int64_t> outStridesVec(numRegs);
     size_t outSize = 1;
     for (int i = 0; i < numRegs; i++) {
         outExtents[i] = extents[regIdxs[i]];
         outSize *= outExtents[i];
     }
-    outStrides[0] = 1;
+    outStridesVec[0] = 1;
     for (int i = 1; i < numRegs; i++)
-        outStrides[i] = outStrides[i - 1] * outExtents[i - 1];
+        outStridesVec[i] = outStridesVec[i - 1] * outExtents[i - 1];
 
     std::vector<int32_t> modesIn(ctx->gNumReg), modesOut(numRegs);
     for (int i = 0; i < ctx->gNumReg; i++) modesIn[i] = i;
@@ -205,7 +184,7 @@ void cvdvMeasureMultipleCT(CVDVContext* ctx, const int* regIdxs, int numRegs, do
     }
     status = cutensorCreateTensorDescriptor(h, &mp.descOut, (uint32_t)numRegs,
                                             reinterpret_cast<const int64_t*>(outExtents.data()),
-                                            reinterpret_cast<const int64_t*>(outStrides.data()),
+                                            reinterpret_cast<const int64_t*>(outStridesVec.data()),
                                             CUDA_R_64F, alignment);
     if (status != CUTENSOR_STATUS_SUCCESS) {
         fprintf(stderr, "cuTENSOR output desc failed: %d\n", status);
@@ -240,38 +219,39 @@ void cvdvMeasureMultipleCT(CVDVContext* ctx, const int* regIdxs, int numRegs, do
         cutensorDestroyTensorDescriptor(mp.descIn);
         cutensorDestroyTensorDescriptor(mp.descOut); return;
     }
-    mp.dWorkspace = nullptr;
-    if (mp.workspaceSize > 0)
-        checkCudaErrors(cudaMalloc(&mp.dWorkspace, mp.workspaceSize));
+
+    DeviceDoubleVec dWorkspace;
+    if (mp.workspaceSize > 0) {
+        dWorkspace.resize(mp.workspaceSize);
+        mp.dWorkspace = dWorkspace.data();
+    } else {
+        mp.dWorkspace = nullptr;
+    }
 
     // Step 1: Compute |ψ|² into scratch buffer
     int gridSize = (int)((totalSize + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE);
-    kernelAbsSquareInPlace<<<gridSize, CUDA_BLOCK_SIZE>>>(dMeasureProbs, ctx->dState, totalSize);
+    kernelAbsSquareInPlace<<<gridSize, CUDA_BLOCK_SIZE>>>(dMeasureProbs.data(), ctx->dState(), totalSize);
 
-    // Zero output before reduction
-    checkCudaErrors(cudaMemset(dMeasureOut, 0, mp.outSize * sizeof(double)));
+    checkCudaErrors(cudaMemset(dMeasureOut.data(), 0, mp.outSize * sizeof(double)));
 
     // Step 2: cuTENSOR reduction
     const double one = 1.0, zero = 0.0;
     cutensorStatus_t reduceStatus = cutensorReduce(ctHandle, mp.plan,
-                                                   &one, dMeasureProbs,
-                                                   &zero, dMeasureOut, dMeasureOut,
+                                                   &one, dMeasureProbs.data(),
+                                                   &zero, dMeasureOut.data(), dMeasureOut.data(),
                                                    mp.dWorkspace, mp.workspaceSize, 0);
     if (reduceStatus != CUTENSOR_STATUS_SUCCESS)
         fprintf(stderr, "cuTENSOR reduction failed: %d\n", reduceStatus);
 
     checkCudaErrors(cudaStreamSynchronize(0));
-    checkCudaErrors(cudaMemcpy(probsOut, dMeasureOut, mp.outSize * sizeof(double),
+    checkCudaErrors(cudaMemcpy(probsOut, dMeasureOut.data(), mp.outSize * sizeof(double),
                                cudaMemcpyDeviceToHost));
 
-    if (mp.dWorkspace) cudaFree(mp.dWorkspace);
     cutensorDestroyPlan(mp.plan);
     cutensorDestroyPlanPreference(mp.planPref);
     cutensorDestroyOperationDescriptor(mp.opDesc);
     cutensorDestroyTensorDescriptor(mp.descIn);
     cutensorDestroyTensorDescriptor(mp.descOut);
-    cudaFree(dMeasureProbs);
-    cudaFree(dMeasureOut);
     cutensorDestroy(ctHandle);
 }
 
@@ -283,54 +263,45 @@ void cvdvGetState(CVDVContext* ctx, double* realOut, double* imagOut) {
         return;
     }
 
-    cuDoubleComplex* hState = new cuDoubleComplex[totalSize];
-    checkCudaErrors(cudaMemcpy(hState, ctx->dState, totalSize * sizeof(cuDoubleComplex),
+    std::vector<cuDoubleComplex> hState(totalSize);
+    checkCudaErrors(cudaMemcpy(hState.data(), ctx->dState(), totalSize * sizeof(cuDoubleComplex),
                                     cudaMemcpyDeviceToHost));
 
     for (size_t i = 0; i < totalSize; i++) {
         realOut[i] = cuCreal(hState[i]);
         imagOut[i] = cuCimag(hState[i]);
     }
-
-    delete[] hState;
 }
 
 double cvdvGetNorm(CVDVContext* ctx) {
     if (!ctx) return 0.0;
-    if (ctx->dState == nullptr) {
+    if (ctx->state.empty()) {
         fprintf(stderr, "State not initialized\n");
         return 0.0;
     }
 
     size_t totalSize = 1 << ctx->gTotalQbt;
 
-    // Single-element output buffer for norm accumulation.
-    double* dNormOut = nullptr;
-    checkCudaErrors(cudaMalloc(&dNormOut, sizeof(double)));
-    checkCudaErrors(cudaMemset(dNormOut, 0, sizeof(double)));
+    DeviceDoubleVec dNormOut(1);
+    checkCudaErrors(cudaMemset(dNormOut.data(), 0, sizeof(double)));
 
     int gridSize = (int)((totalSize + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE);
     gridSize = min(gridSize, 1024);
-    // outSize=1 path uses blockReduceSum (no histogram) — selQbts/selFlwQbts unused.
     kernelAbsSquareReduce<<<gridSize, CUDA_BLOCK_SIZE, 0>>>(
-        dNormOut, ctx->dState, totalSize,
+        dNormOut.data(), ctx->dState(), totalSize,
         nullptr, nullptr, 0,
         nullptr, 1);
     checkCudaErrors(cudaGetLastError());
 
     double result = 0.0;
-    checkCudaErrors(cudaMemcpy(&result, dNormOut, sizeof(double),
+    checkCudaErrors(cudaMemcpy(&result, dNormOut.data(), sizeof(double),
                                cudaMemcpyDeviceToHost));
-    cudaFree(dNormOut);
     return result;
 }
 
-// Compute fidelity |⟨sep|ψ⟩|² where sep is a SeparableState passed as device
-// pointers. devicePtrs[i] points to cuDoubleComplex device memory of size (1 <<
-// gQbts[i]).
 void cvdvGetFidelity(CVDVContext* ctx, void** devicePtrs, int numReg, double* fidOut) {
     if (!ctx) return;
-    if (ctx->dState == nullptr || ctx->gNumReg == 0) {
+    if (ctx->state.empty() || ctx->gNumReg == 0) {
         fprintf(stderr, "State not initialized\n");
         *fidOut = 0.0;
         return;
@@ -346,10 +317,8 @@ void cvdvGetFidelity(CVDVContext* ctx, void** devicePtrs, int numReg, double* fi
     *fidOut = re * re + im * im;
 }
 
-// Compute mean photon number <n> = (<q²> + <p²> - 1) / 2 for register regIdx.
-// Temporarily applies ftQ2P / ftP2Q to measure <p²> in momentum basis (dp = dx).
 double cvdvGetPhotonNumber(CVDVContext* ctx, int regIdx) {
-    if (!ctx || ctx->dState == nullptr) return -1.0;
+    if (!ctx || ctx->state.empty()) return -1.0;
     if (regIdx < 0 || regIdx >= ctx->gNumReg) return -1.0;
 
     double q2 = computeExpectX2(ctx, regIdx);
@@ -361,11 +330,10 @@ double cvdvGetPhotonNumber(CVDVContext* ctx, int regIdx) {
     return (q2 + p2 - 1.0) / 2.0;
 }
 
-// Compute fidelity |⟨psi1|psi2⟩|² between two CUDA statevectors of the same size.
 void cvdvFidelityStatevectors(CVDVContext* ctx1, CVDVContext* ctx2, double* fidOut) {
     *fidOut = 0.0;
     if (!ctx1 || !ctx2) return;
-    if (ctx1->dState == nullptr || ctx2->dState == nullptr) {
+    if (ctx1->state.empty() || ctx2->state.empty()) {
         fprintf(stderr, "cvdvFidelityStatevectors: state not initialized\n");
         return;
     }
@@ -379,23 +347,19 @@ void cvdvFidelityStatevectors(CVDVContext* ctx1, CVDVContext* ctx2, double* fidO
     int numBlocks = (int)((totalSize + CUDA_BLOCK_SIZE - 1) / CUDA_BLOCK_SIZE);
     numBlocks = min(numBlocks, 1024);
 
-    cuDoubleComplex* dPartialSums;
-    checkCudaErrors(cudaMalloc(&dPartialSums, numBlocks * sizeof(cuDoubleComplex)));
+    DeviceComplexVec dPartialSums(numBlocks);
 
     size_t sharedMemSize = CUDA_BLOCK_SIZE * sizeof(cuDoubleComplex);
     kernelInnerProductStatevectors<<<numBlocks, CUDA_BLOCK_SIZE, sharedMemSize>>>(
-        dPartialSums, ctx1->dState, ctx2->dState, totalSize);
+        dPartialSums.data(), ctx1->dState(), ctx2->dState(), totalSize);
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
 
-    cuDoubleComplex* hPartialSums = new cuDoubleComplex[numBlocks];
-    checkCudaErrors(cudaMemcpy(hPartialSums, dPartialSums,
+    std::vector<cuDoubleComplex> hPartialSums(numBlocks);
+    checkCudaErrors(cudaMemcpy(hPartialSums.data(), dPartialSums.data(),
                                      numBlocks * sizeof(cuDoubleComplex), cudaMemcpyDeviceToHost));
     cuDoubleComplex result = make_cuDoubleComplex(0.0, 0.0);
     for (int i = 0; i < numBlocks; i++) result = cuCadd(result, hPartialSums[i]);
-
-    delete[] hPartialSums;
-    checkCudaErrors(cudaFree(dPartialSums));
 
     double re = cuCreal(result), im = cuCimag(result);
     *fidOut = re * re + im * im;

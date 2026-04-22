@@ -15,15 +15,9 @@
 #include <map>
 #include <vector>
 
-// Modern error handling without file logging
-#define checkCudaErrors(val)                                                           \
-    do {                                                                                \
-        cudaError_t err = (val);                                                        \
-        if (err != cudaSuccess) {                                                       \
-            fprintf(stderr, "CUDA Error: %s at %s:%d\n", cudaGetErrorString(err), __FILE__, __LINE__); \
-            exit(EXIT_FAILURE);                                                         \
-        }                                                                               \
-    } while (0)
+#include "cudapp.cuh"
+
+#define checkCudaErrors(val) CHECK_CUDA(val)
 
 constexpr double PI = 3.14159265358979323846;
 constexpr double SQRT2 = 1.41421356237309504880;
@@ -58,21 +52,28 @@ struct MeasurePlanCT {
 
 // Context structure to enable multiple instances
 typedef struct CVDVContext {
-    cuDoubleComplex* dState;
-    int* gQbts;          // Device memory: number of qubits in each register
-    int* gFlwQbts;       // Device memory: cumulative qubits after each register
-    double* gGridSteps;  // Device memory: grid step (dx) for each register
-    int* hQbts;          // Host mirror of gQbts (for CPU-side reads)
-    int* hFlwQbts;       // Host mirror of gFlwQbts
-    double* hGridSteps;  // Host mirror of gGridSteps
-    int gNumReg;         // Total number of registers
-    int gTotalQbt;       // Total number of qubits across all registers
+    // Device memory (RAII — automatic cleanup on ctx destroy)
+    cudapp::CudaVector<cuDoubleComplex, cudapp::CudaDeviceArena> state;
+    cudapp::CudaVector<int, cudapp::CudaDeviceArena> dQbts;
+    cudapp::CudaVector<int, cudapp::CudaDeviceArena> dFlwQbts;
+    cudapp::CudaVector<double, cudapp::CudaDeviceArena> dGridSteps;
 
-    // Cached cuFFT plans for FT operations — one plan per register (host-only,
-    // regular malloc). Each plan covers both FORWARD and INVERSE (direction is a
-    // runtime arg to cufftExecZ2Z).
-    cufftHandle* ftPlans;
+    // Host mirrors (std::vector — automatic cleanup)
+    std::vector<int> hQbts;
+    std::vector<int> hFlwQbts;
+    std::vector<double> hGridSteps;
 
+    // cuFFT plans (RAII — automatic cleanup)
+    std::vector<cudapp::CudaFftPlan> ftPlans;
+
+    int gNumReg = 0;
+    int gTotalQbt = 0;
+
+    // Raw-pointer accessors for kernel calls
+    cuDoubleComplex* dState() { return state.data(); }
+    int* gpQbts() { return dQbts.data(); }
+    int* gpFlwQbts() { return dFlwQbts.data(); }
+    double* gpGridSteps() { return dGridSteps.data(); }
 } CVDVContext;
 #define CVDV_TYPES_INCLUDED
 
